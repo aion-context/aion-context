@@ -55,6 +55,7 @@
 #![warn(missing_docs, unsafe_code, unused_must_use)]
 
 // Module structure (to be implemented in future issues)
+pub mod aibom; // RFC-0029: AI Bill of Materials
 pub mod audit; // Issue #7: Audit trail
 pub mod compliance; // Issue #33: Compliance reporting
 pub mod conflict; // Issue #30: Conflict resolution
