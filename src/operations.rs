@@ -808,6 +808,33 @@ fn check_temporal_ordering(versions: &[VersionEntry]) -> Vec<TemporalWarning> {
 /// # Ok::<(), aion_context::AionError>(())
 /// ```
 pub fn verify_file(path: &Path) -> Result<VerificationReport> {
+    verify_file_inner(path, None)
+}
+
+/// Registry-aware file verification — Issue #17 / RFC-0034 Phase C.
+///
+/// Same shape as [`verify_file`], but every (version, signature)
+/// pair must also resolve through `registry` at its signed
+/// version number. Rejects signatures whose embedded `public_key`
+/// does not match the active epoch for the signer, and signatures
+/// signed under rotated-out or revoked keys.
+///
+/// # Errors
+///
+/// Same as [`verify_file`]: structural / I/O errors surface as
+/// `Err(_)`; verification failures are captured in the returned
+/// [`VerificationReport`].
+pub fn verify_file_with_registry(
+    path: &Path,
+    registry: &crate::key_registry::KeyRegistry,
+) -> Result<VerificationReport> {
+    verify_file_inner(path, Some(registry))
+}
+
+fn verify_file_inner(
+    path: &Path,
+    registry: Option<&crate::key_registry::KeyRegistry>,
+) -> Result<VerificationReport> {
     let file_bytes = std::fs::read(path).map_err(|e| AionError::FileReadError {
         path: path.to_path_buf(),
         source: e,
@@ -840,7 +867,17 @@ pub fn verify_file(path: &Path) -> Result<VerificationReport> {
         return Ok(report);
     };
 
-    match verify_signatures_batch(&versions, &signatures) {
+    let sig_result = registry.map_or_else(
+        || verify_signatures_batch(&versions, &signatures),
+        |reg| {
+            crate::signature_chain::verify_signatures_batch_with_registry(
+                &versions,
+                &signatures,
+                reg,
+            )
+        },
+    );
+    match sig_result {
         Ok(()) => report.signatures_valid = true,
         Err(e) => report
             .errors
@@ -1142,6 +1179,35 @@ pub fn show_version_history(path: &Path) -> Result<Vec<VersionInfo>> {
 /// ```
 #[allow(deprecated)] // RFC-0034 Phase D: wraps raw-key verify_signature; Phase E adds a _with_registry variant
 pub fn show_signatures(path: &Path) -> Result<Vec<SignatureInfo>> {
+    show_signatures_inner(path, None)
+}
+
+/// Registry-aware sibling of [`show_signatures`] — Issue #17.
+///
+/// Each signature's `verified` field reflects the registry-aware
+/// verdict: both the embedded Ed25519 signature AND the signer's
+/// active epoch (at the signed version number) must match. A
+/// signer whose pinned active epoch does not match the embedded
+/// `public_key` is reported `verified = false` with an error
+/// reason even if the raw Ed25519 bytes would verify on their own.
+///
+/// # Errors
+///
+/// Same as [`show_signatures`] — structural / I/O failures surface
+/// as `Err(_)`; verification verdicts ride in the returned
+/// [`SignatureInfo`] entries.
+pub fn show_signatures_with_registry(
+    path: &Path,
+    registry: &crate::key_registry::KeyRegistry,
+) -> Result<Vec<SignatureInfo>> {
+    show_signatures_inner(path, Some(registry))
+}
+
+#[allow(deprecated)] // internal helper delegates to verify_signature / verify_signature_with_registry
+fn show_signatures_inner(
+    path: &Path,
+    registry: Option<&crate::key_registry::KeyRegistry>,
+) -> Result<Vec<SignatureInfo>> {
     // Load and parse the file
     let file_bytes = std::fs::read(path).map_err(|e| AionError::FileReadError {
         path: path.to_path_buf(),
@@ -1178,8 +1244,18 @@ pub fn show_signatures(path: &Path) -> Result<Vec<SignatureInfo>> {
             ),
         })?;
 
-        // Verify this signature
-        let (verified, error) = match verify_signature(version_entry, &sig_entry) {
+        // Verify this signature (registry-aware when a registry was supplied).
+        let result = registry.map_or_else(
+            || verify_signature(version_entry, &sig_entry),
+            |reg| {
+                crate::signature_chain::verify_signature_with_registry(
+                    version_entry,
+                    &sig_entry,
+                    reg,
+                )
+            },
+        );
+        let (verified, error) = match result {
             Ok(()) => (true, None),
             Err(e) => (false, Some(e.to_string())),
         };

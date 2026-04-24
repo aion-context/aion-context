@@ -58,7 +58,7 @@ pub(crate) const REVOCATION_DOMAIN: &[u8] = b"AION_V2_REVOCATION_V1";
 
 /// Reason code carried in a revocation record.
 #[repr(u16)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum RevocationReason {
     /// Key material is known or suspected to be compromised.
     Compromised = 1,
@@ -430,6 +430,265 @@ impl KeyRegistry {
             .get(&author)
             .map_or(&[][..], |record| record.epochs.as_slice())
     }
+
+    /// Append an epoch to `author` without verifying a signed
+    /// rotation record.
+    ///
+    /// The caller is asserting that this registry is itself the
+    /// trust anchor — e.g. a pinning file the operator brings to
+    /// verification. [`Self::apply_rotation`] is the signed-record
+    /// path and is the correct choice when the rotation arrives
+    /// from an untrusted source (transparency log, network peer).
+    ///
+    /// The prior active epoch is transitioned to
+    /// [`KeyStatus::Rotated`] at `active_from_version`. The new
+    /// epoch is inserted with [`KeyStatus::Active`] status.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if:
+    /// - the author is not registered,
+    /// - `epoch` is not strictly greater than every existing epoch
+    ///   for this author,
+    /// - `active_from_version` is not strictly greater than the
+    ///   prior active epoch's `created_at_version`,
+    /// - the author currently has no active epoch (i.e. the prior
+    ///   epoch is already revoked or rotated).
+    pub fn insert_epoch_unchecked(
+        &mut self,
+        author: AuthorId,
+        epoch: u32,
+        public_key: [u8; 32],
+        active_from_version: u64,
+    ) -> Result<()> {
+        let record = self
+            .authors
+            .get_mut(&author)
+            .ok_or_else(|| AionError::InvalidFormat {
+                reason: format!("author {author} not registered"),
+            })?;
+        let max_epoch = record.epochs.iter().map(|e| e.epoch).max().unwrap_or(0);
+        if epoch <= max_epoch {
+            return Err(AionError::InvalidFormat {
+                reason: format!(
+                    "epoch {epoch} not strictly greater than existing max {max_epoch} for author {author}"
+                ),
+            });
+        }
+        let active = find_active_epoch(&record.epochs).ok_or_else(|| AionError::InvalidFormat {
+            reason: format!("author {author} has no active epoch to rotate from"),
+        })?;
+        if active_from_version <= active.created_at_version {
+            return Err(AionError::InvalidFormat {
+                reason: format!(
+                    "active_from_version {active_from_version} does not strictly follow prior epoch at version {}",
+                    active.created_at_version
+                ),
+            });
+        }
+        let active_epoch_number = active.epoch;
+        mark_epoch_rotated(
+            &mut record.epochs,
+            active_epoch_number,
+            epoch,
+            active_from_version,
+        );
+        record.epochs.push(KeyEpoch {
+            author_id: author,
+            epoch,
+            public_key,
+            created_at_version: active_from_version,
+            status: KeyStatus::Active,
+        });
+        Ok(())
+    }
+
+    /// Mark `epoch` as revoked for `author` without verifying a
+    /// signed revocation record.
+    ///
+    /// See [`Self::insert_epoch_unchecked`] for when this is the
+    /// correct path vs. [`Self::apply_revocation`].
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if the author / epoch is unknown or already
+    /// revoked.
+    pub fn insert_revocation_unchecked(
+        &mut self,
+        author: AuthorId,
+        epoch: u32,
+        reason: RevocationReason,
+        effective_from_version: u64,
+    ) -> Result<()> {
+        let record = self
+            .authors
+            .get_mut(&author)
+            .ok_or_else(|| AionError::InvalidFormat {
+                reason: format!("author {author} not registered"),
+            })?;
+        for existing in &mut record.epochs {
+            if existing.epoch != epoch {
+                continue;
+            }
+            if matches!(existing.status, KeyStatus::Revoked { .. }) {
+                return Err(AionError::InvalidFormat {
+                    reason: format!("epoch {epoch} for author {author} already revoked"),
+                });
+            }
+            existing.status = KeyStatus::Revoked {
+                reason,
+                effective_from_version,
+            };
+            return Ok(());
+        }
+        Err(AionError::InvalidFormat {
+            reason: format!("epoch {epoch} not found for author {author}"),
+        })
+    }
+
+    /// Load a trusted registry from the CLI JSON file format.
+    ///
+    /// The on-disk shape is:
+    ///
+    /// ```json
+    /// {
+    ///   "version": 1,
+    ///   "authors": [
+    ///     {
+    ///       "author_id": 50001,
+    ///       "master_key": "<base64-32-bytes>",
+    ///       "epochs": [
+    ///         { "epoch": 0, "public_key": "<base64-32-bytes>", "active_from_version": 0 }
+    ///       ],
+    ///       "revocations": []
+    ///     }
+    ///   ]
+    /// }
+    /// ```
+    ///
+    /// This is a *trusted* load: every epoch and revocation is
+    /// inserted via the `_unchecked` path. Use it for operator-
+    /// supplied pinning files; use [`Self::apply_rotation`] and
+    /// [`Self::apply_revocation`] for records that arrived from
+    /// an untrusted source.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if the JSON is malformed, the format version
+    /// is not 1, any base64 field does not decode to exactly 32
+    /// bytes, any author appears twice, any epoch number repeats
+    /// or is non-monotonic within an author, or any revocation
+    /// points at an unknown epoch.
+    pub fn from_trusted_json(input: &str) -> Result<Self> {
+        let file: TrustedRegistryFile =
+            serde_json::from_str(input).map_err(|e| AionError::InvalidFormat {
+                reason: format!("registry JSON parse failed: {e}"),
+            })?;
+        if file.version != 1 {
+            return Err(AionError::InvalidFormat {
+                reason: format!(
+                    "unsupported registry file version: {} (expected 1)",
+                    file.version
+                ),
+            });
+        }
+        let mut registry = Self::new();
+        for author_entry in file.authors {
+            registry.load_trusted_author(author_entry)?;
+        }
+        Ok(registry)
+    }
+
+    fn load_trusted_author(&mut self, entry: TrustedAuthorEntry) -> Result<()> {
+        let author = AuthorId::new(entry.author_id);
+        let master_bytes = decode_registry_key_bytes(&entry.master_key, "master_key")?;
+        let master_key = VerifyingKey::from_bytes(&master_bytes)?;
+        let first_epoch = entry
+            .epochs
+            .first()
+            .ok_or_else(|| AionError::InvalidFormat {
+                reason: format!("author {author} has no epochs"),
+            })?;
+        let first_pub = decode_registry_key_bytes(&first_epoch.public_key, "public_key")?;
+        let first_pub_key = VerifyingKey::from_bytes(&first_pub)?;
+        self.register_author(
+            author,
+            master_key,
+            first_pub_key,
+            first_epoch.active_from_version,
+        )?;
+        if first_epoch.epoch != 0 {
+            return Err(AionError::InvalidFormat {
+                reason: format!(
+                    "first epoch for author {author} must be 0, got {}",
+                    first_epoch.epoch
+                ),
+            });
+        }
+        for subsequent in entry.epochs.iter().skip(1) {
+            let pub_bytes = decode_registry_key_bytes(&subsequent.public_key, "public_key")?;
+            self.insert_epoch_unchecked(
+                author,
+                subsequent.epoch,
+                pub_bytes,
+                subsequent.active_from_version,
+            )?;
+        }
+        for rev in entry.revocations {
+            self.insert_revocation_unchecked(
+                author,
+                rev.epoch,
+                rev.reason,
+                rev.effective_from_version,
+            )?;
+        }
+        Ok(())
+    }
+}
+
+fn decode_registry_key_bytes(encoded: &str, field: &str) -> Result<[u8; 32]> {
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .or_else(|_| base64::engine::general_purpose::STANDARD_NO_PAD.decode(encoded))
+        .map_err(|e| AionError::InvalidFormat {
+            reason: format!("registry {field} base64 decode failed: {e}"),
+        })?;
+    <[u8; 32]>::try_from(bytes.as_slice()).map_err(|_| AionError::InvalidFormat {
+        reason: format!(
+            "registry {field} must decode to exactly 32 bytes (got {})",
+            bytes.len()
+        ),
+    })
+}
+
+#[derive(serde::Deserialize)]
+struct TrustedRegistryFile {
+    version: u32,
+    authors: Vec<TrustedAuthorEntry>,
+}
+
+#[derive(serde::Deserialize)]
+struct TrustedAuthorEntry {
+    author_id: u64,
+    master_key: String,
+    epochs: Vec<TrustedEpochEntry>,
+    #[serde(default)]
+    revocations: Vec<TrustedRevocationEntry>,
+}
+
+#[derive(serde::Deserialize)]
+struct TrustedEpochEntry {
+    epoch: u32,
+    public_key: String,
+    active_from_version: u64,
+}
+
+#[derive(serde::Deserialize)]
+struct TrustedRevocationEntry {
+    epoch: u32,
+    reason: RevocationReason,
+    effective_from_version: u64,
 }
 
 fn find_active_epoch(epochs: &[KeyEpoch]) -> Option<&KeyEpoch> {
@@ -825,6 +1084,107 @@ mod tests {
                 .checked_add(1)
                 .unwrap_or_else(|| std::process::abort());
             assert!(reg.apply_revocation(&rec).is_err());
+        }
+    }
+
+    mod trusted_json {
+        use super::*;
+        use base64::Engine;
+
+        fn b64(bytes: &[u8; 32]) -> String {
+            base64::engine::general_purpose::STANDARD.encode(bytes)
+        }
+
+        #[test]
+        fn loads_single_author_single_epoch() {
+            let master = SigningKey::generate();
+            let op = SigningKey::generate();
+            let json = format!(
+                r#"{{"version":1,"authors":[{{
+                    "author_id": 7,
+                    "master_key": "{}",
+                    "epochs": [{{"epoch":0,"public_key":"{}","active_from_version":0}}]
+                }}]}}"#,
+                b64(&master.verifying_key().to_bytes()),
+                b64(&op.verifying_key().to_bytes()),
+            );
+            let reg =
+                KeyRegistry::from_trusted_json(&json).unwrap_or_else(|_| std::process::abort());
+            let author = AuthorId::new(7);
+            let epoch = reg
+                .active_epoch_at(author, 42)
+                .unwrap_or_else(|| std::process::abort());
+            assert_eq!(epoch.epoch, 0);
+            assert_eq!(epoch.public_key, op.verifying_key().to_bytes());
+        }
+
+        #[test]
+        fn loads_multi_epoch_with_revocation() {
+            let master = SigningKey::generate();
+            let op0 = SigningKey::generate();
+            let op1 = SigningKey::generate();
+            let json = format!(
+                r#"{{"version":1,"authors":[{{
+                    "author_id": 11,
+                    "master_key": "{}",
+                    "epochs": [
+                        {{"epoch":0,"public_key":"{}","active_from_version":0}},
+                        {{"epoch":1,"public_key":"{}","active_from_version":100}}
+                    ],
+                    "revocations": [
+                        {{"epoch":1,"reason":"Compromised","effective_from_version":200}}
+                    ]
+                }}]}}"#,
+                b64(&master.verifying_key().to_bytes()),
+                b64(&op0.verifying_key().to_bytes()),
+                b64(&op1.verifying_key().to_bytes()),
+            );
+            let reg =
+                KeyRegistry::from_trusted_json(&json).unwrap_or_else(|_| std::process::abort());
+            let author = AuthorId::new(11);
+            assert_eq!(
+                reg.active_epoch_at(author, 50)
+                    .unwrap_or_else(|| std::process::abort())
+                    .epoch,
+                0
+            );
+            assert_eq!(
+                reg.active_epoch_at(author, 150)
+                    .unwrap_or_else(|| std::process::abort())
+                    .epoch,
+                1
+            );
+            assert!(reg.active_epoch_at(author, 300).is_none());
+        }
+
+        #[test]
+        fn rejects_unsupported_version() {
+            let err = KeyRegistry::from_trusted_json(r#"{"version":2,"authors":[]}"#);
+            assert!(err.is_err());
+        }
+
+        #[test]
+        fn rejects_malformed_base64() {
+            let json = r#"{"version":1,"authors":[{
+                "author_id": 1,
+                "master_key": "not-base64!!!",
+                "epochs": [{"epoch":0,"public_key":"also-bad","active_from_version":0}]
+            }]}"#;
+            assert!(KeyRegistry::from_trusted_json(json).is_err());
+        }
+
+        #[test]
+        fn rejects_wrong_length_key() {
+            use base64::engine::general_purpose::STANDARD;
+            let short = STANDARD.encode([0u8; 16]);
+            let json = format!(
+                r#"{{"version":1,"authors":[{{
+                    "author_id": 1,
+                    "master_key": "{short}",
+                    "epochs": [{{"epoch":0,"public_key":"{short}","active_from_version":0}}]
+                }}]}}"#
+            );
+            assert!(KeyRegistry::from_trusted_json(&json).is_err());
         }
     }
 }

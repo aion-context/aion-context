@@ -472,6 +472,48 @@ pub fn verify_signatures_batch(
     }
 }
 
+/// Registry-aware batch verification — RFC-0034 Phase C.
+///
+/// Verifies every `(version, signature)` pair via
+/// [`verify_signature_with_registry`], so each pair must both
+/// cryptographically verify AND have a matching active epoch in
+/// `registry` at the signed version number.
+///
+/// # Errors
+///
+/// Returns `Err` on the first pair where registry lookup or
+/// signature verification fails, or if the two slices differ in
+/// length.
+pub fn verify_signatures_batch_with_registry(
+    versions: &[VersionEntry],
+    signatures: &[SignatureEntry],
+    registry: &crate::key_registry::KeyRegistry,
+) -> Result<()> {
+    if versions.len() != signatures.len() {
+        return Err(crate::AionError::InvalidFormat {
+            reason: format!(
+                "Version and signature count mismatch: {} versions vs {} signatures",
+                versions.len(),
+                signatures.len()
+            ),
+        });
+    }
+    if versions.len() > 10 {
+        use rayon::prelude::*;
+        versions
+            .par_iter()
+            .zip(signatures.par_iter())
+            .try_for_each(|(version, signature)| {
+                verify_signature_with_registry(version, signature, registry)
+            })
+    } else {
+        for (version, signature) in versions.iter().zip(signatures.iter()) {
+            verify_signature_with_registry(version, signature, registry)?;
+        }
+        Ok(())
+    }
+}
+
 /// Sequential signature verification (for small batches)
 #[allow(deprecated)] // RFC-0034 Phase D: batch wrapper over raw-key verify; registry-aware batch in Phase E
 fn verify_signatures_sequential(

@@ -777,3 +777,198 @@ fn test_cli_init_with_nonexistent_key_fails() {
         "Should indicate key error: {stderr}"
     );
 }
+
+// ============================================================================
+// Registry-aware verify (Issue #17)
+// ============================================================================
+
+/// Parse `Public Key: <hex>` from `aion key generate` stdout. Returns 32 bytes.
+fn extract_public_key_hex(stdout: &str) -> [u8; 32] {
+    let line = stdout
+        .lines()
+        .find(|line| line.trim_start().starts_with("Public Key:"))
+        .expect("Public Key line missing from stdout");
+    let hex_str = line
+        .split(':')
+        .nth(1)
+        .expect("Public Key line has no ':'")
+        .trim();
+    let bytes = hex::decode(hex_str).expect("Public Key hex decode failed");
+    <[u8; 32]>::try_from(bytes.as_slice()).expect("Public Key not 32 bytes")
+}
+
+/// Build the trusted-registry JSON for a single author whose master and
+/// operational keys point at the same public bytes (sufficient for a CLI
+/// verify happy-path; production registries would use a distinct master).
+fn build_registry_json(author_id: u64, public_key: &[u8; 32]) -> String {
+    use base64::Engine;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(public_key);
+    format!(
+        r#"{{"version":1,"authors":[{{
+            "author_id": {author_id},
+            "master_key": "{encoded}",
+            "epochs": [{{"epoch":0,"public_key":"{encoded}","active_from_version":0}}]
+        }}]}}"#
+    )
+}
+
+#[test]
+fn test_verify_with_registry_accepts_matching_key() {
+    let (temp_dir, key_id) = setup_test_env();
+
+    // Generate a second, throwaway key so we can parse its public key from
+    // the `key generate` stdout (the first key's stdout is consumed by setup).
+    let inspect_id = format!("{}", rand::random::<u32>() % 900_000 + 100_000);
+    let gen_output = run_cli(&["key", "generate", "--id", &inspect_id]);
+    assert!(
+        gen_output.status.success(),
+        "key generate for inspect_id failed: {}",
+        String::from_utf8_lossy(&gen_output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&gen_output.stdout);
+    let public_key = extract_public_key_hex(&stdout);
+    let inspect_author: u64 = inspect_id.parse().expect("inspect_id parses");
+
+    let file_path = temp_dir.path().join("registry_verify.aion");
+    let init_out = run_cli_with_stdin(
+        &[
+            "init",
+            file_path.to_str().unwrap(),
+            "--author",
+            &inspect_id,
+            "--key",
+            &inspect_id,
+            "--message",
+            "genesis",
+        ],
+        b"some rules",
+    );
+    assert!(
+        init_out.status.success(),
+        "init failed: {}",
+        String::from_utf8_lossy(&init_out.stderr)
+    );
+
+    let registry_path = temp_dir.path().join("registry.json");
+    fs::write(
+        &registry_path,
+        build_registry_json(inspect_author, &public_key),
+    )
+    .expect("registry write");
+
+    let verify_out = run_cli(&[
+        "verify",
+        file_path.to_str().unwrap(),
+        "--registry",
+        registry_path.to_str().unwrap(),
+    ]);
+    assert!(
+        verify_out.status.success(),
+        "verify-with-registry should succeed: stdout={} stderr={}",
+        String::from_utf8_lossy(&verify_out.stdout),
+        String::from_utf8_lossy(&verify_out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&verify_out.stdout);
+    assert!(
+        stdout.contains("VALID") || stdout.contains("Registry"),
+        "verify output should indicate success: {stdout}"
+    );
+
+    cleanup_key(&inspect_id);
+    cleanup_key(&key_id);
+    drop(temp_dir);
+}
+
+#[test]
+fn test_verify_with_registry_rejects_mismatched_key() {
+    let (temp_dir, key_id) = setup_test_env();
+    let inspect_id = format!("{}", rand::random::<u32>() % 900_000 + 100_000);
+    let gen_output = run_cli(&["key", "generate", "--id", &inspect_id]);
+    assert!(gen_output.status.success());
+    let inspect_author: u64 = inspect_id.parse().expect("inspect_id parses");
+
+    let file_path = temp_dir.path().join("registry_reject.aion");
+    let init_out = run_cli_with_stdin(
+        &[
+            "init",
+            file_path.to_str().unwrap(),
+            "--author",
+            &inspect_id,
+            "--key",
+            &inspect_id,
+            "--message",
+            "genesis",
+        ],
+        b"some rules",
+    );
+    assert!(init_out.status.success());
+
+    // Pin a DIFFERENT public key to simulate a wrong-key registry.
+    let wrong_pubkey = [0xAB_u8; 32];
+    let registry_path = temp_dir.path().join("registry.json");
+    fs::write(
+        &registry_path,
+        build_registry_json(inspect_author, &wrong_pubkey),
+    )
+    .expect("registry write");
+
+    let verify_out = run_cli(&[
+        "verify",
+        file_path.to_str().unwrap(),
+        "--registry",
+        registry_path.to_str().unwrap(),
+    ]);
+    assert!(
+        !verify_out.status.success(),
+        "verify should FAIL under a wrong-key registry; stdout={} stderr={}",
+        String::from_utf8_lossy(&verify_out.stdout),
+        String::from_utf8_lossy(&verify_out.stderr)
+    );
+
+    cleanup_key(&inspect_id);
+    cleanup_key(&key_id);
+    drop(temp_dir);
+}
+
+#[test]
+fn test_verify_rejects_malformed_registry() {
+    let (temp_dir, key_id) = setup_test_env();
+    let file_path = temp_dir.path().join("ignored.aion");
+
+    let init_out = run_cli_with_stdin(
+        &[
+            "init",
+            file_path.to_str().unwrap(),
+            "--author",
+            &key_id,
+            "--key",
+            &key_id,
+            "--message",
+            "genesis",
+        ],
+        b"some rules",
+    );
+    assert!(init_out.status.success());
+
+    let registry_path = temp_dir.path().join("bad.json");
+    fs::write(&registry_path, "not valid json {[}").expect("registry write");
+
+    let verify_out = run_cli(&[
+        "verify",
+        file_path.to_str().unwrap(),
+        "--registry",
+        registry_path.to_str().unwrap(),
+    ]);
+    assert!(
+        !verify_out.status.success(),
+        "malformed registry must produce a non-zero exit"
+    );
+    let stderr = String::from_utf8_lossy(&verify_out.stderr);
+    assert!(
+        stderr.contains("parse") || stderr.contains("registry") || stderr.contains("error"),
+        "stderr should reference the parse failure: {stderr}"
+    );
+
+    cleanup_key(&key_id);
+    drop(temp_dir);
+}
