@@ -756,7 +756,7 @@ fn check_temporal_ordering(versions: &[VersionEntry]) -> Vec<TemporalWarning> {
                 } else {
                     // Within tolerance but still backwards - report as clock skew
                     #[allow(clippy::cast_possible_wrap)]
-                    let skew_nanos = -(diff as i64);
+                    let skew_nanos = (diff as i64).saturating_neg();
                     warnings.push(TemporalWarning::ClockSkewDetected {
                         version: version_num,
                         skew_nanos,

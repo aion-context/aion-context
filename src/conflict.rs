@@ -340,12 +340,16 @@ pub fn parse_conflict_markers(content: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
     }
 
     // Extract local content (after first newline, before separator)
-    let after_start = content_str[start_idx..].find('\n')? + start_idx + 1;
-    let local = &content_str[after_start..separator_idx];
+    let after_start = content_str
+        .get(start_idx..)?
+        .find('\n')?
+        .checked_add(start_idx)?
+        .checked_add(1)?;
+    let local = content_str.get(after_start..separator_idx)?;
 
     // Extract remote content (after separator newline, before end)
-    let after_sep = separator_idx + 8; // "=======\n"
-    let remote = &content_str[after_sep..end_idx];
+    let after_sep = separator_idx.checked_add(8)?; // "=======\n"
+    let remote = content_str.get(after_sep..end_idx)?;
 
     Some((
         local.trim_end().as_bytes().to_vec(),

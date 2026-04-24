@@ -472,7 +472,8 @@ impl TransparencyLog {
 }
 
 fn canonical_sth_bytes(tree_size: u64, root_hash: &[u8; 32]) -> Vec<u8> {
-    let mut buf = Vec::with_capacity(LOG_STH_DOMAIN.len() + 8 + 32);
+    let capacity = LOG_STH_DOMAIN.len().saturating_add(8).saturating_add(32);
+    let mut buf = Vec::with_capacity(capacity);
     buf.extend_from_slice(LOG_STH_DOMAIN);
     buf.extend_from_slice(&tree_size.to_le_bytes());
     buf.extend_from_slice(root_hash);
@@ -480,7 +481,11 @@ fn canonical_sth_bytes(tree_size: u64, root_hash: &[u8; 32]) -> Vec<u8> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::indexing_slicing)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects
+)]
 mod tests {
     use super::*;
 
