@@ -1,0 +1,111 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo:*)",
+      "Bash(rustc:*)",
+      "Bash(rustfmt:*)",
+      "Bash(git:*)",
+      "Bash(gh:*)",
+      "Bash(cat:*)",
+      "Bash(jq:*)",
+      "Bash(rg:*)",
+      "Bash(fd:*)",
+      "Bash(find:*)",
+      "Bash(grep:*)",
+      "Bash(ls:*)",
+      "Bash(tree:*)",
+      "Bash(head:*)",
+      "Bash(tail:*)",
+      "Bash(wc:*)",
+      "Bash(mkdir:*)",
+      "Bash(touch:*)",
+      "Bash(cp:*)",
+      "Bash(mv:*)",
+      "Bash(rm:*)",
+      "Bash(echo:*)",
+      "Bash(printf:*)",
+      "Bash(sed:*)",
+      "Bash(awk:*)",
+      "Bash(sort:*)",
+      "Bash(uniq:*)",
+      "Bash(diff:*)",
+      "Bash(patch:*)",
+      "Bash(python:*)",
+      "Bash(python3:*)",
+      "Bash(which:*)",
+      "Bash(pwd:*)",
+      "Bash(realpath:*)",
+      "Bash(dirname:*)",
+      "Bash(basename:*)",
+      "Bash(xargs:*)",
+      "Bash(tee:*)",
+      "Bash(tr:*)",
+      "Bash(cut:*)",
+      "Bash(date:*)",
+      "Bash(test:*)",
+      "Bash(bash:*)",
+      "Read(*)",
+      "Write(*)",
+      "Edit(*)"
+    ],
+    "deny": [
+      "Bash(sudo:*)",
+      "Bash(su:*)",
+      "Bash(apt:*)",
+      "Bash(apt-get:*)",
+      "Bash(brew:*)",
+      "Bash(systemctl:*)",
+      "Bash(export:*)",
+      "Bash(env:*)",
+      "Bash(printenv:*)",
+      "Bash(*SECRET*)",
+      "Bash(*TOKEN*)",
+      "Bash(*PASSWORD*)",
+      "Bash(*API_KEY*)",
+      "Bash(*CREDENTIAL*)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=.claude/hooks/pre-edit-rust-gate.sh; [ -f \"$f\" ] && bash \"$f\" || exit 0"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=.claude/hooks/pre-commit-branch-name.sh; [ -f \"$f\" ] && bash \"$f\" || exit 0"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=.claude/hooks/post-edit-fmt-clippy.sh; [ -f \"$f\" ] && bash \"$f\" || exit 0"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=.claude/hooks/stop-drift-check.sh; [ -f \"$f\" ] && bash \"$f\" || exit 0"
+          }
+        ]
+      }
+    ]
+  }
+}

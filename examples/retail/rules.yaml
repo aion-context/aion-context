@@ -1,0 +1,275 @@
+# Dynamic Pricing and Promotion Rules
+# Version: 4.2.0
+# Effective: 2024-Q1
+# Compliance: FTC Guidelines, State Consumer Protection Laws
+
+metadata:
+  organization: "MegaMart Retail Inc."
+  channels:
+    - "e-commerce"
+    - "mobile_app"
+    - "in_store"
+  markets:
+    - "US"
+    - "Canada"
+  last_review: "2024-01-01"
+
+# Pricing Strategy
+pricing_strategy:
+  base_pricing:
+    method: "cost_plus"
+    minimum_margin_percent: 15
+    target_margin_percent: 35
+    
+  competitive_pricing:
+    enabled: true
+    competitors_monitored: 10
+    response_time_hours: 4
+    floor_percent_below_competitor: 95
+    ceiling_percent_above_competitor: 110
+
+# Dynamic Pricing Rules
+dynamic_pricing:
+  enabled: true
+  
+  factors:
+    demand:
+      weight: 0.30
+      signals:
+        - page_views
+        - cart_additions
+        - purchase_velocity
+        
+    inventory:
+      weight: 0.25
+      signals:
+        - stock_level
+        - days_of_supply
+        - warehouse_capacity
+        
+    competition:
+      weight: 0.25
+      signals:
+        - competitor_prices
+        - market_position
+        
+    time:
+      weight: 0.20
+      signals:
+        - day_of_week
+        - time_of_day
+        - seasonality
+        - holidays
+
+  constraints:
+    max_price_increase_percent: 15
+    max_price_decrease_percent: 30
+    price_change_cooldown_hours: 24
+    min_price_duration_hours: 4
+
+  prohibited_practices:
+    - surge_pricing_essentials
+    - discriminatory_pricing
+    - bait_and_switch
+    - false_reference_prices
+
+# Category-Specific Rules
+categories:
+  essentials:
+    items:
+      - groceries_staples
+      - baby_formula
+      - medications_otc
+      - hygiene_products
+    dynamic_pricing: false
+    max_markup_percent: 20
+    emergency_price_freeze: true
+    
+  electronics:
+    price_match: true
+    dynamic_pricing: true
+    margin_floor_percent: 10
+    
+  fashion:
+    seasonal_markdown: true
+    markdown_schedule:
+      week_4: 20
+      week_8: 40
+      week_12: 60
+      clearance: 75
+    
+  perishables:
+    expiration_discounting: true
+    discount_schedule:
+      days_3: 25
+      days_1: 50
+      same_day: 75
+
+# Promotions Engine
+promotions:
+  types:
+    percentage_off:
+      max_discount: 50
+      stackable: false
+      
+    buy_x_get_y:
+      max_free_items: 3
+      same_item_only: false
+      
+    bundle:
+      min_items: 2
+      max_items: 10
+      
+    loyalty_exclusive:
+      tier_required: "gold"
+      stackable_with_sales: true
+
+  validation_rules:
+    - name: "margin_protection"
+      min_margin_percent: 5
+      
+    - name: "inventory_check"
+      min_stock_units: 100
+      
+    - name: "exclusion_check"
+      blocked_categories:
+        - gift_cards
+        - alcohol
+        - tobacco
+        
+    - name: "frequency_limit"
+      max_promotions_per_item_month: 2
+
+  display_requirements:
+    original_price: "required"
+    sale_price: "required"
+    savings_amount: "required"
+    valid_dates: "required"
+    terms_conditions: "required"
+
+# Loyalty Program
+loyalty:
+  tiers:
+    bronze:
+      spend_threshold_usd: 0
+      point_multiplier: 1.0
+      benefits:
+        - member_pricing
+        
+    silver:
+      spend_threshold_usd: 500
+      point_multiplier: 1.5
+      benefits:
+        - member_pricing
+        - free_shipping_threshold_usd: 35
+        
+    gold:
+      spend_threshold_usd: 1500
+      point_multiplier: 2.0
+      benefits:
+        - member_pricing
+        - free_shipping
+        - early_access_sales
+        - exclusive_promotions
+        
+    platinum:
+      spend_threshold_usd: 5000
+      point_multiplier: 3.0
+      benefits:
+        - all_gold_benefits
+        - concierge_service
+        - price_match_plus_5_percent
+
+  points:
+    earn_rate: 1  # points per dollar
+    redeem_rate: 100  # points per dollar discount
+    expiration_months: 12
+
+# Geographic Pricing
+geographic:
+  enabled: true
+  
+  factors:
+    - shipping_cost
+    - local_competition
+    - cost_of_living_index
+    - state_regulations
+    
+  restrictions:
+    max_variance_percent: 10
+    same_price_states:
+      - online_to_store_match
+      
+  compliance:
+    california:
+      automatic_renewal_disclosure: true
+      item_pricing_act: true
+    new_york:
+      unit_pricing: true
+    massachusetts:
+      item_pricing: true
+
+# AI Pricing Assistant
+ai_pricing:
+  enabled: true
+  
+  allowed_actions:
+    - price_recommendations
+    - demand_forecasting
+    - competitor_analysis
+    - promotion_optimization
+    - markdown_scheduling
+    
+  prohibited_actions:
+    - autonomous_price_changes
+    - customer_specific_pricing
+    - price_discrimination
+    
+  human_approval:
+    required_for:
+      - price_increases_above_percent: 10
+      - new_promotion_launch
+      - category_wide_changes
+      
+  monitoring:
+    alert_thresholds:
+      margin_erosion_percent: 5
+      competitor_undercut_percent: 15
+      unusual_demand_spike: 3x
+
+# Audit and Compliance
+audit:
+  price_change_log:
+    retain_years: 3
+    fields:
+      - timestamp
+      - item_sku
+      - old_price
+      - new_price
+      - reason_code
+      - approved_by
+      
+  promotion_audit:
+    pre_launch_review: true
+    post_promotion_analysis: true
+    
+  regulatory_compliance:
+    ftc_guidelines: true
+    map_enforcement: true
+    state_consumer_laws: true
+
+# Display and Communication
+display:
+  price_format:
+    currency_symbol: "$"
+    decimal_places: 2
+    thousands_separator: ","
+    
+  comparison_pricing:
+    "was_now": true
+    "percent_off": true
+    original_price_strikethrough: true
+    
+  disclaimers:
+    required_text: "Prices and availability subject to change"
+    promotion_terms: "See store for details"

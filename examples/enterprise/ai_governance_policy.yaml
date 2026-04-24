@@ -1,0 +1,1610 @@
+# ============================================================================
+# ENTERPRISE AI GOVERNANCE POLICY
+# ============================================================================
+# Organization: Global Financial Services Corp (GFSC)
+# Policy ID: AI-GOV-2024-001
+# Version: 15.3.2
+# Effective Date: 2024-01-01
+# Last Amended: 2024-12-01
+# Classification: CONFIDENTIAL - INTERNAL USE ONLY
+#
+# This document establishes the comprehensive governance framework for all
+# artificial intelligence and machine learning systems deployed within GFSC.
+# Compliance is mandatory for all business units, subsidiaries, and contractors.
+#
+# Regulatory References:
+#   - EU AI Act (2024)
+#   - SEC Rule 15c3-5 (Market Access)
+#   - FINRA Rule 3110 (Supervision)
+#   - OCC Bulletin 2021-31 (Model Risk Management)
+#   - GDPR Articles 13-15, 22 (Automated Decision Making)
+#   - CCPA Section 1798.185 (Profiling)
+#   - NIST AI RMF 1.0
+#   - ISO/IEC 42001:2023 (AI Management Systems)
+# ============================================================================
+
+metadata:
+  organization:
+    name: "Global Financial Services Corp"
+    legal_entity_id: "LEI-5493001KJTIIGC8Y1R12"
+    headquarters: "New York, NY"
+    jurisdictions:
+      - United_States
+      - European_Union
+      - United_Kingdom
+      - Singapore
+      - Hong_Kong
+      - Japan
+      - Australia
+  
+  policy:
+    id: "AI-GOV-2024-001"
+    version: "15.3.2"
+    classification: "confidential"
+    effective_date: "2024-01-01"
+    last_review: "2024-12-01"
+    next_review: "2025-06-01"
+    owner: "Chief AI Officer"
+    approvers:
+      - role: "Chief Executive Officer"
+        name: "Jane Smith"
+        approved_date: "2024-01-01"
+      - role: "Chief Risk Officer"
+        name: "Robert Chen"
+        approved_date: "2024-01-01"
+      - role: "Chief Compliance Officer"
+        name: "Maria Garcia"
+        approved_date: "2024-01-01"
+      - role: "Chief Technology Officer"
+        name: "David Kim"
+        approved_date: "2024-01-01"
+      - role: "General Counsel"
+        name: "Sarah Johnson"
+        approved_date: "2024-01-01"
+
+  document_history:
+    - version: "1.0.0"
+      date: "2022-01-15"
+      author: "AI Governance Team"
+      changes: "Initial policy creation"
+    - version: "5.0.0"
+      date: "2022-07-01"
+      author: "Compliance Team"
+      changes: "Added EU AI Act preparation requirements"
+    - version: "10.0.0"
+      date: "2023-06-15"
+      author: "Risk Management"
+      changes: "Enhanced model risk management framework"
+    - version: "15.0.0"
+      date: "2024-01-01"
+      author: "AI Ethics Board"
+      changes: "Major revision for EU AI Act compliance"
+    - version: "15.3.2"
+      date: "2024-12-01"
+      author: "Security Team"
+      changes: "Updated adversarial attack mitigations"
+
+# ============================================================================
+# SECTION 1: AI SYSTEM CLASSIFICATION
+# ============================================================================
+
+ai_classification:
+  risk_tiers:
+    prohibited:
+      description: "AI systems that pose unacceptable risks and are banned"
+      examples:
+        - social_scoring_by_governments
+        - real_time_biometric_identification_public_spaces
+        - manipulation_of_vulnerable_groups
+        - emotion_recognition_in_workplace
+        - predictive_policing_based_on_profiling
+      controls:
+        - absolute_ban
+        - no_exceptions
+        - immediate_termination_if_discovered
+        
+    high_risk:
+      description: "AI systems with significant impact on individuals"
+      examples:
+        - credit_scoring
+        - loan_underwriting
+        - insurance_pricing
+        - fraud_detection
+        - aml_transaction_monitoring
+        - kyc_verification
+        - algorithmic_trading
+        - portfolio_optimization
+        - recruitment_screening
+        - performance_evaluation
+      controls:
+        - mandatory_human_oversight
+        - comprehensive_documentation
+        - conformity_assessment
+        - registration_in_eu_database
+        - incident_reporting
+        - regular_audits
+        
+    limited_risk:
+      description: "AI systems with transparency obligations"
+      examples:
+        - chatbots
+        - customer_service_automation
+        - content_recommendation
+        - email_classification
+        - meeting_summarization
+      controls:
+        - transparency_disclosure
+        - opt_out_mechanism
+        - human_escalation_path
+        
+    minimal_risk:
+      description: "AI systems with minimal regulatory requirements"
+      examples:
+        - spam_filters
+        - search_optimization
+        - data_visualization
+        - code_completion
+      controls:
+        - best_practice_guidelines
+        - voluntary_codes_of_conduct
+
+  classification_criteria:
+    impact_assessment:
+      individual_impact:
+        - financial_impact_usd_threshold: 10000
+        - credit_score_impact: true
+        - employment_impact: true
+        - insurance_impact: true
+        - legal_rights_impact: true
+      
+      scale_of_impact:
+        - affected_individuals_threshold: 1000
+        - geographic_scope: ["single_country", "multi_country", "global"]
+        - vulnerable_populations: true
+      
+      reversibility:
+        - fully_reversible: "minimal_risk"
+        - partially_reversible: "limited_risk"
+        - irreversible: "high_risk"
+
+# ============================================================================
+# SECTION 2: MODEL DEVELOPMENT STANDARDS
+# ============================================================================
+
+model_development:
+  lifecycle_phases:
+    ideation:
+      requirements:
+        - business_case_documentation
+        - risk_preliminary_assessment
+        - stakeholder_identification
+        - resource_estimation
+        - timeline_projection
+      approvals:
+        - business_owner
+        - it_architecture_review_board
+        - ai_governance_committee
+      
+    design:
+      requirements:
+        - technical_specification
+        - data_requirements_document
+        - feature_engineering_plan
+        - model_architecture_selection
+        - fairness_criteria_definition
+        - explainability_requirements
+        - performance_metrics_definition
+      approvals:
+        - lead_data_scientist
+        - model_risk_management
+        - data_governance_team
+      
+    development:
+      requirements:
+        - version_controlled_code
+        - reproducible_experiments
+        - documentation_inline
+        - unit_test_coverage_minimum: 80
+        - integration_tests
+        - code_review_mandatory
+        - security_scan_passed
+      approvals:
+        - peer_review_minimum: 2
+        - security_team_sign_off
+      
+    validation:
+      requirements:
+        - out_of_sample_testing
+        - out_of_time_testing
+        - stress_testing
+        - sensitivity_analysis
+        - benchmark_comparison
+        - fairness_testing
+        - adversarial_testing
+        - explainability_validation
+      approvals:
+        - independent_validation_team
+        - model_risk_management
+        - compliance_review
+      
+    deployment:
+      requirements:
+        - deployment_runbook
+        - rollback_procedure
+        - monitoring_dashboard
+        - alerting_configuration
+        - incident_response_plan
+        - user_training_completed
+      approvals:
+        - production_readiness_review
+        - change_advisory_board
+        - business_owner_final_sign_off
+      
+    monitoring:
+      requirements:
+        - performance_tracking
+        - drift_detection
+        - fairness_monitoring
+        - incident_logging
+        - periodic_revalidation
+      frequencies:
+        performance_review: weekly
+        drift_assessment: monthly
+        full_revalidation: annually
+
+  coding_standards:
+    languages:
+      approved:
+        - Python: ">=3.9"
+        - R: ">=4.0"
+        - Scala: ">=2.13"
+        - Julia: ">=1.8"
+      restricted:
+        - C_Cpp: "requires_security_review"
+        - JavaScript: "frontend_only"
+      prohibited:
+        - Assembly: "never"
+        - Visual_Basic: "legacy_only"
+    
+    frameworks:
+      approved:
+        machine_learning:
+          - scikit-learn
+          - XGBoost
+          - LightGBM
+          - CatBoost
+        deep_learning:
+          - PyTorch
+          - TensorFlow
+          - JAX
+        mlops:
+          - MLflow
+          - Kubeflow
+          - Airflow
+      requires_approval:
+        - custom_frameworks
+        - experimental_libraries
+        - gpu_specific_code
+    
+    documentation:
+      required_sections:
+        - purpose_and_scope
+        - data_sources
+        - feature_definitions
+        - model_architecture
+        - training_procedure
+        - evaluation_metrics
+        - known_limitations
+        - maintenance_plan
+      format: "markdown"
+      location: "alongside_code"
+      review_frequency: "quarterly"
+
+  data_requirements:
+    quality_standards:
+      completeness:
+        minimum_threshold: 0.95
+        critical_fields_threshold: 0.99
+      accuracy:
+        validation_frequency: "daily"
+        reconciliation_required: true
+      timeliness:
+        max_latency_hours: 24
+        real_time_threshold_ms: 100
+      consistency:
+        cross_source_validation: true
+        schema_enforcement: "strict"
+    
+    governance:
+      lineage_tracking: mandatory
+      catalog_registration: mandatory
+      sensitivity_classification: mandatory
+      retention_policy_compliance: mandatory
+      pii_handling:
+        encryption_at_rest: true
+        encryption_in_transit: true
+        access_logging: true
+        anonymization_for_development: true
+    
+    prohibited_data:
+      - racial_ethnic_origin
+      - political_opinions
+      - religious_beliefs
+      - trade_union_membership
+      - genetic_data
+      - biometric_data_for_identification
+      - health_data_without_consent
+      - sexual_orientation
+      - criminal_convictions_without_legal_basis
+
+# ============================================================================
+# SECTION 3: FAIRNESS AND BIAS
+# ============================================================================
+
+fairness:
+  protected_characteristics:
+    us_regulations:
+      - race
+      - color
+      - religion
+      - national_origin
+      - sex
+      - age
+      - disability
+      - genetic_information
+      - veteran_status
+      - citizenship_status
+    
+    eu_regulations:
+      - racial_ethnic_origin
+      - political_opinions
+      - religious_philosophical_beliefs
+      - trade_union_membership
+      - genetic_data
+      - biometric_data
+      - health_data
+      - sex_life_sexual_orientation
+    
+    additional_company_policy:
+      - socioeconomic_status
+      - geographic_location
+      - education_level
+      - family_status
+
+  fairness_metrics:
+    group_fairness:
+      demographic_parity:
+        description: "Equal positive prediction rates across groups"
+        threshold: 0.80
+        measurement: "ratio_of_rates"
+      equalized_odds:
+        description: "Equal TPR and FPR across groups"
+        threshold: 0.80
+        measurement: "min_max_ratio"
+      equal_opportunity:
+        description: "Equal TPR across groups"
+        threshold: 0.80
+        measurement: "ratio_of_tpr"
+      predictive_parity:
+        description: "Equal PPV across groups"
+        threshold: 0.80
+        measurement: "ratio_of_ppv"
+    
+    individual_fairness:
+      consistency:
+        description: "Similar individuals receive similar predictions"
+        measurement: "local_neighborhood_consistency"
+      counterfactual_fairness:
+        description: "Prediction unchanged if protected attribute changed"
+        measurement: "counterfactual_analysis"
+    
+    calibration:
+      by_group:
+        description: "Predicted probabilities match actual rates by group"
+        threshold: 0.05
+        measurement: "calibration_error_difference"
+
+  bias_mitigation:
+    pre_processing:
+      techniques:
+        - reweighting
+        - resampling
+        - data_augmentation
+        - fair_representation_learning
+      when_to_apply: "data_preparation_phase"
+    
+    in_processing:
+      techniques:
+        - adversarial_debiasing
+        - prejudice_remover
+        - fairness_constraints
+        - multi_objective_optimization
+      when_to_apply: "model_training_phase"
+    
+    post_processing:
+      techniques:
+        - threshold_adjustment
+        - calibration
+        - reject_option_classification
+        - equalized_odds_post_processing
+      when_to_apply: "prediction_phase"
+
+  testing_requirements:
+    pre_deployment:
+      - disparate_impact_analysis
+      - adverse_impact_ratio_calculation
+      - intersectional_analysis
+      - proxy_variable_detection
+      - historical_bias_assessment
+    
+    ongoing_monitoring:
+      frequency: monthly
+      metrics:
+        - approval_rates_by_group
+        - error_rates_by_group
+        - score_distributions_by_group
+      alerting:
+        threshold_breach: immediate
+        trend_detection: weekly_report
+
+# ============================================================================
+# SECTION 4: EXPLAINABILITY AND TRANSPARENCY
+# ============================================================================
+
+explainability:
+  requirements_by_risk_tier:
+    high_risk:
+      global_explanations: mandatory
+      local_explanations: mandatory
+      feature_importance: mandatory
+      decision_rationale: mandatory
+      counterfactual_explanations: recommended
+      natural_language_explanations: mandatory_for_consumers
+    
+    limited_risk:
+      global_explanations: mandatory
+      local_explanations: on_request
+      feature_importance: mandatory
+      decision_rationale: recommended
+    
+    minimal_risk:
+      global_explanations: recommended
+      documentation: mandatory
+
+  explanation_methods:
+    model_agnostic:
+      - name: "SHAP"
+        description: "SHapley Additive exPlanations"
+        use_cases: ["feature_importance", "local_explanations"]
+        approved: true
+      - name: "LIME"
+        description: "Local Interpretable Model-agnostic Explanations"
+        use_cases: ["local_explanations"]
+        approved: true
+      - name: "Partial_Dependence_Plots"
+        use_cases: ["global_explanations", "feature_effects"]
+        approved: true
+      - name: "Accumulated_Local_Effects"
+        use_cases: ["feature_effects", "correlated_features"]
+        approved: true
+      - name: "Counterfactual_Explanations"
+        use_cases: ["recourse", "what_if_analysis"]
+        approved: true
+    
+    model_specific:
+      linear_models:
+        - coefficient_analysis
+        - odds_ratios
+      tree_models:
+        - feature_importance
+        - decision_paths
+        - tree_visualization
+      neural_networks:
+        - attention_weights
+        - gradient_based_attribution
+        - layer_wise_relevance_propagation
+        - concept_activation_vectors
+
+  transparency_disclosures:
+    consumer_facing:
+      required_elements:
+        - ai_system_involvement_disclosure
+        - key_factors_in_decision
+        - how_to_request_human_review
+        - how_to_dispute_decision
+        - data_used_in_decision
+        - right_to_explanation
+      format: "plain_language"
+      reading_level: "8th_grade"
+      languages: ["en", "es", "zh", "fr", "de", "ja", "ko", "pt"]
+    
+    regulatory:
+      required_elements:
+        - model_methodology
+        - training_data_summary
+        - validation_results
+        - performance_metrics
+        - fairness_assessment
+        - known_limitations
+        - ongoing_monitoring_plan
+      format: "technical_documentation"
+      retention: "model_lifetime_plus_7_years"
+
+# ============================================================================
+# SECTION 5: HUMAN OVERSIGHT
+# ============================================================================
+
+human_oversight:
+  decision_categories:
+    autonomous:
+      description: "AI makes decision without human intervention"
+      allowed_for:
+        - spam_filtering
+        - search_ranking
+        - content_recommendations_non_financial
+      prohibited_for:
+        - credit_decisions
+        - employment_decisions
+        - insurance_underwriting
+    
+    human_in_the_loop:
+      description: "Human must approve AI recommendation"
+      required_for:
+        - loan_approvals_above_threshold
+        - account_closures
+        - fraud_alerts_requiring_action
+        - employment_termination_recommendations
+      implementation:
+        - ai_provides_recommendation
+        - human_reviews_recommendation
+        - human_makes_final_decision
+        - human_can_override_with_documentation
+    
+    human_on_the_loop:
+      description: "Human monitors AI decisions, can intervene"
+      applicable_for:
+        - high_volume_low_risk_decisions
+        - real_time_trading_within_limits
+        - customer_service_responses
+      implementation:
+        - ai_makes_decision
+        - human_monitors_aggregate_metrics
+        - human_can_halt_system
+        - periodic_sampling_review
+    
+    human_in_command:
+      description: "Human controls overall system behavior"
+      applicable_for:
+        - all_high_risk_systems
+        - emergency_situations
+      implementation:
+        - kill_switch_available
+        - parameter_adjustment_capability
+        - model_rollback_capability
+
+  escalation_procedures:
+    triggers:
+      - model_confidence_below_threshold: 0.70
+      - anomaly_detected: true
+      - customer_request: true
+      - edge_case_identified: true
+      - potential_regulatory_issue: true
+      - fairness_concern: true
+    
+    escalation_levels:
+      level_1:
+        handler: "front_line_staff"
+        sla_minutes: 30
+        authority: "override_single_decision"
+      level_2:
+        handler: "supervisor"
+        sla_minutes: 60
+        authority: "override_multiple_decisions"
+      level_3:
+        handler: "department_head"
+        sla_hours: 4
+        authority: "halt_model_for_review"
+      level_4:
+        handler: "ai_governance_committee"
+        sla_hours: 24
+        authority: "decommission_model"
+    
+    documentation_requirements:
+      - timestamp
+      - decision_id
+      - original_ai_recommendation
+      - human_decision
+      - rationale_for_override
+      - reviewer_id
+      - supporting_evidence
+
+  override_tracking:
+    metrics:
+      - override_rate_by_model
+      - override_rate_by_reviewer
+      - override_reason_distribution
+      - override_outcome_tracking
+    analysis:
+      frequency: weekly
+      report_to:
+        - model_owner
+        - model_risk_management
+        - ai_governance_committee
+
+# ============================================================================
+# SECTION 6: SECURITY AND ADVERSARIAL ROBUSTNESS
+# ============================================================================
+
+security:
+  access_control:
+    model_access:
+      training:
+        - data_scientists: "read_write"
+        - ml_engineers: "read_write"
+        - reviewers: "read_only"
+      inference:
+        - applications: "api_access"
+        - end_users: "through_application_only"
+      administration:
+        - ml_ops: "deploy_monitor"
+        - security: "audit_access"
+    
+    data_access:
+      principle: "least_privilege"
+      authentication: "multi_factor_required"
+      authorization: "role_based"
+      audit_logging: "all_access_logged"
+      session_management:
+        timeout_minutes: 30
+        concurrent_sessions: 1
+    
+    api_security:
+      authentication: "oauth2_jwt"
+      rate_limiting:
+        requests_per_minute: 1000
+        burst_limit: 100
+      input_validation: "strict"
+      output_filtering: "sensitive_data_masked"
+
+  adversarial_defense:
+    attack_types:
+      evasion:
+        description: "Manipulating inputs to cause misclassification"
+        mitigations:
+          - input_validation
+          - adversarial_training
+          - defensive_distillation
+          - input_transformation
+        monitoring:
+          - anomaly_detection_on_inputs
+          - prediction_confidence_tracking
+      
+      poisoning:
+        description: "Corrupting training data"
+        mitigations:
+          - data_provenance_tracking
+          - outlier_detection_in_training
+          - robust_training_methods
+          - data_sanitization
+        monitoring:
+          - training_data_integrity_checks
+          - model_behavior_baseline_comparison
+      
+      extraction:
+        description: "Stealing model through queries"
+        mitigations:
+          - query_rate_limiting
+          - output_perturbation
+          - watermarking
+          - membership_inference_defense
+        monitoring:
+          - query_pattern_analysis
+          - suspicious_user_detection
+      
+      inference:
+        description: "Extracting training data information"
+        mitigations:
+          - differential_privacy
+          - output_rounding
+          - confidence_score_hiding
+        monitoring:
+          - membership_inference_testing
+          - attribute_inference_testing
+      
+      prompt_injection:
+        description: "Manipulating LLM behavior through crafted inputs"
+        mitigations:
+          - input_sanitization
+          - prompt_hardening
+          - output_filtering
+          - instruction_hierarchy
+        monitoring:
+          - prompt_anomaly_detection
+          - output_content_filtering
+
+    robustness_testing:
+      pre_deployment:
+        - fgsm_attack_testing
+        - pgd_attack_testing
+        - carlini_wagner_testing
+        - boundary_attack_testing
+        - autoattack_evaluation
+      
+      frequency:
+        critical_models: quarterly
+        high_risk_models: semi_annually
+        other_models: annually
+
+  incident_response:
+    severity_levels:
+      critical:
+        definition: "Active exploitation or major data breach"
+        response_time: "immediate"
+        notification: "executive_team"
+        actions:
+          - isolate_affected_systems
+          - activate_incident_response_team
+          - engage_external_forensics
+          - regulatory_notification_preparation
+      
+      high:
+        definition: "Vulnerability with potential for exploitation"
+        response_time: "4_hours"
+        notification: "security_team_lead"
+        actions:
+          - assess_impact_scope
+          - implement_temporary_mitigations
+          - plan_remediation
+      
+      medium:
+        definition: "Security weakness requiring attention"
+        response_time: "24_hours"
+        notification: "security_analyst"
+        actions:
+          - document_finding
+          - prioritize_remediation
+          - track_to_closure
+      
+      low:
+        definition: "Minor security improvement opportunity"
+        response_time: "1_week"
+        notification: "backlog_addition"
+
+# ============================================================================
+# SECTION 7: PERFORMANCE AND RELIABILITY
+# ============================================================================
+
+performance:
+  service_level_objectives:
+    availability:
+      target: 0.9999
+      measurement: "uptime_percentage"
+      exclusions:
+        - planned_maintenance
+        - force_majeure
+    
+    latency:
+      p50_ms: 50
+      p95_ms: 200
+      p99_ms: 500
+      measurement: "end_to_end_response_time"
+    
+    throughput:
+      minimum_rps: 10000
+      burst_capacity_rps: 50000
+    
+    error_rate:
+      target: 0.001
+      measurement: "failed_requests_percentage"
+
+  model_performance:
+    classification:
+      accuracy:
+        minimum: 0.85
+        target: 0.92
+      precision:
+        minimum: 0.80
+        target: 0.90
+      recall:
+        minimum: 0.80
+        target: 0.90
+      auc_roc:
+        minimum: 0.85
+        target: 0.95
+      f1_score:
+        minimum: 0.80
+        target: 0.90
+    
+    regression:
+      rmse:
+        maximum: "business_defined"
+      mae:
+        maximum: "business_defined"
+      r_squared:
+        minimum: 0.70
+        target: 0.85
+      mape:
+        maximum: 0.10
+    
+    ranking:
+      ndcg:
+        minimum: 0.70
+        target: 0.85
+      map:
+        minimum: 0.65
+        target: 0.80
+      mrr:
+        minimum: 0.60
+        target: 0.75
+
+  drift_detection:
+    data_drift:
+      methods:
+        - kolmogorov_smirnov_test
+        - population_stability_index
+        - jensen_shannon_divergence
+        - chi_squared_test
+      thresholds:
+        warning: 0.10
+        critical: 0.20
+      monitoring_frequency: daily
+    
+    concept_drift:
+      methods:
+        - performance_degradation_tracking
+        - adwin
+        - page_hinkley_test
+      thresholds:
+        warning: 0.05
+        critical: 0.10
+      monitoring_frequency: daily
+    
+    prediction_drift:
+      methods:
+        - prediction_distribution_analysis
+        - confidence_score_distribution
+      thresholds:
+        warning: 0.10
+        critical: 0.20
+      monitoring_frequency: daily
+
+  degradation_procedures:
+    graceful_degradation:
+      triggers:
+        - latency_exceeds_slo
+        - error_rate_exceeds_threshold
+        - dependency_failure
+      actions:
+        - enable_caching
+        - reduce_feature_set
+        - switch_to_simpler_model
+        - enable_circuit_breaker
+    
+    fallback_mechanisms:
+      primary_model_failure:
+        action: "switch_to_backup_model"
+        notification: "immediate"
+      backup_model_failure:
+        action: "switch_to_rules_based_system"
+        notification: "immediate"
+      complete_ai_failure:
+        action: "human_review_queue"
+        notification: "critical_alert"
+
+# ============================================================================
+# SECTION 8: COMPLIANCE AND AUDIT
+# ============================================================================
+
+compliance:
+  regulatory_mapping:
+    eu_ai_act:
+      high_risk_obligations:
+        - risk_management_system: "section_2"
+        - data_governance: "section_3"
+        - technical_documentation: "appendix_iv"
+        - record_keeping: "section_5"
+        - transparency: "section_4"
+        - human_oversight: "section_5"
+        - accuracy_robustness: "section_6"
+      conformity_assessment: "required_before_deployment"
+      eu_database_registration: "required"
+    
+    gdpr:
+      automated_decision_making:
+        article_22_compliance: true
+        right_to_explanation: true
+        right_to_human_review: true
+        special_category_data_handling: "prohibited_or_explicit_consent"
+      data_subject_rights:
+        - right_of_access
+        - right_to_rectification
+        - right_to_erasure
+        - right_to_restrict_processing
+        - right_to_data_portability
+        - right_to_object
+    
+    ccpa:
+      disclosure_requirements:
+        - categories_of_personal_information
+        - purposes_of_collection
+        - categories_of_third_parties
+        - right_to_know
+        - right_to_delete
+        - right_to_opt_out
+      profiling_disclosure: true
+    
+    sec_finra:
+      model_governance:
+        - sr_11_7_compliance: true
+        - model_inventory: true
+        - model_validation: true
+        - ongoing_monitoring: true
+      algorithmic_trading:
+        - rule_15c3_5_compliance: true
+        - pre_trade_risk_controls: true
+        - kill_switch: true
+        - audit_trail: true
+
+  audit_requirements:
+    internal_audit:
+      frequency: annual
+      scope:
+        - governance_framework_effectiveness
+        - policy_compliance
+        - control_testing
+        - risk_assessment_validation
+      independence: "report_to_audit_committee"
+    
+    external_audit:
+      frequency: annual
+      scope:
+        - model_validation
+        - fairness_assessment
+        - security_assessment
+        - regulatory_compliance
+      auditor_requirements:
+        - certified_public_accountant
+        - ai_audit_experience
+        - industry_expertise
+    
+    regulatory_examination:
+      preparation:
+        - documentation_current
+        - personnel_available
+        - evidence_readily_accessible
+        - issue_tracking_complete
+
+  record_keeping:
+    retention_periods:
+      model_artifacts:
+        duration_years: 7
+        includes:
+          - trained_models
+          - training_code
+          - hyperparameters
+          - training_data_snapshots
+      
+      predictions:
+        duration_years: 7
+        includes:
+          - input_data
+          - model_version
+          - prediction_output
+          - timestamp
+          - requesting_system
+      
+      decisions:
+        duration_years: 10
+        includes:
+          - model_prediction
+          - human_override
+          - final_decision
+          - rationale
+          - outcome
+      
+      governance:
+        duration_years: "permanent"
+        includes:
+          - policies
+          - risk_assessments
+          - validation_reports
+          - audit_reports
+          - incident_reports
+
+# ============================================================================
+# SECTION 9: THIRD PARTY AND VENDOR MANAGEMENT
+# ============================================================================
+
+third_party:
+  vendor_assessment:
+    pre_engagement:
+      due_diligence:
+        - financial_stability
+        - security_posture
+        - compliance_certifications
+        - reputation_review
+        - reference_checks
+      ai_specific:
+        - model_documentation
+        - training_data_practices
+        - fairness_testing
+        - explainability_capabilities
+        - security_measures
+    
+    risk_classification:
+      critical:
+        definition: "Core business function dependency"
+        assessment_frequency: annual
+        audit_rights: required
+        exit_strategy: required
+      high:
+        definition: "Significant operational dependency"
+        assessment_frequency: annual
+        audit_rights: required
+      medium:
+        definition: "Limited operational dependency"
+        assessment_frequency: biennial
+      low:
+        definition: "Minimal dependency"
+        assessment_frequency: triennial
+
+  contractual_requirements:
+    mandatory_clauses:
+      - data_protection_obligations
+      - security_requirements
+      - audit_rights
+      - incident_notification
+      - subcontractor_restrictions
+      - termination_and_transition
+      - liability_and_indemnification
+      - insurance_requirements
+    
+    ai_specific_clauses:
+      - model_documentation_provision
+      - training_data_disclosure
+      - fairness_testing_requirements
+      - explainability_requirements
+      - performance_slas
+      - model_update_notification
+      - intellectual_property_rights
+
+  ongoing_monitoring:
+    performance:
+      - sla_tracking
+      - incident_tracking
+      - complaint_tracking
+    compliance:
+      - certification_currency
+      - regulatory_action_monitoring
+      - news_monitoring
+    relationship:
+      - regular_business_reviews
+      - escalation_procedures
+      - continuous_improvement
+
+# ============================================================================
+# SECTION 10: LARGE LANGUAGE MODELS (LLMs)
+# ============================================================================
+
+llm_governance:
+  approved_models:
+    external:
+      - provider: "OpenAI"
+        models: ["gpt-4", "gpt-4-turbo"]
+        use_cases: ["internal_productivity", "code_assistance"]
+        data_classification_max: "internal"
+      - provider: "Anthropic"
+        models: ["claude-3-opus", "claude-3-sonnet"]
+        use_cases: ["internal_productivity", "document_analysis"]
+        data_classification_max: "internal"
+      - provider: "Google"
+        models: ["gemini-pro", "gemini-ultra"]
+        use_cases: ["internal_productivity"]
+        data_classification_max: "internal"
+    
+    internal:
+      - model: "GFSC-FinLLM-v2"
+        use_cases: ["financial_analysis", "regulatory_interpretation"]
+        data_classification_max: "confidential"
+      - model: "GFSC-CodeAssist"
+        use_cases: ["code_generation", "code_review"]
+        data_classification_max: "confidential"
+
+  prohibited_uses:
+    absolute:
+      - customer_pii_processing_external
+      - trading_decisions
+      - credit_decisions
+      - regulatory_filings_without_review
+      - legal_advice
+      - medical_advice
+    
+    requires_approval:
+      - customer_communication_drafting
+      - contract_analysis
+      - risk_assessment
+
+  guardrails:
+    input_controls:
+      - pii_detection_and_masking
+      - prompt_injection_detection
+      - jailbreak_attempt_detection
+      - sensitive_topic_filtering
+      - length_limits
+    
+    output_controls:
+      - pii_detection_in_output
+      - harmful_content_filtering
+      - hallucination_detection
+      - citation_verification
+      - confidence_scoring
+    
+    system_controls:
+      - rate_limiting
+      - cost_controls
+      - usage_logging
+      - model_version_pinning
+      - fallback_mechanisms
+
+  prompt_management:
+    requirements:
+      - version_control: mandatory
+      - testing_before_deployment: mandatory
+      - security_review: required_for_external
+      - documentation: mandatory
+    
+    prompt_library:
+      approval_process:
+        - author_submits
+        - peer_review
+        - security_review
+        - ai_governance_approval
+      maintenance:
+        - quarterly_review
+        - performance_tracking
+        - deprecation_process
+
+  monitoring:
+    usage_metrics:
+      - requests_per_user
+      - tokens_consumed
+      - cost_tracking
+      - response_time
+    
+    quality_metrics:
+      - user_feedback
+      - task_completion_rate
+      - hallucination_rate
+      - safety_filter_triggers
+    
+    security_metrics:
+      - injection_attempt_rate
+      - sensitive_data_exposure
+      - policy_violation_rate
+
+# ============================================================================
+# SECTION 11: INCIDENT MANAGEMENT
+# ============================================================================
+
+incident_management:
+  incident_classification:
+    ai_specific_incidents:
+      model_failure:
+        description: "Model produces incorrect or harmful outputs"
+        severity_assessment:
+          - customer_impact
+          - financial_impact
+          - regulatory_impact
+          - reputational_impact
+      
+      bias_incident:
+        description: "Evidence of discriminatory outcomes"
+        severity_assessment:
+          - affected_population_size
+          - protected_class_involvement
+          - regulatory_implications
+          - remediation_complexity
+      
+      security_incident:
+        description: "Adversarial attack or data breach"
+        severity_assessment:
+          - data_sensitivity
+          - attack_sophistication
+          - business_impact
+          - recovery_time
+      
+      drift_incident:
+        description: "Significant performance degradation"
+        severity_assessment:
+          - degradation_magnitude
+          - business_impact
+          - detection_delay
+          - root_cause_complexity
+
+  response_procedures:
+    immediate:
+      - assess_severity
+      - contain_impact
+      - preserve_evidence
+      - notify_stakeholders
+    
+    short_term:
+      - root_cause_analysis
+      - implement_fix
+      - verify_resolution
+      - update_documentation
+    
+    long_term:
+      - lessons_learned
+      - process_improvements
+      - training_updates
+      - policy_revisions
+
+  notification_requirements:
+    internal:
+      - ai_governance_committee: "all_incidents"
+      - executive_team: "high_and_critical"
+      - board_of_directors: "critical_only"
+    
+    external:
+      - regulators:
+          timeline: "as_required_by_regulation"
+          conditions: "material_incidents"
+      - affected_customers:
+          timeline: "72_hours"
+          conditions: "personal_data_impact"
+      - public:
+          timeline: "as_appropriate"
+          conditions: "significant_public_interest"
+
+# ============================================================================
+# SECTION 12: TRAINING AND AWARENESS
+# ============================================================================
+
+training:
+  mandatory_programs:
+    all_employees:
+      - name: "AI Awareness Fundamentals"
+        duration_hours: 2
+        frequency: annual
+        topics:
+          - what_is_ai
+          - ai_at_gfsc
+          - responsible_ai_principles
+          - reporting_concerns
+    
+    ai_practitioners:
+      - name: "Responsible AI Development"
+        duration_hours: 16
+        frequency: annual
+        topics:
+          - fairness_and_bias
+          - explainability
+          - security
+          - governance_framework
+          - documentation_standards
+      
+      - name: "Model Risk Management"
+        duration_hours: 8
+        frequency: annual
+        topics:
+          - regulatory_requirements
+          - validation_procedures
+          - monitoring_practices
+          - incident_response
+    
+    business_users:
+      - name: "AI for Business Decision Makers"
+        duration_hours: 4
+        frequency: annual
+        topics:
+          - ai_capabilities_limitations
+          - human_oversight_responsibilities
+          - escalation_procedures
+          - compliance_requirements
+    
+    executives:
+      - name: "AI Governance for Leaders"
+        duration_hours: 4
+        frequency: annual
+        topics:
+          - strategic_ai_risk
+          - regulatory_landscape
+          - governance_responsibilities
+          - board_reporting
+
+  role_specific:
+    data_scientists:
+      - advanced_fairness_testing
+      - adversarial_robustness
+      - model_documentation
+      - code_review_practices
+    
+    ml_engineers:
+      - secure_mlops
+      - monitoring_implementation
+      - incident_response
+      - deployment_best_practices
+    
+    model_validators:
+      - validation_methodology
+      - regulatory_requirements
+      - documentation_review
+      - challenge_function
+    
+    compliance_officers:
+      - ai_regulations
+      - audit_procedures
+      - risk_assessment
+      - reporting_requirements
+
+  effectiveness_measurement:
+    assessments:
+      - pre_training_baseline
+      - post_training_evaluation
+      - periodic_knowledge_checks
+    
+    metrics:
+      - completion_rates
+      - assessment_scores
+      - incident_reduction
+      - compliance_improvement
+
+# ============================================================================
+# SECTION 13: GOVERNANCE STRUCTURE
+# ============================================================================
+
+governance_structure:
+  ai_governance_committee:
+    charter: "Oversight of all AI activities within GFSC"
+    composition:
+      chair: "Chief AI Officer"
+      members:
+        - "Chief Risk Officer"
+        - "Chief Compliance Officer"
+        - "Chief Technology Officer"
+        - "Chief Data Officer"
+        - "General Counsel"
+        - "Business Unit Heads (rotating)"
+        - "External AI Ethics Advisor"
+    
+    responsibilities:
+      - policy_approval
+      - risk_oversight
+      - resource_allocation
+      - escalation_resolution
+      - regulatory_engagement
+      - strategic_direction
+    
+    meetings:
+      frequency: monthly
+      quorum: "majority_of_members"
+      minutes: "maintained_and_distributed"
+
+  ai_ethics_board:
+    charter: "Ethical oversight of AI applications"
+    composition:
+      chair: "External Ethics Expert"
+      members:
+        - "Chief AI Officer"
+        - "Chief Privacy Officer"
+        - "Academic AI Researcher"
+        - "Consumer Advocate"
+        - "Employee Representative"
+    
+    responsibilities:
+      - ethical_review_of_use_cases
+      - fairness_standards
+      - transparency_guidelines
+      - stakeholder_engagement
+      - public_reporting
+    
+    meetings:
+      frequency: quarterly
+      escalation: "to_board_of_directors"
+
+  model_risk_management:
+    charter: "Independent validation and oversight"
+    independence:
+      - separate_from_model_development
+      - reports_to_cro
+      - budget_independence
+    
+    responsibilities:
+      - validation_of_all_models
+      - ongoing_monitoring
+      - model_inventory_management
+      - regulatory_examination_support
+      - methodology_development
+
+  three_lines_of_defense:
+    first_line:
+      responsible: "business_units_and_developers"
+      activities:
+        - model_development
+        - testing
+        - documentation
+        - ongoing_monitoring
+    
+    second_line:
+      responsible: "risk_and_compliance"
+      activities:
+        - policy_development
+        - risk_assessment
+        - compliance_monitoring
+        - training
+    
+    third_line:
+      responsible: "internal_audit"
+      activities:
+        - independent_assurance
+        - control_testing
+        - governance_effectiveness
+        - board_reporting
+
+# ============================================================================
+# SECTION 14: POLICY EXCEPTIONS
+# ============================================================================
+
+exceptions:
+  exception_process:
+    request:
+      required_information:
+        - policy_section_affected
+        - business_justification
+        - risk_assessment
+        - proposed_compensating_controls
+        - duration_requested
+      submission_to: "ai_governance_committee"
+    
+    review:
+      reviewers:
+        - policy_owner
+        - risk_management
+        - compliance
+        - legal
+      timeline_days: 10
+    
+    approval:
+      authority:
+        temporary_30_days: "ai_governance_committee"
+        permanent: "executive_committee"
+      documentation: "maintained_in_exception_register"
+    
+    monitoring:
+      - compensating_control_effectiveness
+      - risk_indicator_tracking
+      - expiration_tracking
+      - renewal_review
+
+  exception_register:
+    required_fields:
+      - exception_id
+      - policy_section
+      - requestor
+      - approver
+      - approval_date
+      - expiration_date
+      - compensating_controls
+      - risk_acceptance
+      - status
+    
+    review:
+      frequency: quarterly
+      reviewer: "chief_risk_officer"
+      reporting: "to_ai_governance_committee"
+
+# ============================================================================
+# SECTION 15: POLICY MAINTENANCE
+# ============================================================================
+
+policy_maintenance:
+  review_cycle:
+    comprehensive_review:
+      frequency: annual
+      trigger: "scheduled"
+      scope: "entire_policy"
+    
+    targeted_review:
+      frequency: "as_needed"
+      triggers:
+        - regulatory_change
+        - significant_incident
+        - technology_change
+        - organizational_change
+      scope: "affected_sections"
+
+  change_management:
+    minor_changes:
+      definition: "clarifications_corrections_formatting"
+      approval: "policy_owner"
+      notification: "email_to_stakeholders"
+    
+    material_changes:
+      definition: "new_requirements_or_significant_modifications"
+      approval: "ai_governance_committee"
+      notification: "formal_communication_and_training"
+
+  version_control:
+    system: "document_management_system"
+    requirements:
+      - version_numbering: "major.minor.patch"
+      - change_log: "maintained"
+      - previous_versions: "archived"
+      - effective_dates: "clearly_stated"
+
+  communication:
+    new_policy:
+      - executive_announcement
+      - all_hands_meeting
+      - training_program
+      - acknowledgment_collection
+    
+    policy_updates:
+      - change_summary_distribution
+      - targeted_training
+      - updated_acknowledgment
+
+# ============================================================================
+# APPENDICES
+# ============================================================================
+
+appendices:
+  appendix_a_definitions:
+    ai_system: "Machine-based system that generates outputs such as predictions, recommendations, or decisions"
+    algorithm: "Set of rules followed by a computer to solve a problem"
+    bias: "Systematic error in AI systems that creates unfair outcomes"
+    drift: "Change in statistical properties of data or model over time"
+    explainability: "Ability to understand and explain AI decision-making"
+    fairness: "Absence of discriminatory outcomes in AI systems"
+    human_oversight: "Human involvement in AI system operation and decisions"
+    model: "Mathematical representation learned from data"
+    model_risk: "Potential for adverse consequences from model-based decisions"
+    validation: "Independent assessment of model soundness"
+
+  appendix_b_acronyms:
+    AI: "Artificial Intelligence"
+    AML: "Anti-Money Laundering"
+    API: "Application Programming Interface"
+    AUC: "Area Under the Curve"
+    CCPA: "California Consumer Privacy Act"
+    EU: "European Union"
+    GDPR: "General Data Protection Regulation"
+    KYC: "Know Your Customer"
+    LLM: "Large Language Model"
+    ML: "Machine Learning"
+    MLOps: "Machine Learning Operations"
+    PII: "Personally Identifiable Information"
+    ROC: "Receiver Operating Characteristic"
+    SEC: "Securities and Exchange Commission"
+    SLA: "Service Level Agreement"
+    SLO: "Service Level Objective"
+
+  appendix_c_related_policies:
+    - policy: "Information Security Policy"
+      reference: "SEC-POL-001"
+    - policy: "Data Governance Policy"
+      reference: "DG-POL-001"
+    - policy: "Model Risk Management Policy"
+      reference: "MRM-POL-001"
+    - policy: "Third Party Risk Management Policy"
+      reference: "TPRM-POL-001"
+    - policy: "Privacy Policy"
+      reference: "PRIV-POL-001"
+    - policy: "Code of Conduct"
+      reference: "HR-POL-001"
+
+  appendix_d_regulatory_reference:
+    eu_ai_act:
+      url: "https://eur-lex.europa.eu/eli/reg/2024/1689/oj"
+      effective_date: "2024-08-01"
+    gdpr:
+      url: "https://eur-lex.europa.eu/eli/reg/2016/679/oj"
+      effective_date: "2018-05-25"
+    ccpa:
+      url: "https://leginfo.legislature.ca.gov/faces/codes_displayText.xhtml?division=3.&part=4.&lawCode=CIV&title=1.81.5"
+      effective_date: "2020-01-01"
+
+# ============================================================================
+# END OF POLICY
+# ============================================================================

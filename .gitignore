@@ -1,0 +1,50 @@
+# Rust
+target/
+**/*.rs.bk
+*.pdb
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+dist/
+build/
+
+# Logs
+*.log
+
+# Environment
+.env
+.env.local
+
+# Testing
+coverage/
+*.profdata
+
+# Temporary files
+*.tmp
+.cache/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.python-version
+venv/
+env/
+
+# Documentation
+docs/_build/
+
+# Project specific
+fuzz/corpus/
+fuzz/artifacts/

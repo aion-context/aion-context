@@ -1,0 +1,20 @@
+[package]
+name = "aion-context-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.aion-context]
+path = ".."
+
+[[bin]]
+name = "fuzz_file_parser"
+path = "fuzz_targets/fuzz_file_parser.rs"
+test = false
+doc = false

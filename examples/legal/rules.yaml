@@ -1,0 +1,201 @@
+# Legal Document Processing Rules
+# Version: 1.2.0
+# Effective: 2024-02-01
+# Purpose: AI-assisted contract review and legal research
+
+metadata:
+  organization: "Sterling & Associates LLP"
+  practice_areas:
+    - "Corporate M&A"
+    - "Commercial Contracts"
+    - "Intellectual Property"
+  bar_jurisdictions:
+    - "New York"
+    - "Delaware"
+    - "California"
+  ethics_references:
+    - "ABA Model Rules of Professional Conduct"
+    - "NY Rules of Professional Conduct"
+
+# Document Classification
+document_classification:
+  contract_types:
+    high_risk:
+      - merger_agreement
+      - acquisition_agreement
+      - securities_purchase
+      - loan_agreement
+      - real_estate_purchase
+      review_level: "partner"
+      ai_assistance: "draft_only"
+      
+    medium_risk:
+      - service_agreement
+      - licensing_agreement
+      - employment_contract
+      - lease_agreement
+      review_level: "senior_associate"
+      ai_assistance: "review_and_suggest"
+      
+    standard:
+      - nda
+      - vendor_agreement
+      - consulting_agreement
+      review_level: "associate"
+      ai_assistance: "full_draft"
+
+  privilege_markers:
+    attorney_client:
+      patterns:
+        - "PRIVILEGED AND CONFIDENTIAL"
+        - "ATTORNEY-CLIENT PRIVILEGE"
+        - "ATTORNEY WORK PRODUCT"
+      handling: "restricted_access"
+      
+    work_product:
+      applies_to: "litigation_matters"
+      handling: "restricted_access"
+
+# AI Assistance Rules
+ai_assistance:
+  allowed_tasks:
+    - document_summarization
+    - clause_extraction
+    - precedent_search
+    - redline_comparison
+    - due_diligence_checklist
+    - risk_flagging
+    - citation_verification
+    
+  prohibited_tasks:
+    - legal_advice_generation
+    - final_document_approval
+    - client_communication_drafting
+    - settlement_recommendations
+    - litigation_strategy_decisions
+    
+  required_disclaimers:
+    - "AI-generated content requires attorney review"
+    - "Not a substitute for professional legal judgment"
+    - "Verify all citations and legal references"
+
+  human_review:
+    always_required_for:
+      - client_deliverables
+      - court_filings
+      - regulatory_submissions
+      - opinion_letters
+
+# Conflict Checking
+conflict_check:
+  mandatory_before:
+    - new_matter_opening
+    - new_client_engagement
+    - lateral_hire_onboarding
+    
+  check_against:
+    - current_clients
+    - former_clients_3_years
+    - adverse_parties
+    - related_entities
+    
+  escalation:
+    potential_conflict: "ethics_partner"
+    actual_conflict: "managing_partner"
+
+# Client Data Handling
+client_data:
+  classification_levels:
+    highly_confidential:
+      - merger_targets
+      - settlement_amounts
+      - litigation_strategy
+      encryption: "required"
+      access_logging: "comprehensive"
+      
+    confidential:
+      - contract_terms
+      - business_information
+      encryption: "required"
+      access_logging: "standard"
+      
+    internal:
+      - billing_records
+      - matter_status
+      encryption: "optional"
+      access_logging: "minimal"
+
+  retention:
+    active_matters: "indefinite"
+    closed_matters_years: 10
+    declined_matters_years: 3
+    
+  destruction:
+    method: "certified_shredding"
+    client_consent_required: true
+    documentation_required: true
+
+# Billing and Timekeeping
+billing:
+  time_entry_deadline_days: 3
+  minimum_increment_minutes: 6
+  
+  ai_time_tracking:
+    enabled: true
+    requires_attorney_approval: true
+    
+  prohibited_billing:
+    - ai_processing_time
+    - duplicate_research
+    - excessive_review_rounds
+
+# Jurisdictional Rules
+jurisdictions:
+  new_york:
+    rules: "NY Rules of Professional Conduct"
+    advertising_rules: "strict"
+    fee_agreements: "written_required"
+    
+  delaware:
+    rules: "Delaware Lawyers' RPC"
+    corporate_specialty: true
+    
+  california:
+    rules: "California RPC"
+    fee_arbitration: "mandatory"
+
+# Quality Control
+quality_control:
+  document_review:
+    four_eyes_principle: true
+    senior_review_threshold_usd: 100_000
+    partner_review_threshold_usd: 1_000_000
+    
+  citation_checking:
+    verify_all_cases: true
+    check_good_law: true
+    include_subsequent_history: true
+    
+  deadline_management:
+    statute_of_limitations_alerts: true
+    filing_deadline_buffer_days: 3
+    court_deadline_buffer_days: 2
+
+# Professional Responsibility
+ethics:
+  confidentiality:
+    model_rule: "1.6"
+    exceptions:
+      - prevent_death_or_harm
+      - prevent_client_crime
+      - court_ordered_disclosure
+      
+  competence:
+    model_rule: "1.1"
+    ai_technology_competence: "required"
+    continuing_education_hours: 24
+    
+  supervision:
+    model_rule: "5.1"
+    ai_output_supervision: "mandatory"
+    junior_attorney_supervision: "required"

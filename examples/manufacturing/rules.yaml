@@ -1,0 +1,240 @@
+# Manufacturing Quality Control Rules
+# Version: 3.1.0
+# Effective: 2024-01-15
+# Standards: ISO 9001:2015, ISO 13485 (Medical Devices), IATF 16949 (Automotive)
+
+metadata:
+  organization: "Precision Manufacturing Corp"
+  facility: "Plant A - Austin, TX"
+  certifications:
+    - "ISO 9001:2015"
+    - "ISO 13485:2016"
+    - "IATF 16949:2016"
+    - "AS9100D"
+  last_audit: "2023-11-15"
+  next_audit: "2024-11-15"
+
+# Product Lines
+product_lines:
+  medical_devices:
+    class: "II"
+    regulatory_body: "FDA"
+    standard: "ISO 13485"
+    traceability: "lot_and_serial"
+    
+  automotive:
+    tier: 1
+    customers: ["OEM_A", "OEM_B"]
+    standard: "IATF 16949"
+    traceability: "lot_based"
+    ppap_required: true
+    
+  aerospace:
+    standard: "AS9100D"
+    traceability: "serial_number"
+    fai_required: true
+
+# Inspection Rules
+inspection:
+  incoming:
+    sampling_plan: "ANSI/ASQ Z1.4"
+    aql_critical: 0.065
+    aql_major: 0.25
+    aql_minor: 1.0
+    skip_lot_allowed: false
+    
+  in_process:
+    frequency: "per_operation"
+    statistical_process_control: true
+    control_chart_type: "xbar_r"
+    sample_size: 5
+    
+  final:
+    inspection_level: "II"
+    critical_100_percent: true
+    documentation_required: true
+
+# Statistical Process Control
+spc:
+  enabled: true
+  
+  control_limits:
+    warning_sigma: 2
+    action_sigma: 3
+    
+  rules:
+    - name: "rule_1"
+      description: "One point beyond 3-sigma"
+      action: "stop_production"
+      
+    - name: "rule_2"
+      description: "8 points in a row on same side"
+      action: "investigate"
+      
+    - name: "rule_3"
+      description: "6 points trending"
+      action: "adjust_process"
+      
+    - name: "rule_4"
+      description: "2 of 3 points beyond 2-sigma"
+      action: "investigate"
+
+  reaction_plan:
+    out_of_control:
+      - stop_production
+      - quarantine_suspect_parts
+      - notify_quality_engineer
+      - root_cause_analysis
+      - corrective_action
+
+# Non-Conformance Handling
+non_conformance:
+  severity_levels:
+    critical:
+      description: "Safety or regulatory violation"
+      containment_hours: 4
+      disposition_authority: "quality_director"
+      customer_notification: true
+      
+    major:
+      description: "Does not meet specification"
+      containment_hours: 24
+      disposition_authority: "quality_manager"
+      customer_notification: "if_shipped"
+      
+    minor:
+      description: "Cosmetic or documentation"
+      containment_hours: 72
+      disposition_authority: "quality_engineer"
+      customer_notification: false
+
+  disposition_options:
+    - use_as_is
+    - rework
+    - repair
+    - scrap
+    - return_to_supplier
+
+  mrb_review:
+    required_for: ["critical", "major"]
+    members:
+      - quality_manager
+      - engineering_manager
+      - production_manager
+    documentation: "required"
+
+# Calibration
+calibration:
+  schedule:
+    critical_equipment_months: 6
+    standard_equipment_months: 12
+    
+  traceability: "NIST"
+  
+  out_of_tolerance:
+    action: "quarantine_and_evaluate"
+    impact_assessment: "required"
+    customer_notification: "if_impact_confirmed"
+
+# Supplier Quality
+supplier_quality:
+  approval_process:
+    - quality_system_audit
+    - first_article_inspection
+    - capability_study
+    - approval_committee_review
+    
+  monitoring:
+    scorecard_frequency: "monthly"
+    metrics:
+      - ppm_defect_rate
+      - on_time_delivery
+      - corrective_action_response
+      
+  risk_levels:
+    approved:
+      audit_frequency_years: 3
+      incoming_inspection: "reduced"
+    conditional:
+      audit_frequency_years: 1
+      incoming_inspection: "normal"
+    probation:
+      audit_frequency_months: 6
+      incoming_inspection: "tightened"
+
+# Traceability
+traceability:
+  requirements:
+    medical_device:
+      level: "unit"
+      retain_years: "device_life_plus_5"
+    automotive:
+      level: "lot"
+      retain_years: 15
+    aerospace:
+      level: "unit"
+      retain_years: "indefinite"
+      
+  data_captured:
+    - raw_material_lot
+    - supplier_certificate
+    - operator_id
+    - machine_id
+    - process_parameters
+    - inspection_results
+    - ship_date
+    - customer_po
+
+# AI Quality Assistance
+ai_assistance:
+  enabled: true
+  
+  allowed_functions:
+    - defect_detection_vision
+    - spc_chart_analysis
+    - trend_prediction
+    - root_cause_suggestion
+    - document_verification
+    
+  prohibited_functions:
+    - autonomous_disposition
+    - unsupervised_release
+    - specification_changes
+    
+  human_oversight:
+    always_required_for:
+      - product_release
+      - non_conformance_disposition
+      - process_changes
+      - specification_deviations
+
+# Document Control
+document_control:
+  approval_matrix:
+    work_instructions:
+      author: "engineer"
+      approver: "manager"
+    specifications:
+      author: "engineer"
+      approver: "director"
+    quality_manual:
+      author: "quality_manager"
+      approver: "plant_manager"
+      
+  revision_control:
+    method: "revision_letter"
+    obsolete_handling: "marked_and_retained"
+    distribution: "controlled"
+
+# Training
+training:
+  initial:
+    gmp_hours: 8
+    quality_system_hours: 4
+    job_specific: "varies"
+    
+  refresher_frequency_years: 1
+  
+  documentation:
+    records_retained_years: "employment_plus_3"
+    competency_assessment: "required"

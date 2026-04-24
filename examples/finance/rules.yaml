@@ -1,0 +1,171 @@
+# Trading Desk Compliance Rules
+# Version: 2.3.1
+# Effective: 2024-Q1
+# Regulatory References: SOX, Dodd-Frank, MiFID II, SEC Rule 15c3-5
+
+metadata:
+  organization: "Apex Capital Management"
+  department: "Equities Trading"
+  compliance_frameworks:
+    - "SOX"
+    - "Dodd-Frank"
+    - "MiFID II"
+    - "SEC"
+  last_review: "2024-01-15"
+  approved_by: "Chief Compliance Officer"
+
+# Trading Limits
+trading_limits:
+  per_trader:
+    max_single_order_usd: 5_000_000
+    max_daily_volume_usd: 50_000_000
+    max_position_size_usd: 25_000_000
+    max_loss_daily_usd: 500_000
+    
+  per_desk:
+    max_daily_volume_usd: 500_000_000
+    max_gross_exposure_usd: 1_000_000_000
+    max_net_exposure_usd: 200_000_000
+    var_limit_99_usd: 10_000_000
+
+  automatic_actions:
+    soft_limit_warning: 0.80  # 80% of limit
+    hard_limit_block: 1.00    # 100% blocks trading
+    breach_escalation: "risk_manager"
+
+# Pre-Trade Risk Checks
+pre_trade_checks:
+  enabled: true
+  max_latency_ms: 5
+  
+  validations:
+    - name: "fat_finger_check"
+      description: "Reject orders >10x average size"
+      threshold_multiplier: 10
+      
+    - name: "price_collar"
+      description: "Reject orders outside price bands"
+      band_percent: 5
+      
+    - name: "position_limit"
+      description: "Check aggregate position limits"
+      
+    - name: "restricted_list"
+      description: "Block trading in restricted securities"
+      
+    - name: "market_hours"
+      description: "Validate trading within allowed hours"
+
+# Restricted Securities
+restricted_list:
+  update_frequency: "daily"
+  sources:
+    - "compliance_team"
+    - "legal_department"
+    - "research_restricted"
+  
+  categories:
+    insider_trading_blackout:
+      duration_days: 14
+      applies_to: ["employees", "affiliates"]
+    
+    research_restricted:
+      duration_days: 30
+      reason: "pending_research_publication"
+    
+    regulatory_restricted:
+      permanent: true
+      reason: "sanctions_or_regulatory_order"
+
+# Order Handling
+order_handling:
+  best_execution:
+    enabled: true
+    venues_evaluated_minimum: 3
+    documentation_required: true
+    
+  order_types_allowed:
+    - market
+    - limit
+    - stop_loss
+    - iceberg
+    - twap
+    - vwap
+    
+  order_types_prohibited:
+    - spoofing_patterns
+    - layering_patterns
+
+# Audit Trail
+audit_trail:
+  capture_events:
+    - order_submission
+    - order_modification
+    - order_cancellation
+    - execution
+    - rejection
+    - risk_check_failure
+    
+  retention_years: 7
+  
+  required_fields:
+    - timestamp_nanoseconds
+    - trader_id
+    - desk_id
+    - security_identifier
+    - order_type
+    - quantity
+    - price
+    - side
+    - venue
+    - decision_rationale
+
+# AI/Algo Trading Constraints
+algo_constraints:
+  registration_required: true
+  testing_required:
+    backtest_months: 24
+    paper_trading_days: 30
+    
+  kill_switch:
+    enabled: true
+    triggers:
+      - loss_threshold_usd: 100_000
+      - error_rate_percent: 5
+      - latency_spike_ms: 100
+      
+  human_oversight:
+    real_time_monitoring: true
+    approval_for_new_strategies: true
+    daily_review_required: true
+
+# Reporting
+reporting:
+  internal:
+    daily_pnl: true
+    risk_metrics: true
+    limit_utilization: true
+    
+  regulatory:
+    cat_reporting: true  # Consolidated Audit Trail
+    form_13f: "quarterly"
+    mifid_transaction_reports: "t+1"
+
+# Segregation of Duties
+segregation:
+  front_office:
+    - trade_execution
+    - client_communication
+  middle_office:
+    - risk_monitoring
+    - limit_management
+  back_office:
+    - settlement
+    - reconciliation
+  compliance:
+    - surveillance
+    - reporting
+    
+  prohibited_combinations:
+    - ["trade_execution", "settlement"]
+    - ["risk_monitoring", "limit_override"]

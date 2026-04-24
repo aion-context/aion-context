@@ -1,0 +1,134 @@
+# HIPAA Compliant Patient Data Handling Rules
+# Version: 1.0.0
+# Effective: 2024-01-01
+# Regulatory Reference: 45 CFR Parts 160, 162, and 164
+
+metadata:
+  organization: "Acme Healthcare Systems"
+  department: "Clinical Informatics"
+  compliance_framework: "HIPAA"
+  last_review: "2024-01-01"
+  next_review: "2025-01-01"
+
+# Protected Health Information (PHI) Classification
+phi_classification:
+  identifiers:
+    - name
+    - address
+    - dates_except_year
+    - phone_numbers
+    - fax_numbers
+    - email_addresses
+    - social_security_number
+    - medical_record_number
+    - health_plan_beneficiary_number
+    - account_numbers
+    - certificate_license_numbers
+    - vehicle_identifiers
+    - device_identifiers
+    - web_urls
+    - ip_addresses
+    - biometric_identifiers
+    - photographs
+    - any_unique_identifier
+
+  sensitivity_levels:
+    high:
+      - social_security_number
+      - medical_record_number
+      - genetic_information
+      - mental_health_records
+      - substance_abuse_records
+    medium:
+      - diagnosis_codes
+      - treatment_records
+      - lab_results
+    low:
+      - appointment_dates
+      - provider_names
+
+# Access Control Rules
+access_control:
+  minimum_necessary:
+    enabled: true
+    description: "Limit PHI access to minimum necessary for job function"
+  
+  role_based_access:
+    physician:
+      - read_all_patient_records
+      - write_clinical_notes
+      - order_procedures
+    nurse:
+      - read_assigned_patient_records
+      - write_vitals
+      - administer_medications
+    billing:
+      - read_billing_codes
+      - read_insurance_info
+      - no_clinical_notes
+    researcher:
+      - read_deidentified_data_only
+    admin:
+      - manage_users
+      - audit_logs
+      - no_patient_data
+
+  authentication:
+    mfa_required: true
+    session_timeout_minutes: 15
+    password_policy:
+      min_length: 12
+      require_uppercase: true
+      require_lowercase: true
+      require_number: true
+      require_special: true
+      max_age_days: 90
+
+# Data Retention
+retention:
+  medical_records_years: 7
+  billing_records_years: 7
+  audit_logs_years: 6
+  
+  destruction_method: "certified_destruction"
+  destruction_certificate_required: true
+
+# Breach Notification
+breach_notification:
+  internal_report_hours: 24
+  hhs_report_days: 60
+  patient_notification_days: 60
+  media_notification_threshold: 500
+
+# AI System Constraints
+ai_constraints:
+  allowed_operations:
+    - summarize_deidentified_records
+    - suggest_diagnosis_codes
+    - flag_drug_interactions
+    - schedule_optimization
+  
+  prohibited_operations:
+    - autonomous_treatment_decisions
+    - insurance_denial_automation
+    - patient_identification_from_deidentified_data
+    - sharing_phi_with_external_systems
+  
+  human_oversight:
+    required_for:
+      - treatment_recommendations
+      - diagnosis_suggestions
+      - prescription_changes
+    
+  audit_requirements:
+    log_all_ai_queries: true
+    log_all_ai_responses: true
+    retain_audit_logs_years: 6
+
+# Emergency Access
+emergency_access:
+  break_glass_enabled: true
+  requires_justification: true
+  automatic_audit: true
+  supervisor_notification: true
+  max_duration_hours: 4
