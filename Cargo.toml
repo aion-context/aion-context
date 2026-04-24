@@ -143,3 +143,7 @@ harness = false
 [[bench]]
 name = "parser_benchmarks"
 harness = false
+
+[[example]]
+name = "federation_hw_attest"
+required-features = ["test-helpers"]
