@@ -163,6 +163,33 @@ pub enum AionError {
         reason: String,
     },
 
+    /// A commit was attempted by a signer the registry has no active
+    /// epoch for at the target version (issue #25). The write was
+    /// refused before any bytes were emitted.
+    #[error(
+        "Unauthorized signer: author {author} has no active registry epoch at version {version}"
+    )]
+    UnauthorizedSigner {
+        /// The author that attempted to sign.
+        author: AuthorId,
+        /// The version number the commit would have produced.
+        version: u64,
+    },
+
+    /// The supplied signing key's public half does not match the
+    /// operational key pinned in the registry for this author's active
+    /// epoch (issue #25). Most often means the caller used a rotated-
+    /// out key.
+    #[error(
+        "Key mismatch: author {author} signing key does not match registry epoch {epoch} operational key"
+    )]
+    KeyMismatch {
+        /// The author that attempted to sign.
+        author: AuthorId,
+        /// The registry epoch number that pinned a different public key.
+        epoch: u32,
+    },
+
     /// Decryption failed
     #[error("Decryption failed: {reason}")]
     DecryptionFailed {
