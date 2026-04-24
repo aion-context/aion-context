@@ -447,6 +447,17 @@ mod tests {
         assert!(m.verify_artifact("empty", &[]).is_ok());
     }
 
+    use crate::key_registry::KeyRegistry;
+
+    /// Minimal test fixture: pin `key` as the active op key for `author` at epoch 0.
+    fn reg_pinning(author: AuthorId, key: &SigningKey) -> KeyRegistry {
+        let mut reg = KeyRegistry::new();
+        let master = SigningKey::generate();
+        reg.register_author(author, master.verifying_key(), key.verifying_key(), 0)
+            .unwrap_or_else(|_| std::process::abort());
+        reg
+    }
+
     #[test]
     fn should_sign_and_verify_manifest() {
         let mut b = ArtifactManifestBuilder::new();
@@ -456,7 +467,8 @@ mod tests {
         let signer = AuthorId::new(42);
         let key = SigningKey::generate();
         let sig = sign_manifest(&m, signer, &key);
-        assert!(verify_manifest_signature(&m, &sig).is_ok());
+        let reg = reg_pinning(signer, &key);
+        assert!(verify_manifest_signature(&m, &sig, &reg, 1).is_ok());
     }
 
     #[test]
@@ -473,7 +485,8 @@ mod tests {
         let m2 = b2.build();
 
         let sig = sign_manifest(&m1, signer, &key);
-        assert!(verify_manifest_signature(&m2, &sig).is_err());
+        let reg = reg_pinning(signer, &key);
+        assert!(verify_manifest_signature(&m2, &sig, &reg, 1).is_err());
     }
 
     mod properties {
@@ -551,7 +564,8 @@ mod tests {
             let signer = AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1)));
             let key = SigningKey::generate();
             let sig = sign_manifest(&manifest, signer, &key);
-            assert!(verify_manifest_signature(&manifest, &sig).is_ok());
+            let reg = reg_pinning(signer, &key);
+            assert!(verify_manifest_signature(&manifest, &sig, &reg, 1).is_ok());
         }
 
         #[hegel::test]
@@ -571,7 +585,8 @@ mod tests {
             let signer = AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1)));
             let key = SigningKey::generate();
             let sig = sign_manifest(&m1, signer, &key);
-            assert!(verify_manifest_signature(&m2, &sig).is_err());
+            let reg = reg_pinning(signer, &key);
+            assert!(verify_manifest_signature(&m2, &sig, &reg, 1).is_err());
         }
 
         #[hegel::test]
@@ -584,7 +599,9 @@ mod tests {
             let key = SigningKey::generate();
             let mut sig = sign_manifest(&m, real_signer, &key);
             sig.author_id = fake_signer.as_u64();
-            assert!(verify_manifest_signature(&m, &sig).is_err());
+            // Pin the real_signer; tamper claims fake_signer; not in registry → reject.
+            let reg = reg_pinning(real_signer, &key);
+            assert!(verify_manifest_signature(&m, &sig, &reg, 1).is_err());
         }
 
         #[hegel::test]
@@ -601,7 +618,8 @@ mod tests {
             let key = SigningKey::generate();
             let raw_signature = key.sign(m.manifest_id());
             let entry = SignatureEntry::new(signer, key.verifying_key().to_bytes(), raw_signature);
-            assert!(verify_manifest_signature(&m, &entry).is_err());
+            let reg = reg_pinning(signer, &key);
+            assert!(verify_manifest_signature(&m, &entry, &reg, 1).is_err());
         }
 
         #[hegel::test]
@@ -668,9 +686,9 @@ mod tests {
             let attacker = SigningKey::generate();
             let sig = sign_manifest(&m, signer, &attacker);
             let at = tc.draw(gs::integers::<u64>().min_value(1).max_value(1 << 20));
-            // Raw-key verify would PASS (attacker's sig is bit-valid under attacker's pubkey)
-            // but registry-aware verify must REJECT.
-            assert!(verify_manifest_signature(&m, &sig).is_ok());
+            // With only the registry-aware API remaining (Phase E), this
+            // must reject because the attacker's pubkey does not match the
+            // pinned active epoch.
             assert!(verify_manifest_signature(&m, &sig, &reg, at).is_err());
         }
     }

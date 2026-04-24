@@ -283,6 +283,7 @@ pub fn commit_version(
     path: &Path,
     new_rules: &[u8],
     options: &CommitOptions<'_>,
+    registry: &crate::key_registry::KeyRegistry,
 ) -> Result<CommitResult> {
     let file_bytes = std::fs::read(path).map_err(|e| AionError::FileReadError {
         path: path.to_path_buf(),
@@ -291,7 +292,7 @@ pub fn commit_version(
     let parser = AionParser::new(&file_bytes)?;
     let header = parser.header();
 
-    verify_existing_signatures(&parser)?;
+    verify_existing_signatures(&parser, registry)?;
 
     let new_version = VersionNumber(header.current_version).next()?;
     let timestamp = options.timestamp.unwrap_or_else(current_timestamp_nanos);
@@ -1145,36 +1146,14 @@ pub fn show_version_history(path: &Path) -> Result<Vec<VersionInfo>> {
 /// }
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
-#[allow(deprecated)] // RFC-0034 Phase D: wraps raw-key verify_signature; Phase E adds a _with_registry variant
-pub fn show_signatures(path: &Path) -> Result<Vec<SignatureInfo>> {
-    show_signatures_inner(path, None)
-}
-
-/// Registry-aware sibling of [`show_signatures`] — Issue #17.
-///
 /// Each signature's `verified` field reflects the registry-aware
-/// verdict: both the embedded Ed25519 signature AND the signer's
-/// active epoch (at the signed version number) must match. A
-/// signer whose pinned active epoch does not match the embedded
-/// `public_key` is reported `verified = false` with an error
-/// reason even if the raw Ed25519 bytes would verify on their own.
-///
-/// # Errors
-///
-/// Same as [`show_signatures`] — structural / I/O failures surface
-/// as `Err(_)`; verification verdicts ride in the returned
-/// [`SignatureInfo`] entries.
-pub fn show_signatures_with_registry(
+/// verdict: both the Ed25519 signature AND the signer's active
+/// epoch (at the signed version number) must match. A signer
+/// whose pinned active epoch does not match the embedded
+/// `public_key` is reported `verified = false`.
+pub fn show_signatures(
     path: &Path,
     registry: &crate::key_registry::KeyRegistry,
-) -> Result<Vec<SignatureInfo>> {
-    show_signatures_inner(path, Some(registry))
-}
-
-#[allow(deprecated)] // internal helper delegates to verify_signature / verify_signature_with_registry
-fn show_signatures_inner(
-    path: &Path,
-    registry: Option<&crate::key_registry::KeyRegistry>,
 ) -> Result<Vec<SignatureInfo>> {
     // Load and parse the file
     let file_bytes = std::fs::read(path).map_err(|e| AionError::FileReadError {
@@ -1212,17 +1191,7 @@ fn show_signatures_inner(
             ),
         })?;
 
-        // Verify this signature (registry-aware when a registry was supplied).
-        let result = registry.map_or_else(
-            || verify_signature(version_entry, &sig_entry),
-            |reg| {
-                crate::signature_chain::verify_signature_with_registry(
-                    version_entry,
-                    &sig_entry,
-                    reg,
-                )
-            },
-        );
+        let result = crate::signature_chain::verify_signature(version_entry, &sig_entry, registry);
         let (verified, error) = match result {
             Ok(()) => (true, None),
             Err(e) => (false, Some(e.to_string())),
@@ -1265,7 +1234,10 @@ fn show_signatures_inner(
 /// println!("Current version: {}/{}", info.current_version, info.version_count);
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
-pub fn show_file_info(path: &Path) -> Result<FileInfo> {
+pub fn show_file_info(
+    path: &Path,
+    registry: &crate::key_registry::KeyRegistry,
+) -> Result<FileInfo> {
     // Load and parse the file
     let file_bytes = std::fs::read(path).map_err(|e| AionError::FileReadError {
         path: path.to_path_buf(),
@@ -1276,7 +1248,7 @@ pub fn show_file_info(path: &Path) -> Result<FileInfo> {
     let header = parser.header();
 
     let versions = show_version_history(path)?;
-    let signatures = show_signatures(path)?;
+    let signatures = show_signatures(path, registry)?;
 
     let current_version = versions.last().map_or(0, |v| v.version_number);
 
@@ -1421,9 +1393,25 @@ fn collect_existing_audit_plus_commit(
 mod tests {
     use super::*;
     use crate::audit::ActionCode;
+    use crate::key_registry::KeyRegistry;
     use crate::serializer::AionSerializer;
     use crate::signature_chain::{create_genesis_version, sign_version};
     use tempfile::TempDir;
+
+    /// Build a registry pinning `author_id` at epoch 0 with `signing_key`.
+    /// Used by every test that calls verify_file / commit_version / show_signatures.
+    fn test_reg(author_id: AuthorId, signing_key: &SigningKey) -> KeyRegistry {
+        let mut reg = KeyRegistry::new();
+        let master = SigningKey::generate();
+        reg.register_author(
+            author_id,
+            master.verifying_key(),
+            signing_key.verifying_key(),
+            0,
+        )
+        .unwrap_or_else(|_| std::process::abort());
+        reg
+    }
 
     /// Create a minimal valid AION file for testing
     fn create_test_file(signing_key: &SigningKey, author_id: AuthorId) -> Vec<u8> {
@@ -1496,7 +1484,13 @@ mod tests {
                 timestamp: Some(1700000001_000_000_000),
             };
 
-            let result = commit_version(&file_path, b"new rules content", &options).unwrap();
+            let result = commit_version(
+                &file_path,
+                b"new rules content",
+                &options,
+                &test_reg(author_id, &signing_key),
+            )
+            .unwrap();
 
             assert_eq!(result.version.as_u64(), 2);
             assert_ne!(result.rules_hash, [0u8; 32]);
@@ -1539,8 +1533,13 @@ mod tests {
                     timestamp: Some(1700000000_000_000_000 + i * 1_000_000_000),
                 };
 
-                let result =
-                    commit_version(&file_path, format!("rules v{i}").as_bytes(), &options).unwrap();
+                let result = commit_version(
+                    &file_path,
+                    format!("rules v{i}").as_bytes(),
+                    &options,
+                    &test_reg(author_id, &signing_key),
+                )
+                .unwrap();
                 assert_eq!(result.version.as_u64(), i);
             }
 
@@ -1574,7 +1573,13 @@ mod tests {
                 message: "New version",
                 timestamp: Some(1700000001_000_000_000),
             };
-            commit_version(&file_path, b"new rules", &options).unwrap();
+            commit_version(
+                &file_path,
+                b"new rules",
+                &options,
+                &test_reg(author_id, &signing_key),
+            )
+            .unwrap();
 
             // Verify original version is preserved
             let bytes = std::fs::read(&file_path).unwrap();
@@ -1608,7 +1613,13 @@ mod tests {
                 message: "Version 2",
                 timestamp: Some(1700000001_000_000_000),
             };
-            commit_version(&file_path, b"new rules", &options).unwrap();
+            commit_version(
+                &file_path,
+                b"new rules",
+                &options,
+                &test_reg(author_id, &signing_key),
+            )
+            .unwrap();
 
             // Verify version 2 links to genesis
             let bytes = std::fs::read(&file_path).unwrap();
@@ -1892,7 +1903,12 @@ mod tests {
                 timestamp: Some(1700000001_000_000_000),
             };
 
-            let result = commit_version(&file_path, b"new rules", &options);
+            let result = commit_version(
+                &file_path,
+                b"new rules",
+                &options,
+                &test_reg(author_id, &signing_key),
+            );
             assert!(result.is_err());
         }
     }
@@ -1912,7 +1928,7 @@ mod tests {
             std::fs::write(&file_path, &file_bytes).unwrap();
 
             // Verify the file
-            let report = verify_file(&file_path).unwrap();
+            let report = verify_file(&file_path, &test_reg(author_id, &signing_key)).unwrap();
 
             assert!(report.is_valid);
             assert!(report.structure_valid);
@@ -1941,7 +1957,13 @@ mod tests {
                 message: "Version 2",
                 timestamp: Some(1700000001_000_000_000),
             };
-            commit_version(&file_path, b"rules v2", &options).unwrap();
+            commit_version(
+                &file_path,
+                b"rules v2",
+                &options,
+                &test_reg(author_id, &signing_key),
+            )
+            .unwrap();
 
             let options = CommitOptions {
                 author_id,
@@ -1949,10 +1971,16 @@ mod tests {
                 message: "Version 3",
                 timestamp: Some(1700000002_000_000_000),
             };
-            commit_version(&file_path, b"rules v3", &options).unwrap();
+            commit_version(
+                &file_path,
+                b"rules v3",
+                &options,
+                &test_reg(author_id, &signing_key),
+            )
+            .unwrap();
 
             // Verify the file
-            let report = verify_file(&file_path).unwrap();
+            let report = verify_file(&file_path, &test_reg(author_id, &signing_key)).unwrap();
 
             assert!(report.is_valid);
             assert_eq!(report.version_count, 3);
@@ -1978,7 +2006,7 @@ mod tests {
             std::fs::write(&file_path, &file_bytes).unwrap();
 
             // Verify the file
-            let report = verify_file(&file_path).unwrap();
+            let report = verify_file(&file_path, &test_reg(author_id, &signing_key)).unwrap();
 
             assert!(!report.is_valid);
             assert!(report.structure_valid);
@@ -2004,7 +2032,13 @@ mod tests {
                 message: "Version 2",
                 timestamp: Some(1700000001_000_000_000),
             };
-            commit_version(&file_path, b"rules v2", &options).unwrap();
+            commit_version(
+                &file_path,
+                b"rules v2",
+                &options,
+                &test_reg(author_id, &signing_key),
+            )
+            .unwrap();
 
             // Corrupt the version chain (change second version number to 99)
             let mut file_bytes = std::fs::read(&file_path).unwrap();
@@ -2023,7 +2057,7 @@ mod tests {
             std::fs::write(&file_path, &file_bytes).unwrap();
 
             // Verify the file
-            let report = verify_file(&file_path).unwrap();
+            let report = verify_file(&file_path, &test_reg(author_id, &signing_key)).unwrap();
 
             // Tampering should cause overall validation failure
             assert!(!report.is_valid);
@@ -2050,7 +2084,7 @@ mod tests {
             std::fs::write(&file_path, &file_bytes).unwrap();
 
             // Verify the file
-            let report = verify_file(&file_path).unwrap();
+            let report = verify_file(&file_path, &test_reg(author_id, &signing_key)).unwrap();
 
             assert!(!report.is_valid);
             assert!(report.structure_valid);
@@ -2067,7 +2101,7 @@ mod tests {
             std::fs::write(&file_path, b"not a valid aion file").unwrap();
 
             // Verify the file
-            let result = verify_file(&file_path);
+            let result = verify_file(&file_path, &KeyRegistry::new());
 
             // Should fail to parse
             assert!(result.is_err());
@@ -2079,7 +2113,7 @@ mod tests {
             let file_path = temp_dir.path().join("nonexistent.aion");
 
             // Verify the file
-            let result = verify_file(&file_path);
+            let result = verify_file(&file_path, &KeyRegistry::new());
 
             // Should fail with file read error
             assert!(result.is_err());
@@ -2103,7 +2137,13 @@ mod tests {
                 message: "Version 2",
                 timestamp: Some(1700000001_000_000_000),
             };
-            commit_version(&file_path, b"rules v2", &options).unwrap();
+            commit_version(
+                &file_path,
+                b"rules v2",
+                &options,
+                &test_reg(author_id, &signing_key),
+            )
+            .unwrap();
 
             // Corrupt multiple things: hash, chain, and signature
             let mut file_bytes = std::fs::read(&file_path).unwrap();
@@ -2138,7 +2178,7 @@ mod tests {
             std::fs::write(&file_path, &file_bytes).unwrap();
 
             // Verify the file
-            let report = verify_file(&file_path).unwrap();
+            let report = verify_file(&file_path, &test_reg(author_id, &signing_key)).unwrap();
 
             // Multiple tampering should cause validation failure
             assert!(!report.is_valid);
@@ -2161,7 +2201,7 @@ mod tests {
             std::fs::write(&file_path, &file_bytes).unwrap();
 
             // Verify the file
-            let report = verify_file(&file_path).unwrap();
+            let report = verify_file(&file_path, &test_reg(author_id, &signing_key)).unwrap();
 
             // Valid file should have no errors
             assert!(report.errors.is_empty());
@@ -2229,7 +2269,13 @@ mod tests {
                 message: "Version 2",
                 timestamp: Some(1700000001_000_000_000),
             };
-            commit_version(&file_path, b"rules v2", &options).unwrap();
+            commit_version(
+                &file_path,
+                b"rules v2",
+                &options,
+                &test_reg(author_id, &signing_key),
+            )
+            .unwrap();
 
             let options = CommitOptions {
                 author_id,
@@ -2237,7 +2283,13 @@ mod tests {
                 message: "Version 3",
                 timestamp: Some(1700000002_000_000_000),
             };
-            commit_version(&file_path, b"rules v3", &options).unwrap();
+            commit_version(
+                &file_path,
+                b"rules v3",
+                &options,
+                &test_reg(author_id, &signing_key),
+            )
+            .unwrap();
 
             // Show version history
             let versions = show_version_history(&file_path).unwrap();
@@ -2268,7 +2320,8 @@ mod tests {
             std::fs::write(&file_path, &file_bytes).unwrap();
 
             // Show signatures
-            let signatures = show_signatures(&file_path).unwrap();
+            let signatures =
+                show_signatures(&file_path, &test_reg(author_id, &signing_key)).unwrap();
 
             assert_eq!(signatures.len(), 1);
             assert_eq!(signatures[0].version_number, 1);
@@ -2295,10 +2348,17 @@ mod tests {
                 message: "Version 2",
                 timestamp: Some(1700000001_000_000_000),
             };
-            commit_version(&file_path, b"rules v2", &options).unwrap();
+            commit_version(
+                &file_path,
+                b"rules v2",
+                &options,
+                &test_reg(author_id, &signing_key),
+            )
+            .unwrap();
 
             // Show signatures
-            let signatures = show_signatures(&file_path).unwrap();
+            let signatures =
+                show_signatures(&file_path, &test_reg(author_id, &signing_key)).unwrap();
 
             assert_eq!(signatures.len(), 2);
             assert!(signatures[0].verified);
@@ -2327,7 +2387,8 @@ mod tests {
             std::fs::write(&file_path, &file_bytes).unwrap();
 
             // Show signatures
-            let signatures = show_signatures(&file_path).unwrap();
+            let signatures =
+                show_signatures(&file_path, &test_reg(author_id, &signing_key)).unwrap();
 
             assert_eq!(signatures.len(), 1);
             assert!(!signatures[0].verified);
@@ -2352,10 +2413,16 @@ mod tests {
                 message: "Version 2",
                 timestamp: Some(1700000001_000_000_000),
             };
-            commit_version(&file_path, b"rules v2", &options).unwrap();
+            commit_version(
+                &file_path,
+                b"rules v2",
+                &options,
+                &test_reg(author_id, &signing_key),
+            )
+            .unwrap();
 
             // Show file info
-            let info = show_file_info(&file_path).unwrap();
+            let info = show_file_info(&file_path, &KeyRegistry::new()).unwrap();
 
             assert_eq!(info.version_count, 2);
             assert_eq!(info.current_version, 2);
@@ -2387,7 +2454,13 @@ mod tests {
                 timestamp: Some(1700000001_000_000_000),
             };
             let new_rules = b"these are the updated rules";
-            commit_version(&file_path, new_rules, &options).unwrap();
+            commit_version(
+                &file_path,
+                new_rules,
+                &options,
+                &test_reg(author_id, &signing_key),
+            )
+            .unwrap();
 
             // Show current rules should return the latest
             let rules = show_current_rules(&file_path).unwrap();
@@ -2405,8 +2478,8 @@ mod tests {
             // All operations should fail gracefully
             assert!(show_current_rules(&file_path).is_err());
             assert!(show_version_history(&file_path).is_err());
-            assert!(show_signatures(&file_path).is_err());
-            assert!(show_file_info(&file_path).is_err());
+            assert!(show_signatures(&file_path, &KeyRegistry::new()).is_err());
+            assert!(show_file_info(&file_path, &KeyRegistry::new()).is_err());
         }
 
         #[test]
@@ -2417,8 +2490,8 @@ mod tests {
             // All operations should fail with file read error
             assert!(show_current_rules(&file_path).is_err());
             assert!(show_version_history(&file_path).is_err());
-            assert!(show_signatures(&file_path).is_err());
-            assert!(show_file_info(&file_path).is_err());
+            assert!(show_signatures(&file_path, &KeyRegistry::new()).is_err());
+            assert!(show_file_info(&file_path, &KeyRegistry::new()).is_err());
         }
     }
 
@@ -2469,7 +2542,7 @@ mod tests {
             init_file(&file_path, rules, &options).unwrap();
 
             // Verify file structure
-            let info = show_file_info(&file_path).unwrap();
+            let info = show_file_info(&file_path, &KeyRegistry::new()).unwrap();
             assert_eq!(info.version_count, 1);
             assert_eq!(info.current_version, 1);
             assert_eq!(info.versions.len(), 1);
@@ -2576,7 +2649,7 @@ mod tests {
             init_file(&file_path, b"rules", &options).unwrap();
 
             // Verify signature is valid
-            let report = verify_file(&file_path).unwrap();
+            let report = verify_file(&file_path, &test_reg(author_id, &signing_key)).unwrap();
             assert!(report.is_valid);
             assert!(report.signatures_valid);
             assert!(report.errors.is_empty());

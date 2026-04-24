@@ -126,10 +126,11 @@ pub fn generate_compliance_report(
     path: &Path,
     framework: ComplianceFramework,
     format: ReportFormat,
+    registry: &crate::key_registry::KeyRegistry,
 ) -> Result<String> {
     // Gather file information
-    let file_info = show_file_info(path)?;
-    let verification = verify_file(path)?;
+    let file_info = show_file_info(path, registry)?;
+    let verification = verify_file(path, registry)?;
 
     // Build report structure
     let report = build_report(path, framework, &file_info, &verification)?;

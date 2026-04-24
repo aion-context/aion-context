@@ -360,9 +360,30 @@ pub fn wrap_manifest(
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
-#[allow(deprecated)] // RFC-0034 Phase D: tests exercise the deprecated raw-key verify_envelope contract
 mod tests {
     use super::*;
+    use crate::key_registry::KeyRegistry;
+
+    /// Build a registry pinning one signer at epoch 0 with `key` as its
+    /// operational pubkey. Master key is throwaway.
+    fn reg_pinning(signer: AuthorId, key: &SigningKey) -> KeyRegistry {
+        let mut reg = KeyRegistry::new();
+        let master = SigningKey::generate();
+        reg.register_author(signer, master.verifying_key(), key.verifying_key(), 0)
+            .unwrap_or_else(|_| std::process::abort());
+        reg
+    }
+
+    /// Build a registry pinning every `(signer, key)` pair at epoch 0.
+    fn reg_pinning_multi(pairs: &[(AuthorId, SigningKey)]) -> KeyRegistry {
+        let mut reg = KeyRegistry::new();
+        for (signer, key) in pairs {
+            let master = SigningKey::generate();
+            reg.register_author(*signer, master.verifying_key(), key.verifying_key(), 0)
+                .unwrap_or_else(|_| std::process::abort());
+        }
+        reg
+    }
 
     /// RFC-0023 Appendix vector: PAE("test", "hello").
     #[test]
@@ -395,49 +416,33 @@ mod tests {
     #[test]
     fn sign_verify_roundtrip() {
         let key = SigningKey::generate();
-        let verifying = key.verifying_key();
         let signer = AuthorId::new(7);
         let envelope = sign_envelope(b"hello world", "text/plain", signer, &key);
-        let verified = verify_envelope(&envelope, |keyid| {
-            if keyid == keyid_for(signer) {
-                Some(verifying)
-            } else {
-                None
-            }
-        })
-        .unwrap();
+        let reg = reg_pinning(signer, &key);
+        let verified = verify_envelope(&envelope, &reg, 1).unwrap();
         assert_eq!(verified, vec![keyid_for(signer)]);
     }
 
     #[test]
     fn tampered_payload_fails_verification() {
         let key = SigningKey::generate();
-        let verifying = key.verifying_key();
         let signer = AuthorId::new(7);
         let mut envelope = sign_envelope(b"hello", "text/plain", signer, &key);
         envelope.payload[0] ^= 0x01;
-        let result = verify_envelope(&envelope, |_| Some(verifying));
-        assert!(result.is_err());
+        let reg = reg_pinning(signer, &key);
+        assert!(verify_envelope(&envelope, &reg, 1).is_err());
     }
 
     #[test]
     fn multi_signature_all_verify() {
-        let s1 = (AuthorId::new(1), SigningKey::generate());
-        let s2 = (AuthorId::new(2), SigningKey::generate());
-        let k1 = s1.1.verifying_key();
-        let k2 = s2.1.verifying_key();
-        let mut env = sign_envelope(b"payload", "text/plain", s1.0, &s1.1);
-        add_signature(&mut env, s2.0, &s2.1);
-        let verified = verify_envelope(&env, |keyid| {
-            if keyid == keyid_for(s1.0) {
-                Some(k1)
-            } else if keyid == keyid_for(s2.0) {
-                Some(k2)
-            } else {
-                None
-            }
-        })
-        .unwrap();
+        let k1 = SigningKey::generate();
+        let k2 = SigningKey::generate();
+        let s1 = AuthorId::new(1);
+        let s2 = AuthorId::new(2);
+        let mut env = sign_envelope(b"payload", "text/plain", s1, &k1);
+        add_signature(&mut env, s2, &k2);
+        let reg = reg_pinning_multi(&[(s1, k1), (s2, k2)]);
+        let verified = verify_envelope(&env, &reg, 1).unwrap();
         assert_eq!(verified.len(), 2);
     }
 
@@ -448,7 +453,8 @@ mod tests {
             payload: b"x".to_vec(),
             signatures: Vec::new(),
         };
-        assert!(verify_envelope(&env, |_| None::<VerifyingKey>).is_err());
+        let reg = KeyRegistry::new();
+        assert!(verify_envelope(&env, &reg, 1).is_err());
     }
 
     #[test]
@@ -481,16 +487,9 @@ mod tests {
             let ptype = tc.draw(gs::text().min_size(1).max_size(64));
             let signer = AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1)));
             let key = SigningKey::generate();
-            let verifying = key.verifying_key();
             let env = sign_envelope(&payload, &ptype, signer, &key);
-            let verified = verify_envelope(&env, |keyid| {
-                if keyid == keyid_for(signer) {
-                    Some(verifying)
-                } else {
-                    None
-                }
-            })
-            .unwrap_or_else(|_| std::process::abort());
+            let reg = reg_pinning(signer, &key);
+            let verified = verify_envelope(&env, &reg, 1).unwrap_or_else(|_| std::process::abort());
             assert_eq!(verified.len(), 1);
         }
 
@@ -500,15 +499,14 @@ mod tests {
             let ptype = tc.draw(gs::text().min_size(1).max_size(64));
             let signer = AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1)));
             let key = SigningKey::generate();
-            let verifying = key.verifying_key();
             let mut env = sign_envelope(&payload, &ptype, signer, &key);
             let max_idx = env.payload.len().saturating_sub(1);
             let idx = tc.draw(gs::integers::<usize>().max_value(max_idx));
             if let Some(byte) = env.payload.get_mut(idx) {
                 *byte ^= 0x01;
             }
-            let result = verify_envelope(&env, |_| Some(verifying));
-            assert!(result.is_err());
+            let reg = reg_pinning(signer, &key);
+            assert!(verify_envelope(&env, &reg, 1).is_err());
         }
 
         #[hegel::test]
@@ -517,11 +515,10 @@ mod tests {
             let ptype = tc.draw(gs::text().min_size(1).max_size(64));
             let signer = AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1)));
             let key = SigningKey::generate();
-            let verifying = key.verifying_key();
             let mut env = sign_envelope(&payload, &ptype, signer, &key);
             env.payload_type.push('!');
-            let result = verify_envelope(&env, |_| Some(verifying));
-            assert!(result.is_err());
+            let reg = reg_pinning(signer, &key);
+            assert!(verify_envelope(&env, &reg, 1).is_err());
         }
 
         #[hegel::test]
@@ -532,8 +529,9 @@ mod tests {
             let real_key = SigningKey::generate();
             let fake_key = SigningKey::generate();
             let env = sign_envelope(&payload, &ptype, signer, &real_key);
-            let result = verify_envelope(&env, |_| Some(fake_key.verifying_key()));
-            assert!(result.is_err());
+            // Pin the WRONG key for the signer — registry check rejects.
+            let reg = reg_pinning(signer, &fake_key);
+            assert!(verify_envelope(&env, &reg, 1).is_err());
         }
 
         #[hegel::test]
@@ -563,13 +561,8 @@ mod tests {
             for (who, key) in signers.iter().skip(1) {
                 add_signature(&mut env, *who, key);
             }
-            // Build a lookup: keyid -> verifying key.
-            let lookup: std::collections::HashMap<String, VerifyingKey> = signers
-                .iter()
-                .map(|(who, key)| (keyid_for(*who), key.verifying_key()))
-                .collect();
-            let verified = verify_envelope(&env, |keyid| lookup.get(keyid).copied())
-                .unwrap_or_else(|_| std::process::abort());
+            let reg = reg_pinning_multi(&signers);
+            let verified = verify_envelope(&env, &reg, 1).unwrap_or_else(|_| std::process::abort());
             assert_eq!(verified.len(), n as usize);
         }
 
@@ -582,19 +575,12 @@ mod tests {
             let signer = AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1)));
             let extra = tc.draw(gs::integers::<usize>().min_value(1).max_value(4));
             let key = SigningKey::generate();
-            let verifying = key.verifying_key();
             let mut env = sign_envelope(&payload, &ptype, signer, &key);
             for _ in 0..extra {
                 add_signature(&mut env, signer, &key);
             }
-            let verified = verify_envelope(&env, |keyid| {
-                if keyid == keyid_for(signer) {
-                    Some(verifying)
-                } else {
-                    None
-                }
-            })
-            .unwrap_or_else(|_| std::process::abort());
+            let reg = reg_pinning(signer, &key);
+            let verified = verify_envelope(&env, &reg, 1).unwrap_or_else(|_| std::process::abort());
             assert_eq!(verified.len(), 1);
         }
 

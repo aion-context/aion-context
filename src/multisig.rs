@@ -293,10 +293,24 @@ mod tests {
     mod properties {
         use super::*;
         use crate::crypto::SigningKey;
+        use crate::key_registry::KeyRegistry;
         use crate::serializer::VersionEntry;
         use crate::signature_chain::sign_attestation;
         use crate::types::VersionNumber;
         use hegel::generators as gs;
+
+        /// Build a registry pinning every `(author, key)` pair, each
+        /// at epoch 0. Sufficient for the multisig property tests
+        /// that pin all authorized signers under their own keys.
+        fn pin_all(signers: &[(AuthorId, SigningKey)]) -> KeyRegistry {
+            let mut reg = KeyRegistry::new();
+            for (author, key) in signers {
+                let master = SigningKey::generate();
+                reg.register_author(*author, master.verifying_key(), key.verifying_key(), 0)
+                    .unwrap_or_else(|_| std::process::abort());
+            }
+            reg
+        }
 
         fn make_version(author: AuthorId) -> VersionEntry {
             VersionEntry::new(
@@ -341,7 +355,8 @@ mod tests {
                 .take(threshold as usize)
                 .map(|(who, key)| sign_attestation(&version, *who, key))
                 .collect();
-            let result = verify_multisig(&version, &attestations, &policy)
+            let reg = pin_all(&signers);
+            let result = verify_multisig(&version, &attestations, &policy, &reg)
                 .unwrap_or_else(|_| std::process::abort());
             assert!(result.threshold_met);
             assert_eq!(result.valid_count, threshold);
@@ -364,7 +379,8 @@ mod tests {
                 .take(short)
                 .map(|(who, key)| sign_attestation(&version, *who, key))
                 .collect();
-            let result = verify_multisig(&version, &attestations, &policy)
+            let reg = pin_all(&signers);
+            let result = verify_multisig(&version, &attestations, &policy, &reg)
                 .unwrap_or_else(|_| std::process::abort());
             assert!(!result.threshold_met);
         }
@@ -385,7 +401,8 @@ mod tests {
             let first = signers.first().unwrap_or_else(|| std::process::abort());
             let att = sign_attestation(&version, first.0, &first.1);
             let attestations: Vec<SignatureEntry> = (0..dups).map(|_| att).collect();
-            let result = verify_multisig(&version, &attestations, &policy)
+            let reg = pin_all(&signers);
+            let result = verify_multisig(&version, &attestations, &policy, &reg)
                 .unwrap_or_else(|_| std::process::abort());
             assert_eq!(result.valid_count, 1);
             assert!(!result.threshold_met);
@@ -401,7 +418,11 @@ mod tests {
             let sig = sign_attestation(&version, impostor, &key);
             let policy =
                 MultiSigPolicy::new(1, vec![author]).unwrap_or_else(|_| std::process::abort());
-            let result = verify_multisig(&version, &[sig], &policy)
+            // Pin the authorized author, not the impostor — verify still rejects the
+            // impostor because they're not in the policy's authorized_signers.
+            let author_key = SigningKey::generate();
+            let reg = pin_all(&[(author, author_key)]);
+            let result = verify_multisig(&version, &[sig], &policy, &reg)
                 .unwrap_or_else(|_| std::process::abort());
             assert_eq!(result.valid_count, 0);
             assert!(!result.threshold_met);
@@ -419,7 +440,11 @@ mod tests {
             sig.author_id = fake_signer.as_u64();
             let policy =
                 MultiSigPolicy::new(1, vec![fake_signer]).unwrap_or_else(|_| std::process::abort());
-            let result = verify_multisig(&version, &[sig], &policy)
+            // Pin the fake_signer — registry check detects the pubkey mismatch
+            // (sig was made by real_signer's key, pinned key is different).
+            let fake_key = SigningKey::generate();
+            let reg = pin_all(&[(fake_signer, fake_key)]);
+            let result = verify_multisig(&version, &[sig], &policy, &reg)
                 .unwrap_or_else(|_| std::process::abort());
             assert_eq!(result.valid_count, 0);
             assert!(!result.threshold_met);

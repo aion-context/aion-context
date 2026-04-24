@@ -391,46 +391,55 @@ mod tests {
         assert!(verify_binding_signature(&binding, &master.verifying_key()).is_err());
     }
 
+    use crate::key_registry::KeyRegistry;
+
+    /// Build a registry pinning `author` with `master` + `op.verifying_key()`
+    /// as the active epoch-0 operational key.
+    fn reg_pinning(author: AuthorId, master: &SigningKey, op: &SigningKey) -> KeyRegistry {
+        let mut reg = KeyRegistry::new();
+        reg.register_author(author, master.verifying_key(), op.verifying_key(), 0)
+            .unwrap_or_else(|_| std::process::abort());
+        reg
+    }
+
     #[test]
     fn accept_all_verifier_accepts() {
+        let author = AuthorId::new(1);
         let master = SigningKey::generate();
+        let op = SigningKey::generate();
         let binding = sign_binding(
-            AuthorId::new(1),
+            author,
             0,
-            [0xAAu8; 32],
+            op.verifying_key().to_bytes(),
             sample_evidence(),
             &master,
         );
-        assert!(verify_binding(
-            &binding,
-            &master.verifying_key(),
-            &AcceptAllEvidenceVerifier,
-        )
-        .is_ok());
+        let reg = reg_pinning(author, &master, &op);
+        assert!(verify_binding(&binding, &reg, 1, &AcceptAllEvidenceVerifier).is_ok());
     }
 
     #[test]
     fn reject_all_verifier_rejects_even_valid_signature() {
+        let author = AuthorId::new(1);
         let master = SigningKey::generate();
+        let op = SigningKey::generate();
         let binding = sign_binding(
-            AuthorId::new(1),
+            author,
             0,
-            [0xAAu8; 32],
+            op.verifying_key().to_bytes(),
             sample_evidence(),
             &master,
         );
-        assert!(verify_binding(
-            &binding,
-            &master.verifying_key(),
-            &RejectAllEvidenceVerifier,
-        )
-        .is_err());
+        let reg = reg_pinning(author, &master, &op);
+        assert!(verify_binding(&binding, &reg, 1, &RejectAllEvidenceVerifier).is_err());
     }
 
     #[test]
     fn pubkey_prefix_verifier_matches_prefix_only() {
+        let author = AuthorId::new(1);
         let master = SigningKey::generate();
-        let pk = [0xAAu8; 32];
+        let op = SigningKey::generate();
+        let pk = op.verifying_key().to_bytes();
         // Evidence that starts with the pubkey — prefix matches.
         let mut good_evidence = pk.to_vec();
         good_evidence.extend_from_slice(b"tail");
@@ -439,13 +448,9 @@ mod tests {
             nonce: [0u8; 32],
             evidence: good_evidence,
         };
-        let binding_good = sign_binding(AuthorId::new(1), 0, pk, good, &master);
-        assert!(verify_binding(
-            &binding_good,
-            &master.verifying_key(),
-            &PubkeyPrefixEvidenceVerifier,
-        )
-        .is_ok());
+        let binding_good = sign_binding(author, 0, pk, good, &master);
+        let reg = reg_pinning(author, &master, &op);
+        assert!(verify_binding(&binding_good, &reg, 1, &PubkeyPrefixEvidenceVerifier).is_ok());
 
         // Evidence that does not start with the pubkey.
         let bad = AttestationEvidence {
@@ -453,13 +458,8 @@ mod tests {
             nonce: [0u8; 32],
             evidence: vec![0u8; 64],
         };
-        let binding_bad = sign_binding(AuthorId::new(1), 0, pk, bad, &master);
-        assert!(verify_binding(
-            &binding_bad,
-            &master.verifying_key(),
-            &PubkeyPrefixEvidenceVerifier,
-        )
-        .is_err());
+        let binding_bad = sign_binding(author, 0, pk, bad, &master);
+        assert!(verify_binding(&binding_bad, &reg, 1, &PubkeyPrefixEvidenceVerifier).is_err());
     }
 
     #[test]
@@ -595,44 +595,45 @@ mod tests {
             assert!(verify_binding_signature(&b2, &master.verifying_key()).is_err());
         }
 
+        /// Build a registry pinning `author` at epoch 0 with `op.verifying_key()`.
+        /// Property tests that draw arbitrary `epoch` values are re-mapped to
+        /// epoch 0 for the binding; the registry still pins the right pubkey.
+        fn prop_reg(author: AuthorId, master: &SigningKey, op: &SigningKey) -> KeyRegistry {
+            let mut reg = KeyRegistry::new();
+            reg.register_author(author, master.verifying_key(), op.verifying_key(), 0)
+                .unwrap_or_else(|_| std::process::abort());
+            reg
+        }
+
         #[hegel::test]
         fn prop_verify_binding_accept_all_ok(tc: hegel::TestCase) {
             let master = SigningKey::generate();
+            let op = SigningKey::generate();
             let author = AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1)));
-            let epoch = tc.draw(gs::integers::<u32>());
-            let pubkey = draw_pubkey(&tc);
             let evidence = draw_evidence(&tc);
-            let binding = sign_binding(author, epoch, pubkey, evidence, &master);
-            verify_binding(
-                &binding,
-                &master.verifying_key(),
-                &AcceptAllEvidenceVerifier,
-            )
-            .unwrap_or_else(|_| std::process::abort());
+            let binding = sign_binding(author, 0, op.verifying_key().to_bytes(), evidence, &master);
+            let reg = prop_reg(author, &master, &op);
+            verify_binding(&binding, &reg, 1, &AcceptAllEvidenceVerifier)
+                .unwrap_or_else(|_| std::process::abort());
         }
 
         #[hegel::test]
         fn prop_verify_binding_reject_all_err(tc: hegel::TestCase) {
             let master = SigningKey::generate();
+            let op = SigningKey::generate();
             let author = AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1)));
-            let epoch = tc.draw(gs::integers::<u32>());
-            let pubkey = draw_pubkey(&tc);
             let evidence = draw_evidence(&tc);
-            let binding = sign_binding(author, epoch, pubkey, evidence, &master);
-            assert!(verify_binding(
-                &binding,
-                &master.verifying_key(),
-                &RejectAllEvidenceVerifier,
-            )
-            .is_err());
+            let binding = sign_binding(author, 0, op.verifying_key().to_bytes(), evidence, &master);
+            let reg = prop_reg(author, &master, &op);
+            assert!(verify_binding(&binding, &reg, 1, &RejectAllEvidenceVerifier).is_err());
         }
 
         #[hegel::test]
         fn prop_pubkey_prefix_verifier_matches_prefix(tc: hegel::TestCase) {
             let master = SigningKey::generate();
+            let op = SigningKey::generate();
             let author = AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1)));
-            let epoch = tc.draw(gs::integers::<u32>());
-            let pubkey = draw_pubkey(&tc);
+            let pubkey = op.verifying_key().to_bytes();
             let tail = tc.draw(gs::binary().max_size(128));
             let mut good_evidence_bytes = pubkey.to_vec();
             good_evidence_bytes.extend_from_slice(&tail);
@@ -641,13 +642,10 @@ mod tests {
                 nonce: [0u8; 32],
                 evidence: good_evidence_bytes,
             };
-            let binding_good = sign_binding(author, epoch, pubkey, good, &master);
-            verify_binding(
-                &binding_good,
-                &master.verifying_key(),
-                &PubkeyPrefixEvidenceVerifier,
-            )
-            .unwrap_or_else(|_| std::process::abort());
+            let binding_good = sign_binding(author, 0, pubkey, good, &master);
+            let reg = prop_reg(author, &master, &op);
+            verify_binding(&binding_good, &reg, 1, &PubkeyPrefixEvidenceVerifier)
+                .unwrap_or_else(|_| std::process::abort());
 
             // Build a distinct pubkey-shaped prefix and inject it.
             let mut bad_prefix = pubkey;
@@ -659,13 +657,8 @@ mod tests {
                 nonce: [0u8; 32],
                 evidence: bad_bytes,
             };
-            let binding_bad = sign_binding(author, epoch, pubkey, bad, &master);
-            assert!(verify_binding(
-                &binding_bad,
-                &master.verifying_key(),
-                &PubkeyPrefixEvidenceVerifier,
-            )
-            .is_err());
+            let binding_bad = sign_binding(author, 0, pubkey, bad, &master);
+            assert!(verify_binding(&binding_bad, &reg, 1, &PubkeyPrefixEvidenceVerifier).is_err());
         }
 
         #[hegel::test]
