@@ -51,9 +51,10 @@ use crate::aibom::{
 };
 use crate::crypto::{SigningKey, VerifyingKey};
 use crate::dsse::{self, DsseEnvelope, AION_MANIFEST_TYPE};
+use crate::key_registry::KeyRegistry;
 use crate::manifest::{
-    sign_manifest, verify_manifest_signature, ArtifactEntry, ArtifactManifest,
-    ArtifactManifestBuilder,
+    sign_manifest, verify_manifest_signature, verify_manifest_signature_with_registry,
+    ArtifactEntry, ArtifactManifest, ArtifactManifestBuilder,
 };
 use crate::oci::{
     build_aion_manifest, build_attestation_manifest, AionConfig, OciArtifactManifest,
@@ -548,6 +549,43 @@ impl SignedRelease {
         Ok(())
     }
 
+    /// Registry-aware release verification — RFC-0034 Phase C.
+    ///
+    /// Resolves every signing key from `registry` at `at_version`
+    /// instead of trusting a raw `VerifyingKey`. Specifically:
+    ///
+    /// - The manifest signature is checked via
+    ///   [`verify_manifest_signature_with_registry`].
+    /// - Every DSSE envelope (manifest / AIBOM / SLSA) has its
+    ///   signer keyids resolved through the registry via
+    ///   [`crate::dsse::verify_envelope_with_registry`].
+    /// - AIBOM / SLSA / OCI linkage checks are byte-equality and
+    ///   unchanged from [`Self::verify`].
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` on the same conditions as [`Self::verify`],
+    /// plus `AionError::SignatureVerificationFailed` if the
+    /// registry has no active epoch for the release's signer at
+    /// `at_version`, or if any DSSE signer's pinned key does not
+    /// match the signature's embedded public key.
+    pub fn verify_with_registry(&self, registry: &KeyRegistry, at_version: u64) -> Result<()> {
+        verify_manifest_signature_with_registry(
+            &self.manifest,
+            &self.manifest_signature,
+            registry,
+            at_version,
+        )?;
+        let _ = dsse::verify_envelope_with_registry(&self.manifest_dsse, registry, at_version)?;
+        let _ = dsse::verify_envelope_with_registry(&self.aibom_dsse, registry, at_version)?;
+        let _ = dsse::verify_envelope_with_registry(&self.slsa_dsse, registry, at_version)?;
+        self.verify_aibom_manifest_linkage()?;
+        verify_slsa_subjects_against_manifest(&self.slsa_statement, &self.manifest)?;
+        self.verify_oci_linkage()?;
+        self.verify_log_entry_kinds()?;
+        Ok(())
+    }
+
     /// Verify every DSSE envelope under the signer's pinned key.
     /// Any envelope carrying a keyid other than
     /// `dsse::keyid_for(self.signer)` is rejected before the
@@ -918,6 +956,53 @@ mod tests {
             assert_eq!(signed.log_entries[0].kind, LogEntryKind::ManifestSignature);
             assert_eq!(signed.log_entries[1].kind, LogEntryKind::DsseEnvelope);
             assert_eq!(signed.log_entries[2].kind, LogEntryKind::SlsaStatement);
+        }
+
+        #[hegel::test]
+        fn prop_release_registry_verify_accepts_pinned_release(tc: hegel::TestCase) {
+            use crate::key_registry::KeyRegistry;
+            let mut log = TransparencyLog::new();
+            let master = SigningKey::generate();
+            let op = SigningKey::generate();
+            let signer =
+                AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1).max_value(1 << 32)));
+            let mut reg = KeyRegistry::new();
+            reg.register_author(signer, master.verifying_key(), op.verifying_key(), 0)
+                .unwrap_or_else(|_| std::process::abort());
+            let signed = build_and_seal(&tc, &mut log, signer, &op);
+            let at = tc.draw(gs::integers::<u64>().min_value(1).max_value(1 << 20));
+            signed
+                .verify_with_registry(&reg, at)
+                .unwrap_or_else(|_| std::process::abort());
+        }
+
+        #[hegel::test]
+        fn prop_release_registry_verify_rejects_rotated_out_signer(tc: hegel::TestCase) {
+            use crate::key_registry::{sign_rotation_record, KeyRegistry};
+            let mut log = TransparencyLog::new();
+            let master = SigningKey::generate();
+            let op0 = SigningKey::generate();
+            let op1 = SigningKey::generate();
+            let signer =
+                AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1).max_value(1 << 32)));
+            let mut reg = KeyRegistry::new();
+            reg.register_author(signer, master.verifying_key(), op0.verifying_key(), 0)
+                .unwrap_or_else(|_| std::process::abort());
+            let effective = tc.draw(gs::integers::<u64>().min_value(1).max_value(1 << 20));
+            let rotation = sign_rotation_record(
+                signer,
+                0,
+                1,
+                op1.verifying_key().to_bytes(),
+                effective,
+                &master,
+            );
+            reg.apply_rotation(&rotation)
+                .unwrap_or_else(|_| std::process::abort());
+            // Seal the release with the rotated-OUT op0 key.
+            let signed = build_and_seal(&tc, &mut log, signer, &op0);
+            let v_after = effective.saturating_add(1);
+            assert!(signed.verify_with_registry(&reg, v_after).is_err());
         }
     }
 }

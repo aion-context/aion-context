@@ -10,7 +10,7 @@
 //! - **Backup Recovery**: 2-of-3 for key recovery scenarios
 
 use crate::serializer::{SignatureEntry, VersionEntry};
-use crate::signature_chain::verify_attestation;
+use crate::signature_chain::{verify_attestation, verify_attestation_with_registry};
 use crate::types::AuthorId;
 use crate::{AionError, Result};
 
@@ -171,6 +171,66 @@ pub fn verify_multisig(
             continue;
         }
         match verify_attestation(version, sig) {
+            Ok(()) => valid_signers.push(author),
+            Err(_) => invalid_signers.push(author),
+        }
+    }
+
+    let missing_signers: Vec<_> = policy
+        .authorized_signers
+        .iter()
+        .filter(|a| !seen.contains(a))
+        .copied()
+        .collect();
+
+    let valid_count = valid_signers.len() as u32;
+    let threshold_met = valid_count >= policy.threshold;
+
+    Ok(MultiSigVerification {
+        threshold_met,
+        valid_count,
+        required: policy.threshold,
+        valid_signers,
+        invalid_signers,
+        missing_signers,
+    })
+}
+
+/// Registry-aware multi-signature verification — RFC-0034 Phase C.
+///
+/// Like [`verify_multisig`], but each per-signer attestation is
+/// checked against `registry` at `version.version_number` via
+/// [`verify_attestation_with_registry`]. A signer whose pinned
+/// active epoch does not match the signature's embedded
+/// `public_key` is classified as `invalid_signers`, not
+/// `valid_signers`, regardless of whether the raw Ed25519 bytes
+/// would verify on their own.
+///
+/// # Errors
+///
+/// Same shape as [`verify_multisig`]; returns `Ok(_)` in the
+/// happy path and in every "signer rejected" path. Returns `Err`
+/// only for structural issues with the `version`/`signatures`
+/// slices themselves.
+pub fn verify_multisig_with_registry(
+    version: &VersionEntry,
+    signatures: &[SignatureEntry],
+    policy: &MultiSigPolicy,
+    registry: &crate::key_registry::KeyRegistry,
+) -> Result<MultiSigVerification> {
+    let mut valid_signers = Vec::new();
+    let mut invalid_signers = Vec::new();
+    let mut seen: std::collections::HashSet<AuthorId> = std::collections::HashSet::new();
+
+    for sig in signatures {
+        let author = AuthorId::new(sig.author_id);
+        if !policy.is_authorized(author) {
+            continue;
+        }
+        if !seen.insert(author) {
+            continue;
+        }
+        match verify_attestation_with_registry(version, sig, registry) {
             Ok(()) => valid_signers.push(author),
             Err(_) => invalid_signers.push(author),
         }

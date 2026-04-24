@@ -292,6 +292,50 @@ pub fn verify_binding<V: EvidenceVerifier>(
     verifier.verify(&binding.evidence, &binding.public_key)
 }
 
+/// Registry-aware binding verification — RFC-0034 Phase C.
+///
+/// Uses the registered master key for `binding.author_id` to check
+/// the master signature and cross-checks `binding.public_key` /
+/// `binding.epoch` against the active epoch for the author at
+/// `at_version`. Then runs the caller-supplied platform evidence
+/// verifier.
+///
+/// # Errors
+///
+/// Returns `AionError::SignatureVerificationFailed { version: at_version, author }`
+/// if the registry has no entry for the author, if there is no
+/// active epoch at `at_version`, or if the binding's public key /
+/// epoch do not match that active epoch. Returns the underlying
+/// error shape if the master signature fails, or if the platform
+/// verifier rejects.
+pub fn verify_binding_with_registry<V: EvidenceVerifier>(
+    binding: &KeyAttestationBinding,
+    registry: &crate::key_registry::KeyRegistry,
+    at_version: u64,
+    verifier: &V,
+) -> Result<()> {
+    let signer = binding.author_id;
+    let master = registry
+        .master_key(signer)
+        .ok_or(AionError::SignatureVerificationFailed {
+            version: at_version,
+            author: signer,
+        })?;
+    let epoch = registry.active_epoch_at(signer, at_version).ok_or(
+        AionError::SignatureVerificationFailed {
+            version: at_version,
+            author: signer,
+        },
+    )?;
+    if binding.public_key != epoch.public_key || binding.epoch != epoch.epoch {
+        return Err(AionError::SignatureVerificationFailed {
+            version: at_version,
+            author: signer,
+        });
+    }
+    verify_binding(binding, master, verifier)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
@@ -635,6 +679,60 @@ mod tests {
                 &PubkeyPrefixEvidenceVerifier,
             )
             .is_err());
+        }
+
+        #[hegel::test]
+        fn prop_registry_verify_accepts_freshly_bound_key(tc: hegel::TestCase) {
+            use crate::key_registry::KeyRegistry;
+            let author =
+                AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1).max_value(1 << 32)));
+            let master = SigningKey::generate();
+            let op = SigningKey::generate();
+            let mut reg = KeyRegistry::new();
+            reg.register_author(author, master.verifying_key(), op.verifying_key(), 0)
+                .unwrap_or_else(|_| std::process::abort());
+            let evidence = AttestationEvidence {
+                kind: AttestationKind::Tpm2Quote,
+                nonce: [0x42u8; 32],
+                evidence: tc.draw(gs::binary().max_size(128)),
+            };
+            let binding = sign_binding(author, 0, op.verifying_key().to_bytes(), evidence, &master);
+            let at = tc.draw(gs::integers::<u64>().min_value(1).max_value(1 << 20));
+            verify_binding_with_registry(&binding, &reg, at, &AcceptAllEvidenceVerifier)
+                .unwrap_or_else(|_| std::process::abort());
+        }
+
+        #[hegel::test]
+        fn prop_registry_verify_rejects_wrong_master_key(tc: hegel::TestCase) {
+            use crate::key_registry::KeyRegistry;
+            let author =
+                AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1).max_value(1 << 32)));
+            let real_master = SigningKey::generate();
+            let imposter_master = SigningKey::generate();
+            let op = SigningKey::generate();
+            // Registry is pinned to the REAL master.
+            let mut reg = KeyRegistry::new();
+            reg.register_author(author, real_master.verifying_key(), op.verifying_key(), 0)
+                .unwrap_or_else(|_| std::process::abort());
+            let evidence = AttestationEvidence {
+                kind: AttestationKind::Tpm2Quote,
+                nonce: [0x99u8; 32],
+                evidence: tc.draw(gs::binary().max_size(64)),
+            };
+            // Binding is signed by the IMPOSTER master — same operational
+            // key + epoch, but wrong signer.
+            let binding = sign_binding(
+                author,
+                0,
+                op.verifying_key().to_bytes(),
+                evidence,
+                &imposter_master,
+            );
+            let at = tc.draw(gs::integers::<u64>().min_value(1).max_value(1 << 20));
+            assert!(
+                verify_binding_with_registry(&binding, &reg, at, &AcceptAllEvidenceVerifier)
+                    .is_err()
+            );
         }
     }
 }
