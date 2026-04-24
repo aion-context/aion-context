@@ -83,7 +83,11 @@
 //! ```
 
 use crate::crypto::{SigningKey, VerifyingKey};
+use crate::key_registry::{
+    sign_revocation_record, sign_rotation_record, KeyRegistry, RevocationReason,
+};
 use crate::types::{AuthorId, FileId, VersionNumber};
+use crate::Result;
 use rand::SeedableRng;
 
 /// Test keypair with both signing and verifying keys
@@ -292,6 +296,236 @@ pub const fn test_timestamp_with_offset(offset_ms: u64) -> u64 {
     test_timestamp() + offset_ms
 }
 
+/// Convenience wrapper around [`KeyRegistry`] for test and
+/// downstream-test-helpers use — issue #18 / RFC-0034 Open Q1.
+///
+/// Every method is a small composition over the public
+/// [`KeyRegistry`] API (sign → apply) so test code can pin an
+/// author, rotate, and revoke without re-implementing the
+/// 5-line ceremony each time. `TestRegistry` is intentionally a
+/// newtype rather than a `&KeyRegistry` typedef — it is for
+/// tests only and must not leak into production code paths.
+///
+/// Gated behind `#[cfg(any(test, feature = "test-helpers"))]` via
+/// this module's top-level attribute.
+///
+/// # Example
+///
+/// ```
+/// # #[cfg(feature = "test-helpers")] {
+/// use aion_context::crypto::SigningKey;
+/// use aion_context::test_helpers::TestRegistry;
+///
+/// let master = SigningKey::generate();
+/// let op = SigningKey::generate();
+/// let mut reg = TestRegistry::new();
+/// let author = reg.pin(&master, &op).unwrap();
+/// // `reg.as_registry()` is the same `&KeyRegistry` every
+/// // `verify_*_with_registry` call on the crate expects.
+/// assert!(reg.as_registry().active_epoch_at(author, 1).is_some());
+/// # }
+/// ```
+#[derive(Debug, Default)]
+pub struct TestRegistry {
+    inner: KeyRegistry,
+    next_author_id: u64,
+}
+
+impl TestRegistry {
+    /// Construct an empty test registry. Author ids start at 1.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            inner: KeyRegistry::new(),
+            next_author_id: 1,
+        }
+    }
+
+    /// Pin a fresh author whose master and operational keys are
+    /// `master` and `operational`. A new sequential `AuthorId` is
+    /// allocated and returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if the registry rejects the registration
+    /// (should never happen under normal use since the id is
+    /// freshly allocated).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # #[cfg(feature = "test-helpers")] {
+    /// # use aion_context::crypto::SigningKey;
+    /// # use aion_context::test_helpers::TestRegistry;
+    /// let (m, op) = (SigningKey::generate(), SigningKey::generate());
+    /// let mut reg = TestRegistry::new();
+    /// let author = reg.pin(&m, &op).unwrap();
+    /// assert_ne!(author.as_u64(), 0);
+    /// # }
+    /// ```
+    pub fn pin(&mut self, master: &SigningKey, operational: &SigningKey) -> Result<AuthorId> {
+        let author = AuthorId::new(self.next_author_id);
+        self.next_author_id = self.next_author_id.saturating_add(1);
+        self.inner.register_author(
+            author,
+            master.verifying_key(),
+            operational.verifying_key(),
+            0,
+        )?;
+        Ok(author)
+    }
+
+    /// Pin an author with an explicit `id` (useful when the test
+    /// already has a fixed author id from a file header or test
+    /// vector).
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if the id is already registered.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # #[cfg(feature = "test-helpers")] {
+    /// # use aion_context::crypto::SigningKey;
+    /// # use aion_context::test_helpers::TestRegistry;
+    /// # use aion_context::types::AuthorId;
+    /// let (m, op) = (SigningKey::generate(), SigningKey::generate());
+    /// let mut reg = TestRegistry::new();
+    /// reg.pin_with_id(AuthorId::new(50001), &m, &op).unwrap();
+    /// # }
+    /// ```
+    pub fn pin_with_id(
+        &mut self,
+        author: AuthorId,
+        master: &SigningKey,
+        operational: &SigningKey,
+    ) -> Result<()> {
+        self.inner.register_author(
+            author,
+            master.verifying_key(),
+            operational.verifying_key(),
+            0,
+        )
+    }
+
+    /// Rotate `author`'s currently-active epoch to a new one
+    /// whose operational key is `new_op`, effective at
+    /// `effective_version`. Returns the new epoch number.
+    ///
+    /// Internally signs a rotation record with `master` and
+    /// applies it. Fails if the rotation preconditions don't hold
+    /// (e.g. non-monotonic version, wrong current epoch).
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if the author is unknown, no currently-active
+    /// epoch exists, or the master signature does not verify
+    /// (which can only happen if `master` is different from the
+    /// key the author was pinned with).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # #[cfg(feature = "test-helpers")] {
+    /// # use aion_context::crypto::SigningKey;
+    /// # use aion_context::test_helpers::TestRegistry;
+    /// let (master, op0, op1) = (
+    ///     SigningKey::generate(),
+    ///     SigningKey::generate(),
+    ///     SigningKey::generate(),
+    /// );
+    /// let mut reg = TestRegistry::new();
+    /// let author = reg.pin(&master, &op0).unwrap();
+    /// let new_epoch = reg.rotate(author, &master, &op1, 100).unwrap();
+    /// assert_eq!(new_epoch, 1);
+    /// # }
+    /// ```
+    pub fn rotate(
+        &mut self,
+        author: AuthorId,
+        master: &SigningKey,
+        new_op: &SigningKey,
+        effective_version: u64,
+    ) -> Result<u32> {
+        let current_epoch = self
+            .inner
+            .epochs_for(author)
+            .iter()
+            .filter(|e| e.is_valid_for(effective_version.saturating_sub(1)))
+            .map(|e| e.epoch)
+            .next_back()
+            .or_else(|| self.inner.epochs_for(author).iter().map(|e| e.epoch).max())
+            .unwrap_or(0);
+        let new_epoch = current_epoch.saturating_add(1);
+        let record = sign_rotation_record(
+            author,
+            current_epoch,
+            new_epoch,
+            new_op.verifying_key().to_bytes(),
+            effective_version,
+            master,
+        );
+        self.inner.apply_rotation(&record)?;
+        Ok(new_epoch)
+    }
+
+    /// Revoke `author`'s currently-active epoch as of
+    /// `effective_version`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if the author is unknown, no currently-active
+    /// epoch exists, or the master signature does not verify.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # #[cfg(feature = "test-helpers")] {
+    /// # use aion_context::crypto::SigningKey;
+    /// # use aion_context::test_helpers::TestRegistry;
+    /// # use aion_context::key_registry::RevocationReason;
+    /// let (master, op) = (SigningKey::generate(), SigningKey::generate());
+    /// let mut reg = TestRegistry::new();
+    /// let author = reg.pin(&master, &op).unwrap();
+    /// reg.revoke(author, &master, RevocationReason::Compromised, 50).unwrap();
+    /// assert!(reg.as_registry().active_epoch_at(author, 100).is_none());
+    /// # }
+    /// ```
+    pub fn revoke(
+        &mut self,
+        author: AuthorId,
+        master: &SigningKey,
+        reason: RevocationReason,
+        effective_version: u64,
+    ) -> Result<()> {
+        let active_epoch = self
+            .inner
+            .epochs_for(author)
+            .iter()
+            .find(|e| e.is_valid_for(effective_version.saturating_sub(1)))
+            .map(|e| e.epoch)
+            .or_else(|| self.inner.epochs_for(author).iter().map(|e| e.epoch).max())
+            .unwrap_or(0);
+        let record =
+            sign_revocation_record(author, active_epoch, reason, effective_version, master);
+        self.inner.apply_revocation(&record)
+    }
+
+    /// View the underlying [`KeyRegistry`] — pass this to any
+    /// `verify_*_with_registry` function.
+    #[must_use]
+    pub const fn as_registry(&self) -> &KeyRegistry {
+        &self.inner
+    }
+}
+
+impl AsRef<KeyRegistry> for TestRegistry {
+    fn as_ref(&self) -> &KeyRegistry {
+        &self.inner
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -432,6 +666,130 @@ mod tests {
         fn should_generate_timestamp_with_offset() {
             let ts = test_timestamp_with_offset(1000);
             assert_eq!(ts, 1_700_000_001_000);
+        }
+    }
+
+    #[allow(clippy::unwrap_used)]
+    mod test_registry {
+        use super::*;
+        use crate::signature_chain::{sign_version, verify_signature_with_registry};
+        use crate::types::VersionNumber;
+
+        fn make_version(author: AuthorId, version: u64) -> crate::serializer::VersionEntry {
+            crate::serializer::VersionEntry::new(
+                VersionNumber(version),
+                [0u8; 32],
+                [0xAB; 32],
+                author,
+                1_700_000_000_000_000_000,
+                0,
+                0,
+            )
+        }
+
+        #[test]
+        fn pin_returns_registry_with_active_epoch_for_new_author() {
+            let (master, op) = (SigningKey::generate(), SigningKey::generate());
+            let mut reg = TestRegistry::new();
+            let author = reg.pin(&master, &op).unwrap();
+            assert!(reg.as_registry().active_epoch_at(author, 1).is_some());
+        }
+
+        #[test]
+        fn pin_allocates_sequential_ids() {
+            let mut reg = TestRegistry::new();
+            let (ma, opa) = (SigningKey::generate(), SigningKey::generate());
+            let (mb, opb) = (SigningKey::generate(), SigningKey::generate());
+            let a = reg.pin(&ma, &opa).unwrap();
+            let b = reg.pin(&mb, &opb).unwrap();
+            assert_ne!(a, b);
+            assert_eq!(b.as_u64(), a.as_u64().saturating_add(1));
+        }
+
+        #[test]
+        fn pin_with_id_uses_the_supplied_id() {
+            let (m, op) = (SigningKey::generate(), SigningKey::generate());
+            let mut reg = TestRegistry::new();
+            let chosen = AuthorId::new(50_001);
+            reg.pin_with_id(chosen, &m, &op).unwrap();
+            assert!(reg.as_registry().active_epoch_at(chosen, 1).is_some());
+        }
+
+        #[test]
+        fn pinned_registry_accepts_signature_made_with_the_pinned_key() {
+            let (master, op) = (SigningKey::generate(), SigningKey::generate());
+            let mut reg = TestRegistry::new();
+            let author = reg.pin(&master, &op).unwrap();
+            let version = make_version(author, 7);
+            let sig = sign_version(&version, &op);
+            verify_signature_with_registry(&version, &sig, reg.as_registry()).unwrap();
+        }
+
+        #[test]
+        fn rotate_rejects_signatures_made_with_the_rotated_out_key() {
+            let (master, op0, op1) = (
+                SigningKey::generate(),
+                SigningKey::generate(),
+                SigningKey::generate(),
+            );
+            let mut reg = TestRegistry::new();
+            let author = reg.pin(&master, &op0).unwrap();
+            let new_epoch = reg.rotate(author, &master, &op1, 100).unwrap();
+            assert_eq!(new_epoch, 1);
+            // A signature at version 200 signed by the rotated-out op0 must be rejected.
+            let version = make_version(author, 200);
+            let sig = sign_version(&version, &op0);
+            assert!(verify_signature_with_registry(&version, &sig, reg.as_registry()).is_err());
+        }
+
+        #[test]
+        fn rotate_accepts_signatures_made_with_the_new_key_after_effective_version() {
+            let (master, op0, op1) = (
+                SigningKey::generate(),
+                SigningKey::generate(),
+                SigningKey::generate(),
+            );
+            let mut reg = TestRegistry::new();
+            let author = reg.pin(&master, &op0).unwrap();
+            reg.rotate(author, &master, &op1, 100).unwrap();
+            let version = make_version(author, 150);
+            let sig = sign_version(&version, &op1);
+            verify_signature_with_registry(&version, &sig, reg.as_registry()).unwrap();
+        }
+
+        #[test]
+        fn revoke_rejects_signatures_after_effective_version() {
+            let (master, op) = (SigningKey::generate(), SigningKey::generate());
+            let mut reg = TestRegistry::new();
+            let author = reg.pin(&master, &op).unwrap();
+            reg.revoke(author, &master, RevocationReason::Compromised, 50)
+                .unwrap();
+            let version = make_version(author, 100);
+            let sig = sign_version(&version, &op);
+            assert!(verify_signature_with_registry(&version, &sig, reg.as_registry()).is_err());
+        }
+
+        #[test]
+        fn revoke_preserves_signatures_before_effective_version() {
+            let (master, op) = (SigningKey::generate(), SigningKey::generate());
+            let mut reg = TestRegistry::new();
+            let author = reg.pin(&master, &op).unwrap();
+            reg.revoke(author, &master, RevocationReason::Superseded, 100)
+                .unwrap();
+            // A signature at version 50 (before revocation) is still valid.
+            let version = make_version(author, 50);
+            let sig = sign_version(&version, &op);
+            verify_signature_with_registry(&version, &sig, reg.as_registry()).unwrap();
+        }
+
+        #[test]
+        fn as_ref_matches_as_registry() {
+            let (m, op) = (SigningKey::generate(), SigningKey::generate());
+            let mut reg = TestRegistry::new();
+            reg.pin(&m, &op).unwrap();
+            let via_method = reg.as_registry() as *const KeyRegistry;
+            let via_asref: *const KeyRegistry = reg.as_ref();
+            assert_eq!(via_method, via_asref);
         }
     }
 }
