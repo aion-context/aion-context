@@ -1162,4 +1162,34 @@ mod tests {
             assert_eq!(hash1, hash2);
         }
     }
+
+    mod properties {
+        use super::*;
+        use hegel::generators as gs;
+
+        #[hegel::test]
+        fn prop_parser_new_never_panics_on_arbitrary_bytes(tc: hegel::TestCase) {
+            let bytes = tc.draw(gs::binary().max_size(4096));
+            let _ = AionParser::new(&bytes);
+        }
+
+        #[hegel::test]
+        fn prop_parser_accessors_never_panic_when_construction_succeeds(tc: hegel::TestCase) {
+            let bytes = tc.draw(gs::binary().max_size(4096));
+            if let Ok(parser) = AionParser::new(&bytes) {
+                let _ = parser.header().is_valid_magic();
+                let _ = parser.header().is_encrypted();
+                let _ = parser.file_size();
+                let _ = parser.string_table_bytes();
+                let _ = parser.integrity_hash();
+            }
+        }
+
+        #[hegel::test]
+        fn prop_small_truncated_inputs_are_rejected_not_panicked(tc: hegel::TestCase) {
+            let len = tc.draw(gs::integers::<usize>().max_value(HEADER_SIZE - 1));
+            let bytes = tc.draw(gs::binary().min_size(len).max_size(len));
+            assert!(AionParser::new(&bytes).is_err());
+        }
+    }
 }

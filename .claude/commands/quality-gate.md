@@ -18,18 +18,24 @@ as "not run". For each step, record exit code and a one-line summary.
 4. **Function length** — run `/tiger-audit` logic: flag any function
    body > 60 lines. Compare against baseline's `max_fn`; increase is
    hard. (hard on increase)
-5. **Tests** — `cargo test` (hard)
-6. **Supply chain** — `cargo deny check` (hard on any error) and
+5. **Tests** — `cargo test` (hard). This runs both example-based
+   tests and Hegel property tests (`#[hegel::test]`). A property
+   failure prints a shrunk counterexample; treat that as a hard
+   failure and do not move on.
+6. **Hegel coverage** — run `/hegel-audit` logic: every Tier-1 row in
+   `.claude/rules/property-testing.md` must have at least one
+   `#[hegel::test]` matching it. Under-coverage is hard. (hard)
+7. **Supply chain** — `cargo deny check` (hard on any error) and
    `cargo audit` (hard on new vulnerabilities not in
    `deny.toml [advisories] ignore`). Skip with WARN if either tool is
    not installed. (hard)
-7. **Doc build** — `cargo doc --no-deps --quiet` (soft)
-8. **Drift** — compare `bash .claude/drift/generate.sh` output to
+8. **Doc build** — `cargo doc --no-deps --quiet` (soft)
+9. **Drift** — compare `bash .claude/drift/generate.sh` output to
    `.claude/drift/baseline.json`. Panic-count regression, test-count
-   regression, and `max_fn` regression are hard; anything else is
-   soft.
-9. **Branch policy** — if on `main`/`master` or a non-conforming
-   branch, warn.
+   regression, `max_fn` regression, and a drop in
+   `hegel_properties` are hard; anything else is soft.
+10. **Branch policy** — if on `main`/`master` or a non-conforming
+    branch, warn.
 
 Output format:
 

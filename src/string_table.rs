@@ -717,4 +717,37 @@ mod tests {
             assert_eq!(recovered, "");
         }
     }
+
+    mod properties {
+        use super::*;
+        use hegel::generators as gs;
+
+        #[hegel::test]
+        fn prop_add_get_roundtrip(tc: hegel::TestCase) {
+            let strings = tc.draw(gs::vecs(gs::text().max_size(64)).min_size(1).max_size(16));
+            let mut builder = StringTableBuilder::new();
+            let handles: Vec<(u64, u32)> = strings.iter().map(|s| builder.add(s)).collect();
+            let bytes = builder.build();
+            let table = StringTable::new(&bytes).unwrap_or_else(|_| std::process::abort());
+            for (original, (offset, length)) in strings.iter().zip(handles.iter()) {
+                let recovered = table
+                    .get(*offset, *length)
+                    .unwrap_or_else(|_| std::process::abort());
+                assert_eq!(recovered, original.as_str());
+            }
+        }
+
+        #[hegel::test]
+        fn prop_builder_len_strictly_increases_on_add(tc: hegel::TestCase) {
+            let strings = tc.draw(gs::vecs(gs::text().max_size(64)).min_size(1).max_size(16));
+            let mut builder = StringTableBuilder::new();
+            let mut prev = builder.len();
+            for s in &strings {
+                builder.add(s);
+                let now = builder.len();
+                assert!(now > prev);
+                prev = now;
+            }
+        }
+    }
 }

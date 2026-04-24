@@ -55,19 +55,30 @@
 #![warn(missing_docs, unsafe_code, unused_must_use)]
 
 // Module structure (to be implemented in future issues)
+pub mod aibom; // RFC-0029: AI Bill of Materials
 pub mod audit; // Issue #7: Audit trail
 pub mod compliance; // Issue #33: Compliance reporting
 pub mod conflict; // Issue #30: Conflict resolution
 pub mod crypto; // Issue #4: Cryptography
+pub mod dsse; // RFC-0023: DSSE envelope support
 pub mod error; // Issue #3: Error handling
 pub mod export; // Issue #31: Export/Import formats
+pub mod hw_attestation; // RFC-0026: Hardware attestation binding
+pub mod hybrid_sig; // RFC-0027: Post-quantum hybrid signatures
+pub mod jcs; // RFC-0031: RFC 8785 JSON canonicalization
+pub mod key_registry; // RFC-0028: Key rotation and revocation
 pub mod keystore; // Issue #12: Key generation and storage
+pub mod manifest; // RFC-0022: External artifact manifest
 pub mod multisig; // Issue #29: Multi-signature support
+pub mod oci; // RFC-0030: OCI artifact packaging
 pub mod operations; // Issue #15: Version commit operation
 pub mod parser; // Issue #9: Zero-copy parser
+pub mod release; // RFC-0032: Release orchestration
 pub mod serializer; // Issue #10: Deterministic Serializer
 pub mod signature_chain; // Issue #14: Version signing protocol
+pub mod slsa; // RFC-0024: SLSA v1.1 provenance emitter
 pub mod string_table; // Issue #8: String table
+pub mod transparency_log; // RFC-0025: Aion-native transparency log
 pub mod types; // Issue #2: Core types
                // pub mod cli;          // CLI interface
 
