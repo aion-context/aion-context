@@ -14,6 +14,7 @@ use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
+use std::process::ExitCode;
 
 /// AION v2 - Versioned Truth Infrastructure for AI Systems
 ///
@@ -385,7 +386,7 @@ impl From<ExportFormatType> for ExportFormat {
     }
 }
 
-fn main() -> Result<()> {
+fn main() -> Result<ExitCode> {
     let cli = Cli::parse();
 
     match cli.command {
@@ -400,7 +401,7 @@ fn main() -> Result<()> {
     }
 }
 
-fn cmd_init(args: &InitArgs) -> Result<()> {
+fn cmd_init(args: &InitArgs) -> Result<ExitCode> {
     print_init_banner(args);
     if args.path.exists() && !args.force {
         anyhow::bail!(
@@ -428,7 +429,7 @@ fn cmd_init(args: &InitArgs) -> Result<()> {
     println!("   File ID: 0x{:016x}", result.file_id.as_u64());
     println!("   Version: {}", result.version.as_u64());
     println!("   Path: {}", args.path.display());
-    Ok(())
+    Ok(ExitCode::SUCCESS)
 }
 
 fn print_init_banner(args: &InitArgs) {
@@ -457,7 +458,7 @@ fn load_signing_key_for_init(args: &InitArgs) -> Result<aion_context::crypto::Si
     })
 }
 
-fn cmd_commit(args: &CommitArgs) -> Result<()> {
+fn cmd_commit(args: &CommitArgs) -> Result<ExitCode> {
     println!("📝 Committing new version to: {}", args.path.display());
     println!("   Author: {}", args.author);
     println!("   Message: {}", args.message);
@@ -501,10 +502,10 @@ fn cmd_commit(args: &CommitArgs) -> Result<()> {
     println!("   Rules hash: {}", hex::encode(result.rules_hash));
     println!("   Path: {}", args.path.display());
 
-    Ok(())
+    Ok(ExitCode::SUCCESS)
 }
 
-fn cmd_verify(args: &VerifyArgs) -> Result<()> {
+fn cmd_verify(args: &VerifyArgs) -> Result<ExitCode> {
     println!("🔍 Verifying AION file: {}", args.path.display());
     if !args.path.exists() {
         anyhow::bail!("File not found: {}", args.path.display());
@@ -523,10 +524,7 @@ fn cmd_verify(args: &VerifyArgs) -> Result<()> {
         OutputFormat::Text => print_verify_text_report(args, &report),
     }
 
-    if !report.is_valid {
-        std::process::exit(1);
-    }
-    Ok(())
+    Ok(report.exit_code())
 }
 
 fn load_registry_from_path(
@@ -592,18 +590,19 @@ fn print_verify_text_report(
     }
 }
 
-fn cmd_show(args: &ShowArgs) -> Result<()> {
+fn cmd_show(args: &ShowArgs) -> Result<ExitCode> {
     // Check if file exists
     if !args.path.exists() {
         anyhow::bail!("File not found: {}", args.path.display());
     }
 
     match &args.subcommand {
-        ShowSubcommand::Rules => show_rules_subcommand(args),
-        ShowSubcommand::History => show_history_subcommand(args),
-        ShowSubcommand::Signatures => show_signatures_subcommand(args),
-        ShowSubcommand::Info => show_info_subcommand(args),
+        ShowSubcommand::Rules => show_rules_subcommand(args)?,
+        ShowSubcommand::History => show_history_subcommand(args)?,
+        ShowSubcommand::Signatures => show_signatures_subcommand(args)?,
+        ShowSubcommand::Info => show_info_subcommand(args)?,
     }
+    Ok(ExitCode::SUCCESS)
 }
 
 fn show_rules_subcommand(args: &ShowArgs) -> Result<()> {
@@ -701,18 +700,19 @@ fn show_info_subcommand(args: &ShowArgs) -> Result<()> {
     Ok(())
 }
 
-fn cmd_key(args: &KeyArgs) -> Result<()> {
+fn cmd_key(args: &KeyArgs) -> Result<ExitCode> {
     let keystore = KeyStore::new();
 
     match &args.subcommand {
         KeySubcommand::Generate { id, description } => {
-            cmd_key_generate(&keystore, id, description.as_deref())
+            cmd_key_generate(&keystore, id, description.as_deref())?;
         }
-        KeySubcommand::List => cmd_key_list(&keystore),
-        KeySubcommand::Export { id, output } => cmd_key_export(&keystore, id, output),
-        KeySubcommand::Import { path, id } => cmd_key_import(&keystore, path, id),
-        KeySubcommand::Delete { id, force } => cmd_key_delete(&keystore, id, *force),
+        KeySubcommand::List => cmd_key_list(&keystore)?,
+        KeySubcommand::Export { id, output } => cmd_key_export(&keystore, id, output)?,
+        KeySubcommand::Import { path, id } => cmd_key_import(&keystore, path, id)?,
+        KeySubcommand::Delete { id, force } => cmd_key_delete(&keystore, id, *force)?,
     }
+    Ok(ExitCode::SUCCESS)
 }
 
 fn cmd_key_generate(keystore: &KeyStore, key_id: &str, description: Option<&str>) -> Result<()> {
@@ -945,7 +945,7 @@ fn load_rules_content(path: Option<&PathBuf>) -> Result<Vec<u8>> {
 // Compliance Reporting Command
 // ============================================================================
 
-fn cmd_report(args: &ReportArgs) -> Result<()> {
+fn cmd_report(args: &ReportArgs) -> Result<ExitCode> {
     let framework: ComplianceFramework = args.framework.into();
     let format: ReportFormat = args.format.into();
 
@@ -970,14 +970,14 @@ fn cmd_report(args: &ReportArgs) -> Result<()> {
         println!("{report}");
     }
 
-    Ok(())
+    Ok(ExitCode::SUCCESS)
 }
 
 // ============================================================================
 // Export Command
 // ============================================================================
 
-fn cmd_export(args: &ExportArgs) -> Result<()> {
+fn cmd_export(args: &ExportArgs) -> Result<ExitCode> {
     let format: ExportFormat = args.format.into();
 
     eprintln!(
@@ -997,7 +997,7 @@ fn cmd_export(args: &ExportArgs) -> Result<()> {
         println!("{output}");
     }
 
-    Ok(())
+    Ok(ExitCode::SUCCESS)
 }
 
 const fn format_name(format: ExportFormatType) -> &'static str {
@@ -1008,15 +1008,16 @@ const fn format_name(format: ExportFormatType) -> &'static str {
     }
 }
 
-fn cmd_registry(args: &RegistryArgs) -> Result<()> {
+fn cmd_registry(args: &RegistryArgs) -> Result<ExitCode> {
     match &args.subcommand {
         RegistrySubcommand::Pin {
             author,
             key,
             master,
             output,
-        } => cmd_registry_pin(*author, key, master.as_deref(), output),
+        } => cmd_registry_pin(*author, key, master.as_deref(), output)?,
     }
+    Ok(ExitCode::SUCCESS)
 }
 
 fn cmd_registry_pin(

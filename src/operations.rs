@@ -667,6 +667,25 @@ impl VerificationReport {
         !self.temporal_warnings.is_empty()
     }
 
+    /// Map this verdict to a process exit code.
+    ///
+    /// This is the **sole** producer of a verify-path exit code in
+    /// the aion CLI. A valid report maps to
+    /// [`std::process::ExitCode::SUCCESS`]; anything else maps to
+    /// `ExitCode::from(1)`. Callers must thread this through their
+    /// return type rather than branching on `is_valid` and calling
+    /// `std::process::exit` by hand — see issue #23.
+    #[must_use]
+    pub const fn exit_code(&self) -> std::process::ExitCode {
+        if self.is_valid {
+            std::process::ExitCode::SUCCESS
+        } else {
+            // NOTE: std::process::ExitCode::from is not const as of 1.70;
+            // construct via the literal path.
+            std::process::ExitCode::FAILURE
+        }
+    }
+
     /// Mark all checks as passed
     pub fn mark_valid(&mut self) {
         self.structure_valid = true;
@@ -2752,6 +2771,55 @@ mod tests {
             // Check message is preserved
             let versions = show_version_history(&file_path).unwrap();
             assert_eq!(versions[0].message, long_message);
+        }
+    }
+
+    mod exit_code_tests {
+        use super::*;
+
+        fn report_with(is_valid: bool) -> VerificationReport {
+            let mut r = VerificationReport::new(FileId::new(1), 1);
+            r.is_valid = is_valid;
+            r
+        }
+
+        #[test]
+        fn valid_report_maps_to_success() {
+            assert_eq!(
+                report_with(true).exit_code(),
+                std::process::ExitCode::SUCCESS
+            );
+        }
+
+        #[test]
+        fn invalid_report_maps_to_failure() {
+            // ExitCode is opaque; compare via stable debug repr.
+            let invalid = format!("{:?}", report_with(false).exit_code());
+            let failure = format!("{:?}", std::process::ExitCode::FAILURE);
+            assert_eq!(invalid, failure);
+        }
+
+        mod properties {
+            use super::*;
+            use hegel::generators as gs;
+
+            #[hegel::test]
+            fn prop_exit_code_reflects_verdict(tc: hegel::TestCase) {
+                let is_valid = tc.draw(gs::integers::<u8>()) % 2 == 1;
+                let report = report_with(is_valid);
+                let observed = format!("{:?}", report.exit_code());
+                let expected = format!(
+                    "{:?}",
+                    if is_valid {
+                        std::process::ExitCode::SUCCESS
+                    } else {
+                        std::process::ExitCode::FAILURE
+                    }
+                );
+                if observed != expected {
+                    std::process::abort();
+                }
+            }
         }
     }
 }
