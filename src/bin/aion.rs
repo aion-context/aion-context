@@ -6,8 +6,8 @@ use aion_context::compliance::{generate_compliance_report, ComplianceFramework, 
 use aion_context::export::{export_file, ExportFormat};
 use aion_context::keystore::KeyStore;
 use aion_context::operations::{
-    commit_version, init_file, show_current_rules, show_file_info, show_signatures,
-    show_version_history, verify_file, CommitOptions, InitOptions,
+    commit_version, commit_version_force_unregistered, init_file, show_current_rules,
+    show_file_info, show_signatures, show_version_history, verify_file, CommitOptions, InitOptions,
 };
 use aion_context::types::AuthorId;
 use anyhow::{Context, Result};
@@ -112,6 +112,17 @@ struct CommitArgs {
     /// registry-aware path before appending the new version.
     #[arg(long, value_name = "REGISTRY_FILE")]
     registry: PathBuf,
+
+    /// Bypass the registry authz pre-check (issue #25). By default,
+    /// commit refuses to write if the supplied `(author, signing key)`
+    /// does not match an active registry epoch at the target version.
+    /// Setting this flag writes the entry anyway and prints a loud
+    /// warning to stderr. Intended for staged-rollout or
+    /// offline-signer workflows where operators sign before the
+    /// registry is updated; the resulting file will not pass
+    /// `aion verify --registry` until the registry is updated.
+    #[arg(long)]
+    force_unregistered: bool,
 }
 
 #[derive(Args, Debug)]
@@ -494,8 +505,18 @@ fn cmd_commit(args: &CommitArgs) -> Result<ExitCode> {
 
     // Commit the new version
     let registry = load_registry_from_path(&args.registry)?;
-    let result = commit_version(&args.path, &rules, &options, &registry)
-        .with_context(|| format!("Failed to commit new version to: {}", args.path.display()))?;
+    let result = if args.force_unregistered {
+        eprintln!(
+            "⚠️  --force-unregistered: skipping registry authz pre-check. \
+             The resulting file will NOT pass `aion verify --registry` until \
+             the registry is updated to pin this signer (issue #25)."
+        );
+        commit_version_force_unregistered(&args.path, &rules, &options, &registry)
+            .with_context(|| format!("Failed to commit new version to: {}", args.path.display()))?
+    } else {
+        commit_version(&args.path, &rules, &options, &registry)
+            .with_context(|| format!("Failed to commit new version to: {}", args.path.display()))?
+    };
 
     println!("\n✅ Version committed successfully!");
     println!("   New version: {}", result.version.as_u64());

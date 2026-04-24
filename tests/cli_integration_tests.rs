@@ -859,6 +859,193 @@ fn test_cli_show_info() {
 }
 
 // ============================================================================
+// Registry authz pre-check (issue #25)
+// ============================================================================
+
+#[test]
+fn test_cli_commit_rejects_unregistered_signer() {
+    let (temp_dir, legit_key) = setup_test_env();
+    let rogue_key = format!("{}", rand::random::<u32>() % 900000 + 700000);
+    run_cli(&["key", "generate", "--id", &rogue_key]);
+
+    let file_path = temp_dir.path().join("precheck.aion");
+    let registry_path = temp_dir.path().join("registry.json");
+    pin_author(&registry_path, "6001", &legit_key);
+
+    // Legit genesis.
+    let output = run_cli_with_stdin(
+        &[
+            "init",
+            file_path.to_str().unwrap(),
+            "--author",
+            "6001",
+            "--key",
+            &legit_key,
+        ],
+        b"v1",
+    );
+    assert!(output.status.success(), "init failed");
+    let pre_commit_bytes = fs::read(&file_path).expect("read pre-commit");
+
+    // Rogue author (6999) is NOT in the registry — commit must reject
+    // BEFORE writing anything.
+    let output = run_cli_with_stdin(
+        &[
+            "commit",
+            file_path.to_str().unwrap(),
+            "--author",
+            "6999",
+            "--key",
+            &rogue_key,
+            "--message",
+            "rogue amendment",
+            "--registry",
+            registry_path.to_str().unwrap(),
+        ],
+        b"rogue rules",
+    );
+    assert!(
+        !output.status.success(),
+        "unregistered commit must exit non-zero, got {}",
+        output.status
+    );
+
+    // No bytes written: file is byte-identical to pre-commit.
+    let post_commit_bytes = fs::read(&file_path).expect("read post-commit");
+    assert_eq!(
+        pre_commit_bytes, post_commit_bytes,
+        "refused commit must not mutate the file"
+    );
+
+    cleanup_key(&legit_key);
+    cleanup_key(&rogue_key);
+}
+
+#[test]
+fn test_cli_commit_rejects_wrong_operational_key() {
+    let (temp_dir, pinned_key) = setup_test_env();
+    let other_key = format!("{}", rand::random::<u32>() % 900000 + 800000);
+    run_cli(&["key", "generate", "--id", &other_key]);
+
+    let file_path = temp_dir.path().join("wrongkey.aion");
+    let registry_path = temp_dir.path().join("registry.json");
+    // Registry pins author 6002 to `pinned_key`.
+    pin_author(&registry_path, "6002", &pinned_key);
+
+    // Genesis uses the pinned key.
+    run_cli_with_stdin(
+        &[
+            "init",
+            file_path.to_str().unwrap(),
+            "--author",
+            "6002",
+            "--key",
+            &pinned_key,
+        ],
+        b"v1",
+    );
+    let pre_commit_bytes = fs::read(&file_path).expect("read pre-commit");
+
+    // Now try to commit as author 6002 but with a DIFFERENT key.
+    // Same author, wrong operational key — registry must reject.
+    let output = run_cli_with_stdin(
+        &[
+            "commit",
+            file_path.to_str().unwrap(),
+            "--author",
+            "6002",
+            "--key",
+            &other_key,
+            "--message",
+            "wrong key",
+            "--registry",
+            registry_path.to_str().unwrap(),
+        ],
+        b"v2",
+    );
+    assert!(
+        !output.status.success(),
+        "wrong operational key must exit non-zero, got {}",
+        output.status
+    );
+    let post_commit_bytes = fs::read(&file_path).expect("read post-commit");
+    assert_eq!(
+        pre_commit_bytes, post_commit_bytes,
+        "refused commit must not mutate the file"
+    );
+
+    cleanup_key(&pinned_key);
+    cleanup_key(&other_key);
+}
+
+#[test]
+fn test_cli_commit_force_unregistered_bypasses() {
+    let (temp_dir, legit_key) = setup_test_env();
+    let rogue_key = format!("{}", rand::random::<u32>() % 900000 + 850000);
+    run_cli(&["key", "generate", "--id", &rogue_key]);
+
+    let file_path = temp_dir.path().join("force.aion");
+    let registry_path = temp_dir.path().join("registry.json");
+    pin_author(&registry_path, "6003", &legit_key);
+
+    run_cli_with_stdin(
+        &[
+            "init",
+            file_path.to_str().unwrap(),
+            "--author",
+            "6003",
+            "--key",
+            &legit_key,
+        ],
+        b"v1",
+    );
+
+    // Unregistered signer but --force-unregistered: commit succeeds,
+    // stderr carries the warning, but resulting file does not verify.
+    let output = run_cli_with_stdin(
+        &[
+            "commit",
+            file_path.to_str().unwrap(),
+            "--author",
+            "6999",
+            "--key",
+            &rogue_key,
+            "--message",
+            "force write",
+            "--registry",
+            registry_path.to_str().unwrap(),
+            "--force-unregistered",
+        ],
+        b"forced rules",
+    );
+    assert!(
+        output.status.success(),
+        "--force-unregistered commit must succeed, got {}",
+        output.status
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("force-unregistered") || stderr.contains("⚠️"),
+        "stderr must carry the bypass warning, got: {stderr}"
+    );
+
+    // And the resulting file must NOT pass verify against the same registry.
+    let verify = run_cli(&[
+        "verify",
+        file_path.to_str().unwrap(),
+        "--registry",
+        registry_path.to_str().unwrap(),
+    ]);
+    assert!(
+        !verify.status.success(),
+        "file written with --force-unregistered must fail verify"
+    );
+
+    cleanup_key(&legit_key);
+    cleanup_key(&rogue_key);
+}
+
+// ============================================================================
 // Error Case CLI Tests
 // ============================================================================
 

@@ -285,6 +285,38 @@ pub fn commit_version(
     options: &CommitOptions<'_>,
     registry: &crate::key_registry::KeyRegistry,
 ) -> Result<CommitResult> {
+    commit_version_inner(path, new_rules, options, registry, true)
+}
+
+/// Commit bypassing the registry authz pre-check (issue #25
+/// `--force-unregistered` escape hatch).
+///
+/// Same behavior as [`commit_version`] except the
+/// `(author, signing key, active epoch)` match is not enforced.
+/// The resulting entry is **not guaranteed to verify** against the
+/// supplied registry — operators using this path must know why
+/// (offline signer, staged rollout) and accept that the file on
+/// disk will not pass `verify` until the registry is updated.
+///
+/// # Errors
+///
+/// Same error surface as [`commit_version`] minus the authz errors.
+pub fn commit_version_force_unregistered(
+    path: &Path,
+    new_rules: &[u8],
+    options: &CommitOptions<'_>,
+    registry: &crate::key_registry::KeyRegistry,
+) -> Result<CommitResult> {
+    commit_version_inner(path, new_rules, options, registry, false)
+}
+
+fn commit_version_inner(
+    path: &Path,
+    new_rules: &[u8],
+    options: &CommitOptions<'_>,
+    registry: &crate::key_registry::KeyRegistry,
+    enforce_registry: bool,
+) -> Result<CommitResult> {
     let file_bytes = std::fs::read(path).map_err(|e| AionError::FileReadError {
         path: path.to_path_buf(),
         source: e,
@@ -295,6 +327,11 @@ pub fn commit_version(
     verify_existing_signatures(&parser, registry)?;
 
     let new_version = VersionNumber(header.current_version).next()?;
+
+    if enforce_registry {
+        preflight_registry_authz(options, new_version, registry)?;
+    }
+
     let timestamp = options.timestamp.unwrap_or_else(current_timestamp_nanos);
     let file_id = FileId::new(header.file_id);
     let (encrypted_rules, rules_hash) = encrypt_rules(new_rules, file_id, new_version)?;
@@ -329,6 +366,30 @@ pub fn commit_version(
         version_hash: compute_version_hash(&new_version_entry),
         rules_hash,
     })
+}
+
+/// Pre-write authz check (issue #25): the signer must have an
+/// active epoch at the target version, and the supplied signing
+/// key must match that epoch's pinned operational key.
+fn preflight_registry_authz(
+    options: &CommitOptions<'_>,
+    new_version: VersionNumber,
+    registry: &crate::key_registry::KeyRegistry,
+) -> Result<()> {
+    let Some(epoch) = registry.active_epoch_at(options.author_id, new_version.as_u64()) else {
+        return Err(AionError::UnauthorizedSigner {
+            author: options.author_id,
+            version: new_version.as_u64(),
+        });
+    };
+    let supplied_pk = options.signing_key.verifying_key().to_bytes();
+    if supplied_pk != epoch.public_key {
+        return Err(AionError::KeyMismatch {
+            author: options.author_id,
+            epoch: epoch.epoch,
+        });
+    }
+    Ok(())
 }
 
 #[allow(clippy::cast_possible_truncation)]
@@ -2818,6 +2879,98 @@ mod tests {
                 );
                 if observed != expected {
                     std::process::abort();
+                }
+            }
+        }
+    }
+
+    /// Issue #25 — registry authz pre-check properties. These test
+    /// `preflight_registry_authz` directly since building a real
+    /// `.aion` file on every Hegel trial would be expensive; the full
+    /// end-to-end contract is exercised by the CLI integration tests.
+    mod registry_precheck_tests {
+        use super::*;
+        use crate::crypto::SigningKey;
+        use crate::key_registry::KeyRegistry;
+
+        mod properties {
+            use super::*;
+            use hegel::generators as gs;
+
+            /// Build a fresh registry that pins exactly one author at
+            /// epoch 0 with the supplied operational key.
+            fn single_author_registry(author: AuthorId, op_key: &SigningKey) -> KeyRegistry {
+                let master = SigningKey::generate();
+                let mut reg = KeyRegistry::new();
+                reg.register_author(author, master.verifying_key(), op_key.verifying_key(), 0)
+                    .unwrap_or_else(|_| std::process::abort());
+                reg
+            }
+
+            fn options(author: AuthorId, key: &SigningKey) -> CommitOptions<'_> {
+                CommitOptions {
+                    author_id: author,
+                    signing_key: key,
+                    message: "",
+                    timestamp: None,
+                }
+            }
+
+            /// Author not in the registry ⇒ `UnauthorizedSigner`.
+            #[hegel::test]
+            fn prop_unknown_author_rejects(tc: hegel::TestCase) {
+                let pinned_id = tc.draw(gs::integers::<u64>().min_value(1).max_value(1 << 40));
+                let probe_id = tc.draw(gs::integers::<u64>().min_value(1).max_value(1 << 40));
+                if pinned_id == probe_id {
+                    return; // skip the trivial collision
+                }
+                let version = tc.draw(gs::integers::<u64>().min_value(1).max_value(1 << 30));
+
+                let pinned_key = SigningKey::generate();
+                let reg = single_author_registry(AuthorId::new(pinned_id), &pinned_key);
+
+                // Probe: a different author, any key.
+                let probe_key = SigningKey::generate();
+                let opts = options(AuthorId::new(probe_id), &probe_key);
+
+                match preflight_registry_authz(&opts, VersionNumber(version), &reg) {
+                    Err(AionError::UnauthorizedSigner { .. }) => {}
+                    _ => std::process::abort(),
+                }
+            }
+
+            /// Author pinned and key matches ⇒ `Ok`.
+            #[hegel::test]
+            fn prop_pinned_matching_key_accepts(tc: hegel::TestCase) {
+                let author_id = tc.draw(gs::integers::<u64>().min_value(1).max_value(1 << 40));
+                let version = tc.draw(gs::integers::<u64>().min_value(1).max_value(1 << 30));
+                let author = AuthorId::new(author_id);
+
+                let op_key = SigningKey::generate();
+                let reg = single_author_registry(author, &op_key);
+                let opts = options(author, &op_key);
+
+                if preflight_registry_authz(&opts, VersionNumber(version), &reg).is_err() {
+                    std::process::abort();
+                }
+            }
+
+            /// Author pinned but key differs ⇒ `KeyMismatch`.
+            #[hegel::test]
+            fn prop_pinned_wrong_key_rejects(tc: hegel::TestCase) {
+                let author_id = tc.draw(gs::integers::<u64>().min_value(1).max_value(1 << 40));
+                let version = tc.draw(gs::integers::<u64>().min_value(1).max_value(1 << 30));
+                let author = AuthorId::new(author_id);
+
+                let pinned_key = SigningKey::generate();
+                let reg = single_author_registry(author, &pinned_key);
+
+                let wrong_key = SigningKey::generate();
+                let opts = options(author, &wrong_key);
+
+                match preflight_registry_authz(&opts, VersionNumber(version), &reg) {
+                    Err(AionError::KeyMismatch { .. }) => {}
+                    _ => std::process::abort(),
                 }
             }
         }
