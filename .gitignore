@@ -51,3 +51,4 @@ fuzz/artifacts/
 
 # Hegel property-test server logs (per-process, not for git)
 .hegel/
+.claude/scheduled_tasks.lock

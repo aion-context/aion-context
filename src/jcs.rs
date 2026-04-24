@@ -59,7 +59,7 @@ pub fn canonicalize_json_bytes(bytes: &[u8]) -> Result<Vec<u8>> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
     use super::*;
     use serde_json::json;

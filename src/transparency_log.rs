@@ -480,7 +480,7 @@ fn canonical_sth_bytes(tree_size: u64, root_hash: &[u8; 32]) -> Vec<u8> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
     use super::*;
 

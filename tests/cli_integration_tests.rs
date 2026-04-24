@@ -5,6 +5,7 @@
 
 #![allow(clippy::expect_used)] // Test code needs `.expect()` for clarity
 #![allow(clippy::unwrap_used)] // Test assertions can use unwrap
+#![allow(clippy::indexing_slicing)] // Test assertions use slice indexing on known inputs
 
 use std::fs;
 use std::path::PathBuf;

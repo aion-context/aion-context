@@ -293,7 +293,7 @@ pub fn verify_binding<V: EvidenceVerifier>(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
     use super::*;
 

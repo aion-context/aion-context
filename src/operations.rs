@@ -739,8 +739,8 @@ fn check_temporal_ordering(versions: &[VersionEntry]) -> Vec<TemporalWarning> {
         }
 
         // Check monotonicity against previous version
-        if i > 0 {
-            let prev_timestamp = versions[i - 1].timestamp;
+        if let Some(prev) = i.checked_sub(1).and_then(|j| versions.get(j)) {
+            let prev_timestamp = prev.timestamp;
 
             if timestamp < prev_timestamp {
                 // Non-monotonic: this version is earlier than previous
