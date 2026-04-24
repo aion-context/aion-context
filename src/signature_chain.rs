@@ -288,6 +288,78 @@ pub fn verify_attestation(version: &VersionEntry, signature: &SignatureEntry) ->
     verifying_key.verify(&message, &signature.signature)
 }
 
+/// Registry-aware verification of a single-signer version signature — RFC-0028.
+///
+/// Cross-checks `signature.public_key` against the active epoch for
+/// `(version.author_id, version.version_number)` in `registry` before
+/// delegating to [`verify_signature`]. Rejects signatures made by keys
+/// that have been rotated out or revoked as of the target version.
+///
+/// # Errors
+///
+/// Returns `Err` if `registry` has no active epoch for the version's
+/// author at `version.version_number`, if the signature's embedded
+/// public key does not match that epoch, or if the underlying
+/// Ed25519 verification fails.
+pub fn verify_signature_with_registry(
+    version: &VersionEntry,
+    signature: &SignatureEntry,
+    registry: &crate::key_registry::KeyRegistry,
+) -> Result<()> {
+    let signer = AuthorId::new(version.author_id);
+    let epoch = registry
+        .active_epoch_at(signer, version.version_number)
+        .ok_or_else(|| crate::AionError::InvalidFormat {
+            reason: format!(
+                "no active key for author {signer} at version {}",
+                version.version_number
+            ),
+        })?;
+    if signature.public_key != epoch.public_key {
+        return Err(crate::AionError::InvalidFormat {
+            reason: format!(
+                "signature public_key does not match registered active epoch {} for author {signer}",
+                epoch.epoch
+            ),
+        });
+    }
+    verify_signature(version, signature)
+}
+
+/// Registry-aware verification of a multi-party attestation — RFC-0028.
+///
+/// Like [`verify_signature_with_registry`] but the signer is
+/// `signature.author_id`, which need not equal `version.author_id`
+/// (attestations are multi-party by design).
+///
+/// # Errors
+///
+/// Same as [`verify_signature_with_registry`].
+pub fn verify_attestation_with_registry(
+    version: &VersionEntry,
+    signature: &SignatureEntry,
+    registry: &crate::key_registry::KeyRegistry,
+) -> Result<()> {
+    let signer = AuthorId::new(signature.author_id);
+    let epoch = registry
+        .active_epoch_at(signer, version.version_number)
+        .ok_or_else(|| crate::AionError::InvalidFormat {
+            reason: format!(
+                "no active key for attester {signer} at version {}",
+                version.version_number
+            ),
+        })?;
+    if signature.public_key != epoch.public_key {
+        return Err(crate::AionError::InvalidFormat {
+            reason: format!(
+                "attestation public_key does not match registered active epoch {} for author {signer}",
+                epoch.epoch
+            ),
+        });
+    }
+    verify_attestation(version, signature)
+}
+
 /// Verify signatures for multiple versions in batch
 ///
 /// This function verifies Ed25519 signatures for a slice of version/signature pairs.
@@ -1799,6 +1871,124 @@ mod tests {
             // verify_version should pass; verify_attestation must not.
             assert!(verify_signature(&version, &version_sig).is_ok());
             assert!(verify_attestation(&version, &version_sig).is_err());
+        }
+
+        // ------------------------------------------------------------------
+        // RFC-0028 registry-aware verification properties.
+        // ------------------------------------------------------------------
+
+        use crate::key_registry::{sign_rotation_record, KeyRegistry};
+
+        fn make_version_at(author: AuthorId, version_number: u64) -> VersionEntry {
+            VersionEntry::new(
+                crate::types::VersionNumber(version_number),
+                [0u8; 32],
+                [0xAAu8; 32],
+                author,
+                1_700_000_000_000_000_000,
+                0,
+                0,
+            )
+        }
+
+        #[hegel::test]
+        fn prop_registry_verify_accepts_active_epoch_signature(tc: hegel::TestCase) {
+            let author_id = tc.draw(gs::integers::<u64>().min_value(1));
+            let author = AuthorId::new(author_id);
+            let master = SigningKey::generate();
+            let op0 = SigningKey::generate();
+            let mut reg = KeyRegistry::new();
+            reg.register_author(author, master.verifying_key(), op0.verifying_key(), 0)
+                .unwrap_or_else(|_| std::process::abort());
+
+            let version_number = tc.draw(gs::integers::<u64>().min_value(1).max_value(1 << 20));
+            let version = make_version_at(author, version_number);
+            let mut sig = sign_version(&version, &op0);
+            sig.author_id = author.as_u64();
+            assert!(verify_signature_with_registry(&version, &sig, &reg).is_ok());
+        }
+
+        #[hegel::test]
+        fn prop_registry_verify_rejects_sig_after_rotation_with_old_key(tc: hegel::TestCase) {
+            let author_id = tc.draw(gs::integers::<u64>().min_value(1));
+            let author = AuthorId::new(author_id);
+            let master = SigningKey::generate();
+            let op0 = SigningKey::generate();
+            let op1 = SigningKey::generate();
+            let mut reg = KeyRegistry::new();
+            reg.register_author(author, master.verifying_key(), op0.verifying_key(), 0)
+                .unwrap_or_else(|_| std::process::abort());
+            let effective = tc.draw(gs::integers::<u64>().min_value(1).max_value(1 << 20));
+            let rotation = sign_rotation_record(
+                author,
+                0,
+                1,
+                op1.verifying_key().to_bytes(),
+                effective,
+                &master,
+            );
+            reg.apply_rotation(&rotation)
+                .unwrap_or_else(|_| std::process::abort());
+
+            let v_after = tc.draw(
+                gs::integers::<u64>()
+                    .min_value(effective)
+                    .max_value(effective.saturating_add(1 << 20)),
+            );
+            let version = make_version_at(author, v_after);
+            // Sign with the ROTATED-OUT op0 key — this should now fail.
+            let mut sig = sign_version(&version, &op0);
+            sig.author_id = author.as_u64();
+            assert!(verify_signature_with_registry(&version, &sig, &reg).is_err());
+        }
+
+        #[hegel::test]
+        fn prop_registry_verify_rejects_revoked_key(tc: hegel::TestCase) {
+            let author_id = tc.draw(gs::integers::<u64>().min_value(1));
+            let author = AuthorId::new(author_id);
+            let master = SigningKey::generate();
+            let op0 = SigningKey::generate();
+            let mut reg = KeyRegistry::new();
+            reg.register_author(author, master.verifying_key(), op0.verifying_key(), 0)
+                .unwrap_or_else(|_| std::process::abort());
+            let effective = tc.draw(gs::integers::<u64>().min_value(1).max_value(1 << 20));
+            let revocation = crate::key_registry::sign_revocation_record(
+                author,
+                0,
+                crate::key_registry::RevocationReason::Compromised,
+                effective,
+                &master,
+            );
+            reg.apply_revocation(&revocation)
+                .unwrap_or_else(|_| std::process::abort());
+
+            let v_after = tc.draw(
+                gs::integers::<u64>()
+                    .min_value(effective)
+                    .max_value(effective.saturating_add(1 << 20)),
+            );
+            let version = make_version_at(author, v_after);
+            let mut sig = sign_version(&version, &op0);
+            sig.author_id = author.as_u64();
+            assert!(verify_signature_with_registry(&version, &sig, &reg).is_err());
+        }
+
+        #[hegel::test]
+        fn prop_registry_verify_rejects_pubkey_substitution(tc: hegel::TestCase) {
+            let author_id = tc.draw(gs::integers::<u64>().min_value(1));
+            let author = AuthorId::new(author_id);
+            let master = SigningKey::generate();
+            let op0 = SigningKey::generate();
+            let attacker = SigningKey::generate();
+            let mut reg = KeyRegistry::new();
+            reg.register_author(author, master.verifying_key(), op0.verifying_key(), 0)
+                .unwrap_or_else(|_| std::process::abort());
+            let version = make_version_at(author, 1);
+            let mut sig = sign_version(&version, &op0);
+            sig.author_id = author.as_u64();
+            // Attacker swaps the embedded public_key to a key they control.
+            sig.public_key = attacker.verifying_key().to_bytes();
+            assert!(verify_signature_with_registry(&version, &sig, &reg).is_err());
         }
     }
 }
