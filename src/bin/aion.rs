@@ -52,6 +52,9 @@ enum Commands {
 
     /// Manage trusted key registries (RFC-0028 / RFC-0034)
     Registry(RegistryArgs),
+
+    /// Seal, verify, and inspect signed model releases (RFC-0032)
+    Release(ReleaseArgs),
 }
 
 #[derive(Args, Debug)]
@@ -476,6 +479,114 @@ impl From<CliRevocationReason> for aion_context::key_registry::RevocationReason 
     }
 }
 
+#[derive(Args, Debug)]
+struct ReleaseArgs {
+    #[command(subcommand)]
+    subcommand: ReleaseSubcommand,
+}
+
+#[derive(Subcommand, Debug)]
+#[allow(clippy::large_enum_variant)] // Seal carries many CLI fields; other variants are small — CLI-scoped
+enum ReleaseSubcommand {
+    /// Seal a signed release (RFC-0032).
+    ///
+    /// Composes the primary artifact + frameworks + licenses + safety
+    /// attestations + export controls + builder.id into a
+    /// [`ReleaseBuilder`] and calls `.seal(...)`. Writes a single
+    /// `release.json` bundle plus the primary artifact as
+    /// `primary.bin` under `--out-dir`.
+    Seal {
+        /// Path to the primary artifact bytes (e.g. model.safetensors).
+        #[arg(long, value_name = "PATH")]
+        primary: PathBuf,
+
+        /// In-manifest name for the primary artifact.
+        #[arg(long, value_name = "NAME")]
+        primary_name: String,
+
+        /// Model name (in the AIBOM and OCI manifests).
+        #[arg(long, value_name = "NAME")]
+        model_name: String,
+
+        /// Model version string.
+        #[arg(long, value_name = "VERSION")]
+        model_version: String,
+
+        /// Serialisation format — `safetensors` / `gguf` / `onnx` / ...
+        #[arg(long, value_name = "FORMAT", default_value = "safetensors")]
+        model_format: String,
+
+        /// Framework dependency in `name:version` form. Repeatable.
+        #[arg(long, value_name = "NAME:VERSION")]
+        framework: Vec<String>,
+
+        /// License in `spdx_id:scope` form (scope =
+        /// `weights`|`source`|`data`|`docs`|`combined`). Repeatable.
+        #[arg(long, value_name = "SPDX:SCOPE")]
+        license: Vec<String>,
+
+        /// Safety attestation in `name:result` form. Repeatable.
+        #[arg(long, value_name = "NAME:RESULT")]
+        safety_attestation: Vec<String>,
+
+        /// Export-control entry in `regime:classification` form.
+        #[arg(long, value_name = "REGIME:CLASS")]
+        export_control: Vec<String>,
+
+        /// SLSA `builder.id` URI.
+        #[arg(long, value_name = "URI")]
+        builder_id: String,
+
+        /// Current aion version number at seal time.
+        #[arg(long, value_name = "N", default_value_t = 1u64)]
+        aion_version: u64,
+
+        /// Signer's `AuthorId`.
+        #[arg(long, value_name = "AUTHOR_ID")]
+        author: u64,
+
+        /// Signer's operational key ID in the keystore.
+        #[arg(long, value_name = "KEY_ID")]
+        key: String,
+
+        /// Output directory for the sealed bundle.
+        #[arg(long, value_name = "DIR")]
+        out_dir: PathBuf,
+    },
+
+    /// Verify a previously-sealed release bundle.
+    ///
+    /// Reloads the bundle and the primary artifact from
+    /// `--bundle`, reconstructs a [`SignedRelease`] via
+    /// `SignedRelease::from_components`, and calls
+    /// `.verify(&registry, at_version)`. Exit 0 when valid; exit 1
+    /// when any component fails (mirrors #23 exit-code contract).
+    Verify {
+        /// Directory produced by `aion release seal`.
+        #[arg(long, value_name = "DIR")]
+        bundle: PathBuf,
+
+        /// Trusted-registry JSON file (RFC-0028) pinning the signer.
+        #[arg(long, value_name = "REGISTRY_FILE")]
+        registry: PathBuf,
+
+        /// aion version number to resolve registry epochs at.
+        #[arg(long, value_name = "N", default_value_t = 1u64)]
+        at_version: u64,
+    },
+
+    /// Pretty-print a bundle summary (no crypto verification).
+    Inspect {
+        /// Directory produced by `aion release seal`.
+        #[arg(long, value_name = "DIR")]
+        bundle: PathBuf,
+
+        /// Output format.
+        #[arg(short, long, value_enum, default_value = "text")]
+        format: OutputFormat,
+    },
+}
+
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
 enum ExportFormatType {
     /// JSON format (full metadata)
@@ -508,6 +619,7 @@ fn main() -> Result<ExitCode> {
         Commands::Report(args) => cmd_report(&args),
         Commands::Export(args) => cmd_export(&args),
         Commands::Registry(args) => cmd_registry(&args),
+        Commands::Release(args) => cmd_release(&args),
     }
 }
 
@@ -1332,4 +1444,367 @@ fn load_key_for_registry(
     keystore
         .load_signing_key(parsed_id)
         .with_context(|| format!("Failed to load key '{key_id}' from keystore"))
+}
+
+// ============================================================================
+// Release subcommand (issue #28) — sealed-release bundle format + handlers.
+// ============================================================================
+
+/// On-disk JSON bundle representing a complete [`aion_context::release::SignedRelease`].
+///
+/// Most components have serde derives and serialize directly. The
+/// three zerocopy types — `ArtifactManifest`, `SignatureEntry`, and
+/// `LogSeq` — are lowered to simpler JSON shapes here: manifest as
+/// hex-encoded canonical bytes, signature as per-field hex strings,
+/// log sequence as `(kind_u16, seq)` tuples.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct ReleaseBundle {
+    signer: u64,
+    model_ref: aion_context::aibom::ModelRef,
+    manifest_canonical_hex: String,
+    manifest_signature: BundleSig,
+    manifest_dsse: aion_context::dsse::DsseEnvelope,
+    aibom: aion_context::aibom::AiBom,
+    aibom_dsse: aion_context::dsse::DsseEnvelope,
+    slsa_statement: aion_context::slsa::InTotoStatement,
+    slsa_dsse: aion_context::dsse::DsseEnvelope,
+    oci_primary: aion_context::oci::OciArtifactManifest,
+    oci_aibom_referrer: aion_context::oci::OciArtifactManifest,
+    oci_slsa_referrer: aion_context::oci::OciArtifactManifest,
+    log_entries: Vec<BundleLogSeq>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct BundleSig {
+    author_id: u64,
+    public_key_hex: String,
+    signature_hex: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct BundleLogSeq {
+    kind: u16,
+    seq: u64,
+}
+
+fn cmd_release(args: &ReleaseArgs) -> Result<ExitCode> {
+    match &args.subcommand {
+        ReleaseSubcommand::Seal {
+            primary,
+            primary_name,
+            model_name,
+            model_version,
+            model_format,
+            framework,
+            license,
+            safety_attestation,
+            export_control,
+            builder_id,
+            aion_version,
+            author,
+            key,
+            out_dir,
+        } => cmd_release_seal(SealInputs {
+            primary,
+            primary_name,
+            model_name,
+            model_version,
+            model_format,
+            framework,
+            license,
+            safety_attestation,
+            export_control,
+            builder_id,
+            aion_version: *aion_version,
+            author: *author,
+            key,
+            out_dir,
+        })?,
+        ReleaseSubcommand::Verify {
+            bundle,
+            registry,
+            at_version,
+        } => return cmd_release_verify(bundle, registry, *at_version),
+        ReleaseSubcommand::Inspect { bundle, format } => cmd_release_inspect(bundle, *format)?,
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+struct SealInputs<'a> {
+    primary: &'a PathBuf,
+    primary_name: &'a str,
+    model_name: &'a str,
+    model_version: &'a str,
+    model_format: &'a str,
+    framework: &'a [String],
+    license: &'a [String],
+    safety_attestation: &'a [String],
+    export_control: &'a [String],
+    builder_id: &'a str,
+    aion_version: u64,
+    author: u64,
+    key: &'a str,
+    out_dir: &'a PathBuf,
+}
+
+#[allow(clippy::needless_pass_by_value)] // SealInputs is a by-value bag of &str/&[String] — fine to consume
+fn cmd_release_seal(inp: SealInputs<'_>) -> Result<()> {
+    use aion_context::aibom::{ExportControl, FrameworkRef, License, SafetyAttestation};
+    use aion_context::release::ReleaseBuilder;
+    use aion_context::transparency_log::TransparencyLog;
+    use aion_context::types::AuthorId;
+
+    let primary_bytes = std::fs::read(inp.primary)
+        .with_context(|| format!("Failed to read primary artifact: {}", inp.primary.display()))?;
+    println!("📦 Sealing {} v{}", inp.model_name, inp.model_version);
+    println!(
+        "   Primary: {} ({} bytes)",
+        inp.primary_name,
+        primary_bytes.len()
+    );
+
+    let keystore = KeyStore::new();
+    let signing_key = load_key_for_registry(&keystore, inp.key)?;
+
+    let mut builder = ReleaseBuilder::new(inp.model_name, inp.model_version, inp.model_format);
+    builder.primary_artifact(inp.primary_name.to_string(), primary_bytes);
+    for spec in inp.framework {
+        let (name, version) = parse_kv_pair(spec, "framework")?;
+        builder.add_framework(FrameworkRef {
+            name,
+            version,
+            cpe: None,
+        });
+    }
+    for spec in inp.license {
+        let (spdx_id, scope_str) = parse_kv_pair(spec, "license")?;
+        let scope = parse_license_scope(&scope_str)?;
+        builder.add_license(License {
+            spdx_id,
+            scope,
+            text_uri: None,
+        });
+    }
+    for spec in inp.safety_attestation {
+        let (name, result) = parse_kv_pair(spec, "safety-attestation")?;
+        builder.add_safety_attestation(SafetyAttestation {
+            name,
+            result,
+            report_hash_algorithm: None,
+            report_hash: None,
+            report_uri: None,
+        });
+    }
+    for spec in inp.export_control {
+        let (regime, classification) = parse_kv_pair(spec, "export-control")?;
+        builder.add_export_control(ExportControl {
+            regime,
+            classification,
+            notes: None,
+        });
+    }
+    builder.builder_id(inp.builder_id.to_string());
+    builder.current_aion_version(inp.aion_version);
+
+    // Transparency log for this seal; the log lives under the bundle
+    // dir for auditors who want to replay the seal context.
+    let mut log = TransparencyLog::new();
+    let signed = builder
+        .seal(AuthorId::new(inp.author), &signing_key, &mut log)
+        .context("ReleaseBuilder::seal failed")?;
+
+    let bundle = signed_release_to_bundle(&signed);
+    let bundle_json = serde_json::to_string_pretty(&bundle).context("serialize bundle")?;
+
+    std::fs::create_dir_all(inp.out_dir)
+        .with_context(|| format!("create out-dir: {}", inp.out_dir.display()))?;
+    let bundle_path = inp.out_dir.join("release.json");
+    std::fs::write(&bundle_path, &bundle_json)
+        .with_context(|| format!("write bundle: {}", bundle_path.display()))?;
+
+    let primary_out = inp.out_dir.join("primary.bin");
+    // Re-read the primary since seal consumed it. (ReleaseBuilder
+    // owns the bytes; we need them on disk for verify to re-hash.)
+    std::fs::copy(inp.primary, &primary_out).with_context(|| {
+        format!(
+            "copy primary to bundle: {} -> {}",
+            inp.primary.display(),
+            primary_out.display()
+        )
+    })?;
+
+    println!(
+        "\n✅ Sealed {} v{}",
+        signed.model_ref.name, signed.model_ref.version
+    );
+    println!("   Bundle: {}", bundle_path.display());
+    println!("   Primary: {}", primary_out.display());
+    println!("   Log entries: {}", signed.log_entries.len());
+    Ok(())
+}
+
+fn parse_kv_pair(spec: &str, label: &str) -> Result<(String, String)> {
+    let (left, right) = spec
+        .split_once(':')
+        .ok_or_else(|| anyhow::anyhow!("--{label} expects `<key>:<value>`, got: {spec}"))?;
+    Ok((left.to_string(), right.to_string()))
+}
+
+fn parse_license_scope(s: &str) -> Result<aion_context::aibom::LicenseScope> {
+    use aion_context::aibom::LicenseScope;
+    match s.to_ascii_lowercase().as_str() {
+        "weights" => Ok(LicenseScope::Weights),
+        "source" | "source_code" | "sourcecode" => Ok(LicenseScope::SourceCode),
+        "data" | "training_data" => Ok(LicenseScope::TrainingData),
+        "docs" | "documentation" => Ok(LicenseScope::Documentation),
+        "combined" => Ok(LicenseScope::Combined),
+        other => Err(anyhow::anyhow!(
+            "unknown license scope: {other} (expected weights|source|data|docs|combined)"
+        )),
+    }
+}
+
+fn signed_release_to_bundle(s: &aion_context::release::SignedRelease) -> ReleaseBundle {
+    ReleaseBundle {
+        signer: s.signer.as_u64(),
+        model_ref: s.model_ref.clone(),
+        manifest_canonical_hex: hex::encode(s.manifest.canonical_bytes()),
+        manifest_signature: BundleSig {
+            author_id: s.manifest_signature.author_id,
+            public_key_hex: hex::encode(s.manifest_signature.public_key),
+            signature_hex: hex::encode(s.manifest_signature.signature),
+        },
+        manifest_dsse: s.manifest_dsse.clone(),
+        aibom: s.aibom.clone(),
+        aibom_dsse: s.aibom_dsse.clone(),
+        slsa_statement: s.slsa_statement.clone(),
+        slsa_dsse: s.slsa_dsse.clone(),
+        oci_primary: s.oci_primary.clone(),
+        oci_aibom_referrer: s.oci_aibom_referrer.clone(),
+        oci_slsa_referrer: s.oci_slsa_referrer.clone(),
+        log_entries: s
+            .log_entries
+            .iter()
+            .map(|l| BundleLogSeq {
+                kind: l.kind as u16,
+                seq: l.seq,
+            })
+            .collect(),
+    }
+}
+
+fn bundle_to_signed_release(b: ReleaseBundle) -> Result<aion_context::release::SignedRelease> {
+    use aion_context::manifest::ArtifactManifest;
+    use aion_context::serializer::SignatureEntry;
+    use aion_context::transparency_log::LogEntryKind;
+    use aion_context::types::AuthorId;
+
+    let manifest_bytes =
+        hex::decode(&b.manifest_canonical_hex).context("decode manifest canonical hex")?;
+    let manifest = ArtifactManifest::from_canonical_bytes(&manifest_bytes)
+        .context("parse manifest from canonical bytes")?;
+
+    let pk_bytes = hex::decode(&b.manifest_signature.public_key_hex)
+        .context("decode manifest_signature.public_key_hex")?;
+    let sig_bytes = hex::decode(&b.manifest_signature.signature_hex)
+        .context("decode manifest_signature.signature_hex")?;
+    let pk_arr: [u8; 32] = pk_bytes
+        .as_slice()
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("manifest_signature.public_key must be 32 bytes"))?;
+    let sig_arr: [u8; 64] = sig_bytes
+        .as_slice()
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("manifest_signature.signature must be 64 bytes"))?;
+    let manifest_signature = SignatureEntry::new(
+        AuthorId::new(b.manifest_signature.author_id),
+        pk_arr,
+        sig_arr,
+    );
+
+    let mut log_entries: Vec<(LogEntryKind, u64)> = Vec::with_capacity(b.log_entries.len());
+    for l in b.log_entries {
+        let kind = LogEntryKind::from_u16(l.kind)
+            .with_context(|| format!("unknown LogEntryKind: {}", l.kind))?;
+        log_entries.push((kind, l.seq));
+    }
+
+    Ok(aion_context::release::SignedRelease::from_components(
+        AuthorId::new(b.signer),
+        b.model_ref,
+        manifest,
+        manifest_signature,
+        b.manifest_dsse,
+        b.aibom,
+        b.aibom_dsse,
+        b.slsa_statement,
+        b.slsa_dsse,
+        b.oci_primary,
+        b.oci_aibom_referrer,
+        b.oci_slsa_referrer,
+        log_entries,
+    ))
+}
+
+fn cmd_release_verify(
+    bundle_dir: &std::path::Path,
+    registry_path: &std::path::Path,
+    at_version: u64,
+) -> Result<ExitCode> {
+    let bundle_path = bundle_dir.join("release.json");
+    let bundle_json = std::fs::read_to_string(&bundle_path)
+        .with_context(|| format!("read bundle: {}", bundle_path.display()))?;
+    let bundle: ReleaseBundle = serde_json::from_str(&bundle_json).context("parse release.json")?;
+    let signed = bundle_to_signed_release(bundle)?;
+    let registry = load_registry_from_path(registry_path)?;
+
+    println!(
+        "🔍 Verifying release {} v{}",
+        signed.model_ref.name, signed.model_ref.version
+    );
+    match signed.verify(&registry, at_version) {
+        Ok(()) => {
+            println!("✅ VALID at version {at_version}");
+            Ok(ExitCode::SUCCESS)
+        }
+        Err(e) => {
+            eprintln!("❌ INVALID: {e}");
+            Ok(ExitCode::FAILURE)
+        }
+    }
+}
+
+fn cmd_release_inspect(bundle_dir: &std::path::Path, format: OutputFormat) -> Result<()> {
+    let bundle_path = bundle_dir.join("release.json");
+    let bundle_json = std::fs::read_to_string(&bundle_path)
+        .with_context(|| format!("read bundle: {}", bundle_path.display()))?;
+    let bundle: ReleaseBundle = serde_json::from_str(&bundle_json).context("parse release.json")?;
+
+    match format {
+        OutputFormat::Json => println!("{bundle_json}"),
+        OutputFormat::Yaml => println!("{}", serde_yaml::to_string(&bundle)?),
+        OutputFormat::Text => {
+            println!("Release bundle: {}", bundle_path.display());
+            println!("  signer:        {}", bundle.signer);
+            println!(
+                "  model:         {} v{} ({})",
+                bundle.model_ref.name, bundle.model_ref.version, bundle.model_ref.format
+            );
+            println!("  model size:    {} bytes", bundle.model_ref.size);
+            println!(
+                "  model hash:    {}  ({})",
+                hex::encode(bundle.model_ref.hash),
+                bundle.model_ref.hash_algorithm
+            );
+            println!("  frameworks:    {}", bundle.aibom.frameworks.len());
+            println!("  licenses:      {}", bundle.aibom.licenses.len());
+            println!(
+                "  safety atts:   {}",
+                bundle.aibom.safety_attestations.len()
+            );
+            println!("  export ctrl:   {}", bundle.aibom.export_controls.len());
+            println!("  log entries:   {}", bundle.log_entries.len());
+        }
+    }
+    Ok(())
 }

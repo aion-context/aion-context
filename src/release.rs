@@ -540,6 +540,55 @@ pub struct SignedRelease {
 }
 
 impl SignedRelease {
+    /// Reconstruct a [`SignedRelease`] from its component parts
+    /// (issue #28). Complement to [`ReleaseBuilder::seal`] — the
+    /// cold-storage audit path: a verifier that loaded the
+    /// per-component artifacts from disk can reassemble the
+    /// aggregate and call [`Self::verify`].
+    ///
+    /// `log_entries` is a list of `(kind, seq)` pairs; internally
+    /// they become [`LogSeq`] records. The order must match what
+    /// [`ReleaseBuilder::seal`] produced: manifest signature,
+    /// DSSE envelope, SLSA statement — see
+    /// [`crate::transparency_log::LogEntryKind`].
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_components(
+        signer: AuthorId,
+        model_ref: ModelRef,
+        manifest: ArtifactManifest,
+        manifest_signature: SignatureEntry,
+        manifest_dsse: DsseEnvelope,
+        aibom: AiBom,
+        aibom_dsse: DsseEnvelope,
+        slsa_statement: InTotoStatement,
+        slsa_dsse: DsseEnvelope,
+        oci_primary: OciArtifactManifest,
+        oci_aibom_referrer: OciArtifactManifest,
+        oci_slsa_referrer: OciArtifactManifest,
+        log_entries: Vec<(LogEntryKind, u64)>,
+    ) -> Self {
+        let log_seqs = log_entries
+            .into_iter()
+            .map(|(kind, seq)| LogSeq { kind, seq })
+            .collect();
+        Self {
+            signer,
+            model_ref,
+            manifest,
+            manifest_signature,
+            manifest_dsse,
+            aibom,
+            aibom_dsse,
+            slsa_statement,
+            slsa_dsse,
+            oci_primary,
+            oci_aibom_referrer,
+            oci_slsa_referrer,
+            log_entries: log_seqs,
+        }
+    }
+
     /// Verify every component of the release against `verifying_key`.
     ///
     /// # Errors
