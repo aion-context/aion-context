@@ -52,6 +52,8 @@ use crate::aibom::{
 use crate::crypto::{SigningKey, VerifyingKey};
 use crate::dsse::{self, DsseEnvelope, AION_MANIFEST_TYPE};
 use crate::key_registry::KeyRegistry;
+#[allow(deprecated)]
+// RFC-0034 Phase D: SignedRelease::verify wraps raw-key verify_manifest_signature
 use crate::manifest::{
     sign_manifest, verify_manifest_signature, verify_manifest_signature_with_registry,
     ArtifactEntry, ArtifactManifest, ArtifactManifestBuilder,
@@ -539,6 +541,17 @@ impl SignedRelease {
     /// Returns `Err` if any signature fails to verify, any OCI
     /// digest is inconsistent, or the AIBOM / SLSA linkages to the
     /// manifest are broken.
+    ///
+    /// # Migration (RFC-0034)
+    ///
+    /// Prefer [`Self::verify_with_registry`] when you maintain a
+    /// pinned [`KeyRegistry`]. The raw-key form here trusts the
+    /// caller's out-of-band pinning.
+    #[deprecated(
+        since = "0.2.0",
+        note = "use SignedRelease::verify_with_registry; RFC-0034 — raw-key verify trusts the caller's out-of-band pinning"
+    )]
+    #[allow(deprecated)] // wraps raw-key verify_manifest_signature + verify_envelope
     pub fn verify(&self, verifying_key: &VerifyingKey) -> Result<()> {
         verify_manifest_signature(&self.manifest, &self.manifest_signature)?;
         self.verify_dsse_envelopes(verifying_key)?;
@@ -590,6 +603,7 @@ impl SignedRelease {
     /// Any envelope carrying a keyid other than
     /// `dsse::keyid_for(self.signer)` is rejected before the
     /// Ed25519 verify runs.
+    #[allow(deprecated)] // wraps raw-key dsse::verify_envelope; only called from deprecated SignedRelease::verify
     fn verify_dsse_envelopes(&self, verifying_key: &VerifyingKey) -> Result<()> {
         let expected_keyid = dsse::keyid_for(self.signer);
         let lookup = |keyid: &str| -> Option<VerifyingKey> {
@@ -720,6 +734,7 @@ fn verify_slsa_subjects_against_manifest(
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
+#[allow(deprecated)] // RFC-0034 Phase D: tests exercise the deprecated SignedRelease::verify contract
 mod tests {
     use super::*;
 
