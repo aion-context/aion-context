@@ -12,24 +12,19 @@
 //! # Example
 //!
 //! ```
-//! use aion_context::transparency_log::{TransparencyLog, LogEntryKind, verify_inclusion_proof, leaf_hash};
+//! use aion_context::transparency_log::{TransparencyLog, LogEntryKind, verify_inclusion_proof};
 //! use aion_context::crypto::SigningKey;
 //!
 //! let mut log = TransparencyLog::new();
 //! let payload = b"attestation bytes";
 //! let seq = log.append(LogEntryKind::VersionAttestation, payload, 42).unwrap();
 //!
+//! // Self-contained verification: a verifier holding the log and a
+//! // pinned root needs no access to the original payload.
 //! let proof = log.inclusion_proof(seq).unwrap();
-//! let entry = log.entry(seq).unwrap();
-//! let computed_leaf = leaf_hash(
-//!     LogEntryKind::VersionAttestation,
-//!     entry.seq,
-//!     entry.timestamp_version,
-//!     &entry.prev_leaf_hash,
-//!     payload,
-//! );
+//! let leaf = log.leaf_hash_at(seq).unwrap();
 //! verify_inclusion_proof(
-//!     computed_leaf,
+//!     leaf,
 //!     proof.leaf_index,
 //!     proof.tree_size,
 //!     &proof.audit_path,
@@ -367,6 +362,21 @@ impl TransparencyLog {
     #[must_use]
     pub fn entries(&self) -> &[LogEntry] {
         &self.entries
+    }
+
+    /// Return the stored leaf hash for the entry at `index`, if any.
+    ///
+    /// Pairs with [`Self::inclusion_proof`] and
+    /// [`verify_inclusion_proof`]: a verifier holding only the log
+    /// and a pinned root hash can verify any entry's inclusion
+    /// without needing the original payload bytes.
+    ///
+    /// Returns `None` when `index >= tree_size()` or when `index`
+    /// does not fit in `usize`.
+    #[must_use]
+    pub fn leaf_hash_at(&self, index: u64) -> Option<[u8; 32]> {
+        let idx = usize::try_from(index).ok()?;
+        self.leaf_hashes.get(idx).copied()
     }
 
     /// Append a new leaf and return its sequence number.
@@ -839,6 +849,77 @@ mod tests {
             // Mutate one byte of the signed root after signing.
             sth.root_hash[0] ^= 0x01;
             assert!(log.verify_tree_head(&sth).is_err());
+        }
+
+        /// Issue #29: a verifier holding only the log + its root can
+        /// verify every entry's inclusion without the original payload.
+        #[hegel::test]
+        fn prop_self_contained_inclusion_proof_verification(tc: hegel::TestCase) {
+            let payloads = draw_payloads(&tc);
+            let log = build_log(&payloads);
+            let root = log.root_hash();
+
+            // Deliberately DROP payloads before verification — the
+            // whole point of this property is that the log is
+            // self-sufficient for proof verification.
+            drop(payloads);
+
+            for i in 0..log.tree_size() {
+                let leaf = log.leaf_hash_at(i).unwrap_or_else(|| std::process::abort());
+                let proof = log
+                    .inclusion_proof(i)
+                    .unwrap_or_else(|_| std::process::abort());
+                verify_inclusion_proof(
+                    leaf,
+                    proof.leaf_index,
+                    proof.tree_size,
+                    &proof.audit_path,
+                    root,
+                )
+                .unwrap_or_else(|_| std::process::abort());
+            }
+        }
+    }
+
+    mod leaf_hash_at_tests {
+        use super::*;
+
+        #[test]
+        fn leaf_hash_at_matches_leaf_hash_for_every_entry() {
+            let mut log = TransparencyLog::new();
+            let payloads: Vec<&[u8]> = vec![b"alpha", b"beta", b"gamma", b"delta", b"epsilon"];
+            for (i, p) in payloads.iter().enumerate() {
+                log.append(LogEntryKind::DsseEnvelope, p, (i as u64) + 1)
+                    .unwrap();
+            }
+            for (i, p) in payloads.iter().enumerate() {
+                let entry = log.entry(i as u64).unwrap();
+                let expected = leaf_hash(
+                    entry.kind,
+                    entry.seq,
+                    entry.timestamp_version,
+                    &entry.prev_leaf_hash,
+                    p,
+                );
+                let stored = log.leaf_hash_at(i as u64).unwrap();
+                assert_eq!(stored, expected);
+            }
+        }
+
+        #[test]
+        fn leaf_hash_at_out_of_range_returns_none() {
+            let mut log = TransparencyLog::new();
+            log.append(LogEntryKind::VersionAttestation, b"only", 1)
+                .unwrap();
+            assert!(log.leaf_hash_at(0).is_some());
+            assert!(log.leaf_hash_at(1).is_none());
+            assert!(log.leaf_hash_at(u64::MAX).is_none());
+        }
+
+        #[test]
+        fn leaf_hash_at_on_empty_log_returns_none() {
+            let log = TransparencyLog::new();
+            assert!(log.leaf_hash_at(0).is_none());
         }
     }
 }
