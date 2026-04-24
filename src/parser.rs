@@ -341,6 +341,11 @@ impl Default for FileHeader {
 pub struct AionParser<'a> {
     /// Complete file data
     data: &'a [u8],
+    /// Header reference, parsed once by `new` and cached. Binding
+    /// the reference at construction time lets `header()` stay
+    /// infallible without an `.expect()` — the Tiger Style fix for
+    /// RFC-0033 C2.
+    header: &'a FileHeader,
 }
 
 impl<'a> AionParser<'a> {
@@ -376,29 +381,25 @@ impl<'a> AionParser<'a> {
             });
         }
 
-        // Parse and validate header (zero-copy)
-        let header =
-            FileHeader::read_from_prefix(data).ok_or_else(|| AionError::InvalidFormat {
-                reason: "Failed to parse header".to_string(),
-            })?;
+        // Parse and validate header (zero-copy). The reference is
+        // cached on `self` so `header()` can stay infallible without
+        // re-running `ref_from_prefix` on every call.
+        let header = FileHeader::ref_from_prefix(data).ok_or_else(|| AionError::InvalidFormat {
+            reason: "Failed to parse header".to_string(),
+        })?;
         header.validate()?;
 
-        Ok(Self { data })
+        Ok(Self { data, header })
     }
 
-    /// Get reference to file header
+    /// Get reference to the file header.
     ///
-    /// This is a zero-copy operation returning a direct reference.
-    /// The header is parsed on-demand from the data slice.
-    ///
-    /// # Panics
-    ///
-    /// Should never panic as the header was validated during construction.
+    /// Zero-copy: the reference was bound to the underlying data
+    /// slice by `new` and cached on the parser, so this accessor is
+    /// a simple field read and cannot fail.
     #[must_use]
-    #[allow(clippy::expect_used)] // Validated during construction
     pub fn header(&self) -> &'a FileHeader {
-        // Safety: We validated during construction that data is large enough
-        FileHeader::ref_from_prefix(self.data).expect("header validated during construction")
+        self.header
     }
 
     /// Get encrypted rules section as byte slice
