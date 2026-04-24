@@ -81,4 +81,12 @@ yanked = "deny"
 #   { id = "RUSTSEC-YYYY-NNNN", reason = "..." }
 # Every entry is a tax the next maintainer pays. Review at every
 # dep-bump PR; entries older than six months are red flags.
-ignore = []
+ignore = [
+    # `paste` is a procedural-macro helper that the upstream maintainer
+    # archived on 2024-10-07. Pulled in transitively (currently via
+    # zerocopy-derive / pqcrypto-mldsa dependency chain, macro-only —
+    # no runtime footprint). No CVE, no security impact. Remove once
+    # the transitive chain migrates to `pastey` (a drop-in fork) or
+    # to `with_builtin_macros`.
+    { id = "RUSTSEC-2024-0436", reason = "paste unmaintained; transitive macro helper; no CVE; migrate when upstream deps switch to pastey" },
+]

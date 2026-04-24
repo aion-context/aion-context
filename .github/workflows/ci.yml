@@ -12,7 +12,6 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  RUSTFLAGS: -D warnings
 
 jobs:
   fmt:
@@ -34,7 +33,14 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --all-targets --all-features -- -D warnings
+      # Tiger Style deny-lints (unwrap_used, expect_used, panic,
+      # todo, unreachable, unimplemented) are set to "deny" at the
+      # crate level in Cargo.toml and fail clippy on their own.
+      # Advisory-level lints (indexing_slicing, arithmetic_side_effects,
+      # format_push_string) are intentionally "warn" per Cargo.toml;
+      # do not add -D warnings here — that would block CI on hygiene
+      # the crate-level posture deliberately leaves as warn.
+      - run: cargo clippy --all-targets --all-features
 
   test:
     name: test (stable)
@@ -61,6 +67,9 @@ jobs:
   audit:
     name: cargo-audit
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: write
     steps:
       - uses: actions/checkout@v4
       - uses: rustsec/audit-check@v2
