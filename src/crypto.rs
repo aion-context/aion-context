@@ -673,4 +673,60 @@ mod tests {
             assert_ne!(nonce1, nonce2);
         }
     }
+
+    mod properties {
+        use super::*;
+        use hegel::generators as gs;
+
+        #[hegel::test]
+        fn prop_sign_verify_roundtrip(tc: hegel::TestCase) {
+            let message = tc.draw(gs::binary().max_size(4096));
+            let key = SigningKey::generate();
+            let signature = key.sign(&message);
+            let verifying_key = key.verifying_key();
+            assert!(verifying_key.verify(&message, &signature).is_ok());
+        }
+
+        #[hegel::test]
+        fn prop_verify_rejects_wrong_key(tc: hegel::TestCase) {
+            let message = tc.draw(gs::binary().max_size(4096));
+            let signer = SigningKey::generate();
+            let other = SigningKey::generate();
+            let signature = signer.sign(&message);
+            assert!(other.verifying_key().verify(&message, &signature).is_err());
+        }
+
+        #[hegel::test]
+        fn prop_verify_rejects_tampered_message(tc: hegel::TestCase) {
+            let mut message = tc.draw(gs::binary().min_size(1).max_size(4096));
+            let key = SigningKey::generate();
+            let signature = key.sign(&message);
+            let max = message
+                .len()
+                .checked_sub(1)
+                .unwrap_or_else(|| std::process::abort());
+            let flip_index = tc.draw(gs::integers::<usize>().max_value(max));
+            if let Some(byte) = message.get_mut(flip_index) {
+                *byte ^= 0x01;
+            }
+            assert!(key.verifying_key().verify(&message, &signature).is_err());
+        }
+
+        #[hegel::test]
+        fn prop_hash_is_deterministic(tc: hegel::TestCase) {
+            let data = tc.draw(gs::binary().max_size(8192));
+            assert_eq!(hash(&data), hash(&data));
+        }
+
+        #[hegel::test]
+        fn prop_verifying_key_roundtrip_verifies(tc: hegel::TestCase) {
+            let message = tc.draw(gs::binary().max_size(4096));
+            let signer = SigningKey::generate();
+            let original = signer.verifying_key();
+            let restored = VerifyingKey::from_bytes(&original.to_bytes())
+                .unwrap_or_else(|_| std::process::abort());
+            let signature = signer.sign(&message);
+            assert!(restored.verify(&message, &signature).is_ok());
+        }
+    }
 }

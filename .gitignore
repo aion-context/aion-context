@@ -48,3 +48,6 @@ docs/_build/
 # Project specific
 fuzz/corpus/
 fuzz/artifacts/
+
+# Hegel property-test server logs (per-process, not for git)
+.hegel/
