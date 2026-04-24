@@ -187,6 +187,18 @@ impl OciArtifactManifest {
         })
     }
 
+    /// RFC 8785 (JCS) canonical bytes — use when cross-implementation
+    /// byte stability matters (Phase B of RFC-0031). Opt-in;
+    /// [`Self::canonical_bytes`] remains the hash-stable form used
+    /// by [`Self::digest`].
+    ///
+    /// # Errors
+    ///
+    /// Propagates serialization errors from [`crate::jcs`].
+    pub fn to_jcs_bytes(&self) -> Result<Vec<u8>> {
+        crate::jcs::to_jcs_bytes(self)
+    }
+
     /// Parse from JSON.
     ///
     /// # Errors
@@ -493,6 +505,18 @@ mod tests {
                 .insert("dev.aion.mutation".to_string(), "yes".to_string());
             let tampered_digest = tampered.digest().unwrap_or_else(|_| std::process::abort());
             assert_ne!(original_digest, tampered_digest);
+        }
+
+        #[hegel::test]
+        fn prop_oci_manifest_to_jcs_bytes_matches_helper(tc: hegel::TestCase) {
+            let aion_bytes = tc.draw(gs::binary().max_size(256));
+            let config = draw_config(&tc);
+            let m = build_aion_manifest(&aion_bytes, "rules.aion", &config)
+                .unwrap_or_else(|_| std::process::abort());
+            let from_method = m.to_jcs_bytes().unwrap_or_else(|_| std::process::abort());
+            let from_helper =
+                crate::jcs::to_jcs_bytes(&m).unwrap_or_else(|_| std::process::abort());
+            assert_eq!(from_method, from_helper);
         }
     }
 }

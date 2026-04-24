@@ -198,6 +198,18 @@ impl InTotoStatement {
         })
     }
 
+    /// RFC 8785 (JCS) canonical bytes — use when cross-implementation
+    /// byte stability matters (Phase B of RFC-0031). Opt-in;
+    /// [`Self::canonical_bytes`] remains the signature-stable form
+    /// for historical DSSE envelopes.
+    ///
+    /// # Errors
+    ///
+    /// Propagates serialization errors from [`crate::jcs`].
+    pub fn to_jcs_bytes(&self) -> Result<Vec<u8>> {
+        crate::jcs::to_jcs_bytes(self)
+    }
+
     /// Parse from JSON.
     ///
     /// # Errors
@@ -619,6 +631,22 @@ mod tests {
             let _ = signer;
             // Show VerifyingKey is reachable (keeps the import alive in tests).
             let _vk: Option<VerifyingKey> = None;
+        }
+
+        #[hegel::test]
+        fn prop_slsa_statement_to_jcs_bytes_matches_helper(tc: hegel::TestCase) {
+            let manifest = draw_manifest(&tc);
+            let mut builder = SlsaStatementBuilder::new("https://example.com/ci/1");
+            builder
+                .add_all_subjects_from_manifest(&manifest)
+                .unwrap_or_else(|_| std::process::abort());
+            let statement = builder.build().unwrap_or_else(|_| std::process::abort());
+            let from_method = statement
+                .to_jcs_bytes()
+                .unwrap_or_else(|_| std::process::abort());
+            let from_helper =
+                crate::jcs::to_jcs_bytes(&statement).unwrap_or_else(|_| std::process::abort());
+            assert_eq!(from_method, from_helper);
         }
     }
 }

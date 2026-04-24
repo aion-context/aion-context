@@ -246,6 +246,18 @@ impl AiBom {
             reason: format!("AIBOM canonical bytes failed: {e}"),
         })
     }
+
+    /// RFC 8785 (JCS) canonical bytes — use when cross-implementation
+    /// byte stability matters (Phase B of RFC-0031). Opt-in;
+    /// `canonical_bytes()` remains the signature-stable form for
+    /// historical DSSE envelopes.
+    ///
+    /// # Errors
+    ///
+    /// Propagates serialization errors from [`crate::jcs`].
+    pub fn to_jcs_bytes(&self) -> Result<Vec<u8>> {
+        crate::jcs::to_jcs_bytes(self)
+    }
 }
 
 /// Fluent builder for an [`AiBom`].
@@ -656,6 +668,17 @@ mod tests {
             let env =
                 wrap_aibom_dsse(&aibom, signer, &key).unwrap_or_else(|_| std::process::abort());
             assert_eq!(env.payload_type, AIBOM_PAYLOAD_TYPE);
+        }
+
+        #[hegel::test]
+        fn prop_aibom_to_jcs_bytes_matches_helper(tc: hegel::TestCase) {
+            let aibom = draw_aibom(&tc);
+            let from_method = aibom
+                .to_jcs_bytes()
+                .unwrap_or_else(|_| std::process::abort());
+            let from_helper =
+                crate::jcs::to_jcs_bytes(&aibom).unwrap_or_else(|_| std::process::abort());
+            assert_eq!(from_method, from_helper);
         }
     }
 }

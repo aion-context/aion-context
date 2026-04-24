@@ -65,6 +65,7 @@ pub mod error; // Issue #3: Error handling
 pub mod export; // Issue #31: Export/Import formats
 pub mod hw_attestation; // RFC-0026: Hardware attestation binding
 pub mod hybrid_sig; // RFC-0027: Post-quantum hybrid signatures
+pub mod jcs; // RFC-0031: RFC 8785 JSON canonicalization
 pub mod key_registry; // RFC-0028: Key rotation and revocation
 pub mod keystore; // Issue #12: Key generation and storage
 pub mod manifest; // RFC-0022: External artifact manifest
