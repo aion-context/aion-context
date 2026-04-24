@@ -218,8 +218,21 @@ pub fn sign_version(version: &VersionEntry, signing_key: &SigningKey) -> Signatu
 /// let signature_entry = sign_version(&version, &signing_key);
 ///
 /// // Verification should succeed
-/// assert!(verify_signature(&version, &signature_entry).is_ok());
+/// # #[allow(deprecated)]
+/// # { assert!(verify_signature(&version, &signature_entry).is_ok()); }
 /// ```
+///
+/// # Migration (RFC-0034)
+///
+/// Prefer [`verify_signature_with_registry`] when you maintain a
+/// pinned [`crate::key_registry::KeyRegistry`]. The registry-aware
+/// path cross-checks `signature.public_key` against the active
+/// epoch for the signer before running the Ed25519 verify, closing
+/// the `public_key`-substitution gap.
+#[deprecated(
+    since = "0.2.0",
+    note = "use verify_signature_with_registry; RFC-0034 — raw-key verify trusts the caller's out-of-band pinning"
+)]
 pub fn verify_signature(version: &VersionEntry, signature: &SignatureEntry) -> Result<()> {
     // Verify author ID matches
     if version.author_id != signature.author_id {
@@ -281,6 +294,15 @@ pub fn sign_attestation(
 /// equality constraint against `version.author_id`. Returns `Ok` iff the
 /// embedded Ed25519 signature verifies against the canonical attestation
 /// message for `(version, signature.author_id)`.
+///
+/// # Migration (RFC-0034)
+///
+/// Prefer [`verify_attestation_with_registry`] when you maintain a
+/// pinned [`crate::key_registry::KeyRegistry`].
+#[deprecated(
+    since = "0.2.0",
+    note = "use verify_attestation_with_registry; RFC-0034 — raw-key verify trusts the caller's out-of-band pinning"
+)]
 pub fn verify_attestation(version: &VersionEntry, signature: &SignatureEntry) -> Result<()> {
     let signer = AuthorId::new(signature.author_id);
     let message = canonical_attestation_message(version, signer);
@@ -301,6 +323,7 @@ pub fn verify_attestation(version: &VersionEntry, signature: &SignatureEntry) ->
 /// author at `version.version_number`, if the signature's embedded
 /// public key does not match that epoch, or if the underlying
 /// Ed25519 verification fails.
+#[allow(deprecated)] // delegates to raw-key verify_signature as the final step of the 4-step algorithm
 pub fn verify_signature_with_registry(
     version: &VersionEntry,
     signature: &SignatureEntry,
@@ -331,6 +354,7 @@ pub fn verify_signature_with_registry(
 /// # Errors
 ///
 /// Same as [`verify_signature_with_registry`].
+#[allow(deprecated)] // delegates to raw-key verify_attestation as the final step of the 4-step algorithm
 pub fn verify_attestation_with_registry(
     version: &VersionEntry,
     signature: &SignatureEntry,
@@ -449,6 +473,7 @@ pub fn verify_signatures_batch(
 }
 
 /// Sequential signature verification (for small batches)
+#[allow(deprecated)] // RFC-0034 Phase D: batch wrapper over raw-key verify; registry-aware batch in Phase E
 fn verify_signatures_sequential(
     versions: &[VersionEntry],
     signatures: &[SignatureEntry],
@@ -463,6 +488,7 @@ fn verify_signatures_sequential(
 ///
 /// This provides significant speedup for files with many versions.
 /// Each signature is verified independently on a thread pool.
+#[allow(deprecated)] // RFC-0034 Phase D: parallel batch wrapper over raw-key verify; registry-aware batch in Phase E
 fn verify_signatures_parallel(
     versions: &[VersionEntry],
     signatures: &[SignatureEntry],
@@ -696,6 +722,7 @@ fn verify_chain_links(versions: &[VersionEntry]) -> Result<()> {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 #[allow(clippy::inconsistent_digit_grouping)]
+#[allow(deprecated)] // RFC-0034 Phase D: tests exercise the deprecated raw-key verify contract on purpose
 mod tests {
     use super::*;
     use crate::crypto::SigningKey;

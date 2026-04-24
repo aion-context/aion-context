@@ -37,6 +37,7 @@ use crate::audit::{ActionCode, AuditEntry};
 use crate::crypto::{decrypt, derive_key, encrypt, generate_nonce, hash, SigningKey};
 use crate::parser::AionParser;
 use crate::serializer::{AionFile, AionSerializer, SignatureEntry, VersionEntry};
+#[allow(deprecated)] // RFC-0034 Phase D: verify_signature kept for legacy verify_file path
 use crate::signature_chain::{
     compute_version_hash, create_genesis_version, sign_version, verify_hash_chain,
     verify_signature, verify_signatures_batch,
@@ -353,6 +354,7 @@ fn build_new_version_and_signature(
 
 /// Verify all existing signatures in the file
 #[allow(clippy::cast_possible_truncation)] // File counts fit in usize
+#[allow(deprecated)] // RFC-0034 Phase D: wraps raw-key verify_signature; Phase E adds a _with_registry variant
 fn verify_existing_signatures(parser: &AionParser<'_>) -> Result<()> {
     let header = parser.header();
     let version_count = header.version_chain_count as usize;
@@ -1138,6 +1140,7 @@ pub fn show_version_history(path: &Path) -> Result<Vec<VersionInfo>> {
 /// }
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
+#[allow(deprecated)] // RFC-0034 Phase D: wraps raw-key verify_signature; Phase E adds a _with_registry variant
 pub fn show_signatures(path: &Path) -> Result<Vec<SignatureInfo>> {
     // Load and parse the file
     let file_bytes = std::fs::read(path).map_err(|e| AionError::FileReadError {

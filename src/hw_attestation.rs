@@ -283,6 +283,17 @@ impl EvidenceVerifier for PubkeyPrefixEvidenceVerifier {
 ///
 /// Returns `Err` if the master signature fails or if the platform
 /// verifier rejects.
+///
+/// # Migration (RFC-0034)
+///
+/// Prefer [`verify_binding_with_registry`] when you maintain a
+/// pinned [`crate::key_registry::KeyRegistry`]. The registry-aware
+/// path also cross-checks the binding's `epoch` and `public_key`
+/// against the active epoch.
+#[deprecated(
+    since = "0.2.0",
+    note = "use verify_binding_with_registry; RFC-0034 — raw-key verify trusts the caller's master key"
+)]
 pub fn verify_binding<V: EvidenceVerifier>(
     binding: &KeyAttestationBinding,
     master_verifying_key: &VerifyingKey,
@@ -308,6 +319,7 @@ pub fn verify_binding<V: EvidenceVerifier>(
 /// epoch do not match that active epoch. Returns the underlying
 /// error shape if the master signature fails, or if the platform
 /// verifier rejects.
+#[allow(deprecated)] // delegates to raw-key verify_binding as the final step of the 4-step algorithm
 pub fn verify_binding_with_registry<V: EvidenceVerifier>(
     binding: &KeyAttestationBinding,
     registry: &crate::key_registry::KeyRegistry,
@@ -338,6 +350,7 @@ pub fn verify_binding_with_registry<V: EvidenceVerifier>(
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
+#[allow(deprecated)] // RFC-0034 Phase D: tests exercise the deprecated raw-key verify_binding contract
 mod tests {
     use super::*;
 

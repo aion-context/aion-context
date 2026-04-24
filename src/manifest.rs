@@ -367,6 +367,15 @@ pub fn sign_manifest(
 ///
 /// Returns `AionError::SignatureVerificationFailed` if the signature
 /// does not verify.
+///
+/// # Migration (RFC-0034)
+///
+/// Prefer [`verify_manifest_signature_with_registry`] when you
+/// maintain a pinned [`crate::key_registry::KeyRegistry`].
+#[deprecated(
+    since = "0.2.0",
+    note = "use verify_manifest_signature_with_registry; RFC-0034 — raw-key verify trusts the caller's out-of-band pinning"
+)]
 pub fn verify_manifest_signature(
     manifest: &ArtifactManifest,
     signature: &SignatureEntry,
@@ -413,11 +422,14 @@ pub fn verify_manifest_signature_with_registry(
             author: signer,
         });
     }
+    #[allow(deprecated)]
+    // final step of 4-step registry-aware algorithm delegates to raw-key verify
     verify_manifest_signature(manifest, signature)
 }
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
+#[allow(deprecated)] // RFC-0034 Phase D: tests exercise the deprecated raw-key verify_manifest_signature contract
 mod tests {
     use super::*;
 

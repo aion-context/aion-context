@@ -199,6 +199,17 @@ pub fn add_signature(envelope: &mut DsseEnvelope, signer: AuthorId, key: &Signin
 /// Returns `Err` if the envelope carries zero signatures, if any
 /// signature lacks a pinned key under `key_for`, or if any signature
 /// fails to verify.
+///
+/// # Migration (RFC-0034)
+///
+/// Prefer [`verify_envelope_with_registry`] when you maintain a
+/// pinned [`crate::key_registry::KeyRegistry`]. The registry-aware
+/// path resolves every keyid through the registry instead of
+/// accepting caller-supplied bytes.
+#[deprecated(
+    since = "0.2.0",
+    note = "use verify_envelope_with_registry; RFC-0034 — the key_for closure trusts the caller's out-of-band pinning"
+)]
 pub fn verify_envelope<F>(envelope: &DsseEnvelope, key_for: F) -> Result<Vec<String>>
 where
     F: Fn(&str) -> Option<VerifyingKey>,
@@ -255,6 +266,7 @@ where
 /// parses as a non-aion form, if any pinned signer has no active
 /// epoch at `at_version`, or if any signature fails Ed25519
 /// verification under the pinned key.
+#[allow(deprecated)] // delegates to raw-key verify_envelope as the final step of the 4-step algorithm
 pub fn verify_envelope_with_registry(
     envelope: &DsseEnvelope,
     registry: &crate::key_registry::KeyRegistry,
@@ -375,6 +387,7 @@ pub fn wrap_manifest(
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
+#[allow(deprecated)] // RFC-0034 Phase D: tests exercise the deprecated raw-key verify_envelope contract
 mod tests {
     use super::*;
 

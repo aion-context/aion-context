@@ -10,6 +10,7 @@
 //! - **Backup Recovery**: 2-of-3 for key recovery scenarios
 
 use crate::serializer::{SignatureEntry, VersionEntry};
+#[allow(deprecated)] // RFC-0034 Phase D: verify_multisig wraps raw-key verify_attestation
 use crate::signature_chain::{verify_attestation, verify_attestation_with_registry};
 use crate::types::AuthorId;
 use crate::{AionError, Result};
@@ -149,6 +150,19 @@ impl MultiSigVerification {
 ///     println!("Approved by {} signers", result.valid_count);
 /// }
 /// ```
+///
+/// # Migration (RFC-0034)
+///
+/// Prefer [`verify_multisig_with_registry`] when you maintain a
+/// pinned [`crate::key_registry::KeyRegistry`]. The registry-aware
+/// path rejects signers whose pinned active epoch does not match
+/// the signature's embedded `public_key`, closing the
+/// substitution gap in the raw-key path.
+#[deprecated(
+    since = "0.2.0",
+    note = "use verify_multisig_with_registry; RFC-0034 — raw-key verify trusts the caller's out-of-band pinning"
+)]
+#[allow(deprecated)] // wraps raw-key verify_attestation internally
 pub fn verify_multisig(
     version: &VersionEntry,
     signatures: &[SignatureEntry],
@@ -305,6 +319,7 @@ impl Default for SignatureAggregator {
 }
 
 #[cfg(test)]
+#[allow(deprecated)] // RFC-0034 Phase D: tests exercise the deprecated raw-key verify_multisig contract
 mod tests {
     use super::*;
 

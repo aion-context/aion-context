@@ -433,6 +433,7 @@ pub fn unwrap_statement_dsse(envelope: &DsseEnvelope) -> Result<InTotoStatement>
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
+#[allow(deprecated)] // RFC-0034 Phase D: tests use verify_envelope to exercise the DSSE wrapper path
 mod tests {
     use super::*;
     use crate::dsse::verify_envelope;
