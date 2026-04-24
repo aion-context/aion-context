@@ -63,6 +63,7 @@ pub mod dsse; // RFC-0023: DSSE envelope support
 pub mod error; // Issue #3: Error handling
 pub mod export; // Issue #31: Export/Import formats
 pub mod hw_attestation; // RFC-0026: Hardware attestation binding
+pub mod hybrid_sig; // RFC-0027: Post-quantum hybrid signatures
 pub mod keystore; // Issue #12: Key generation and storage
 pub mod manifest; // RFC-0022: External artifact manifest
 pub mod multisig; // Issue #29: Multi-signature support
