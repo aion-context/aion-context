@@ -184,8 +184,15 @@ pub fn add_signature(envelope: &mut DsseEnvelope, signer: AuthorId, key: &Signin
     });
 }
 
-/// Verify every signature in `envelope`, returning the keyids of
-/// verified signatures in envelope order.
+/// Verify every signature in `envelope`, returning the distinct
+/// keyids of verified signatures in envelope order.
+///
+/// A given `keyid` contributes to the returned vector **at most
+/// once** even if the envelope carries multiple signature entries
+/// under the same keyid (RFC-0033 C6): callers counting
+/// `verified.len()` for quorum cannot be tricked into double-
+/// counting by a repeated signer. The second and subsequent
+/// entries for the same keyid are silently skipped.
 ///
 /// # Errors
 ///
@@ -203,7 +210,11 @@ where
     }
     let message = pae(&envelope.payload_type, &envelope.payload);
     let mut verified = Vec::with_capacity(envelope.signatures.len());
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
     for sig_entry in &envelope.signatures {
+        if !seen.insert(sig_entry.keyid.as_str()) {
+            continue;
+        }
         let verifying_key = key_for(&sig_entry.keyid).ok_or_else(|| AionError::InvalidFormat {
             reason: format!("no pinned key for keyid: {}", sig_entry.keyid),
         })?;
@@ -543,6 +554,31 @@ mod tests {
             let verified = verify_envelope(&env, |keyid| lookup.get(keyid).cloned())
                 .unwrap_or_else(|_| std::process::abort());
             assert_eq!(verified.len(), n as usize);
+        }
+
+        #[hegel::test]
+        fn prop_dsse_verify_dedups_repeated_keyid(tc: hegel::TestCase) {
+            // RFC-0033 C6: an envelope with N entries under the same
+            // keyid must yield exactly one element in `verified`.
+            let payload = tc.draw(gs::binary().max_size(256));
+            let ptype = tc.draw(gs::text().min_size(1).max_size(32));
+            let signer = AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1)));
+            let extra = tc.draw(gs::integers::<usize>().min_value(1).max_value(4));
+            let key = SigningKey::generate();
+            let verifying = key.verifying_key();
+            let mut env = sign_envelope(&payload, &ptype, signer, &key);
+            for _ in 0..extra {
+                add_signature(&mut env, signer, &key);
+            }
+            let verified = verify_envelope(&env, |keyid| {
+                if keyid == keyid_for(signer) {
+                    Some(verifying.clone())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|_| std::process::abort());
+            assert_eq!(verified.len(), 1);
         }
 
         #[hegel::test]

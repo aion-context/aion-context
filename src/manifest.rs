@@ -42,9 +42,7 @@ use zerocopy::AsBytes;
 
 use crate::crypto::{hash, SigningKey, VerifyingKey};
 use crate::serializer::SignatureEntry;
-use crate::serializer::VersionEntry;
-use crate::signature_chain::canonical_attestation_message;
-use crate::types::{AuthorId, VersionNumber};
+use crate::types::AuthorId;
 use crate::{AionError, Result};
 
 /// Size of a serialized [`ArtifactEntry`] in bytes.
@@ -316,36 +314,44 @@ fn canonical_manifest_bytes(entries: &[ArtifactEntry], name_table: &[u8]) -> Vec
     out
 }
 
-/// Synthetic VersionEntry whose fields encode the manifest identity.
+/// Domain separator for manifest-identity signatures.
 ///
-/// Reusing `canonical_attestation_message` means we get the exact
-/// domain-separation and signer-binding guarantees of RFC-0021 for
-/// free. The manifest hash rides in `rules_hash`; the other fields
-/// are clamped to zero so two different manifests always produce
-/// different messages.
-fn manifest_as_version(manifest: &ArtifactManifest) -> VersionEntry {
-    VersionEntry::new(
-        VersionNumber(0),
-        [0u8; 32],
-        manifest.manifest_id,
-        AuthorId::new(0),
-        0,
-        0,
-        0,
-    )
+/// Dedicated to manifest signing under RFC-0033 C7, so the bytes
+/// signed are never confused with — nor replayable as — a
+/// multi-party attestation produced by `signature_chain` under
+/// `ATTESTATION_DOMAIN`. The trailing NUL forbids any other
+/// aion domain from being constructed by appending bytes.
+pub const MANIFEST_SIGNATURE_DOMAIN: &[u8] = b"AION_V2_MANIFEST_SIG_V1\0";
+
+/// Build the canonical bytes signed by [`sign_manifest`] and
+/// verified by [`verify_manifest_signature`]:
+/// `MANIFEST_SIGNATURE_DOMAIN || manifest_id(32 B) || signer_le(8 B)`.
+#[must_use]
+pub fn canonical_manifest_signature_message(
+    manifest: &ArtifactManifest,
+    signer: AuthorId,
+) -> Vec<u8> {
+    let capacity = MANIFEST_SIGNATURE_DOMAIN
+        .len()
+        .saturating_add(32)
+        .saturating_add(8);
+    let mut msg = Vec::with_capacity(capacity);
+    msg.extend_from_slice(MANIFEST_SIGNATURE_DOMAIN);
+    msg.extend_from_slice(manifest.manifest_id());
+    msg.extend_from_slice(&signer.as_u64().to_le_bytes());
+    msg
 }
 
 /// Sign a manifest as `signer` using `signing_key`. The returned
-/// [`SignatureEntry`] binds to the manifest-id under the RFC-0021
-/// attestation domain.
+/// [`SignatureEntry`] binds to the manifest-id under the dedicated
+/// manifest-signature domain ([`MANIFEST_SIGNATURE_DOMAIN`]).
 #[must_use]
 pub fn sign_manifest(
     manifest: &ArtifactManifest,
     signer: AuthorId,
     signing_key: &SigningKey,
 ) -> SignatureEntry {
-    let synthetic = manifest_as_version(manifest);
-    let message = canonical_attestation_message(&synthetic, signer);
+    let message = canonical_manifest_signature_message(manifest, signer);
     let signature = signing_key.sign(&message);
     let public_key = signing_key.verifying_key().to_bytes();
     SignatureEntry::new(signer, public_key, signature)
@@ -354,8 +360,8 @@ pub fn sign_manifest(
 /// Verify a manifest signature produced by [`sign_manifest`].
 ///
 /// Returns `Ok(())` iff the embedded Ed25519 signature verifies
-/// against the canonical attestation message for the manifest and
-/// `signature.author_id`.
+/// against [`canonical_manifest_signature_message`] for the
+/// manifest and `signature.author_id`.
 ///
 /// # Errors
 ///
@@ -365,9 +371,8 @@ pub fn verify_manifest_signature(
     manifest: &ArtifactManifest,
     signature: &SignatureEntry,
 ) -> Result<()> {
-    let synthetic = manifest_as_version(manifest);
     let signer = AuthorId::new(signature.author_id);
-    let message = canonical_attestation_message(&synthetic, signer);
+    let message = canonical_manifest_signature_message(manifest, signer);
     let verifying_key = VerifyingKey::from_bytes(&signature.public_key)?;
     verifying_key.verify(&message, &signature.signature)
 }
@@ -557,6 +562,23 @@ mod tests {
             let mut sig = sign_manifest(&m, real_signer, &key);
             sig.author_id = fake_signer.as_u64();
             assert!(verify_manifest_signature(&m, &sig).is_err());
+        }
+
+        #[hegel::test]
+        fn prop_manifest_signature_domain_is_separated(tc: hegel::TestCase) {
+            // RFC-0033 C7: manifest signing uses MANIFEST_SIGNATURE_DOMAIN,
+            // which must differ from any other aion signing domain. A
+            // raw Ed25519 signature produced directly over the
+            // manifest_id — i.e. without MANIFEST_SIGNATURE_DOMAIN —
+            // must not verify as a manifest signature.
+            let pairs = draw_artifacts(&tc);
+            let m = build_manifest(&pairs);
+            let signer =
+                AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1).max_value(u64::MAX / 2)));
+            let key = SigningKey::generate();
+            let raw_signature = key.sign(m.manifest_id());
+            let entry = SignatureEntry::new(signer, key.verifying_key().to_bytes(), raw_signature);
+            assert!(verify_manifest_signature(&m, &entry).is_err());
         }
     }
 }
