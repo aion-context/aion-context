@@ -10,7 +10,7 @@
 //! - **Backup Recovery**: 2-of-3 for key recovery scenarios
 
 use crate::serializer::{SignatureEntry, VersionEntry};
-use crate::signature_chain::verify_signature;
+use crate::signature_chain::verify_attestation;
 use crate::types::AuthorId;
 use crate::{AionError, Result};
 
@@ -156,33 +156,30 @@ pub fn verify_multisig(
 ) -> Result<MultiSigVerification> {
     let mut valid_signers = Vec::new();
     let mut invalid_signers = Vec::new();
+    let mut seen: std::collections::HashSet<AuthorId> = std::collections::HashSet::new();
 
-    // Check each signature
+    // Per RFC-0021: verify each attestation; a signer may contribute at most
+    // once toward the threshold. Duplicates from the same signer are skipped
+    // (they neither help the threshold nor count as invalid).
     for sig in signatures {
         let author = AuthorId::new(sig.author_id);
 
-        // Only consider signatures from authorized signers
         if !policy.is_authorized(author) {
             continue;
         }
-
-        // Verify the signature
-        match verify_signature(version, sig) {
+        if !seen.insert(author) {
+            continue;
+        }
+        match verify_attestation(version, sig) {
             Ok(()) => valid_signers.push(author),
             Err(_) => invalid_signers.push(author),
         }
     }
 
-    // Find missing signers (authorized but didn't sign)
-    let signed_ids: std::collections::HashSet<_> = signatures
-        .iter()
-        .map(|s| AuthorId::new(s.author_id))
-        .collect();
-
     let missing_signers: Vec<_> = policy
         .authorized_signers
         .iter()
-        .filter(|a| !signed_ids.contains(a))
+        .filter(|a| !seen.contains(a))
         .copied()
         .collect();
 
@@ -298,5 +295,141 @@ mod tests {
 
         agg.add_signature(sig);
         assert_eq!(agg.count(), 1);
+    }
+
+    mod properties {
+        use super::*;
+        use crate::crypto::SigningKey;
+        use crate::serializer::VersionEntry;
+        use crate::signature_chain::sign_attestation;
+        use crate::types::VersionNumber;
+        use hegel::generators as gs;
+
+        fn make_version(author: AuthorId) -> VersionEntry {
+            VersionEntry::new(
+                VersionNumber::GENESIS,
+                [0u8; 32],
+                [0xAA; 32],
+                author,
+                1_700_000_000_000_000_000,
+                0,
+                0,
+            )
+        }
+
+        /// Build `n` distinct signer identities with fresh keys, none of whom
+        /// collide with `exclude` (the version author). Keeps ids monotonic so
+        /// we can reason about them in the tests below.
+        fn distinct_signers(n: u32, exclude: AuthorId) -> Vec<(AuthorId, SigningKey)> {
+            let mut out = Vec::with_capacity(n as usize);
+            let mut next_id: u64 = 10_000;
+            while (out.len() as u32) < n {
+                if next_id != exclude.as_u64() {
+                    out.push((AuthorId::new(next_id), SigningKey::generate()));
+                }
+                next_id = next_id.saturating_add(1);
+            }
+            out
+        }
+
+        #[hegel::test]
+        fn prop_multisig_k_distinct_signers_accepts(tc: hegel::TestCase) {
+            let n = tc.draw(gs::integers::<u32>().min_value(1).max_value(8));
+            let threshold = tc.draw(gs::integers::<u32>().min_value(1).max_value(n));
+            let version_author =
+                AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1).max_value(u64::MAX)));
+            let version = make_version(version_author);
+            let signers = distinct_signers(n, version_author);
+            let authorized: Vec<AuthorId> = signers.iter().map(|(a, _)| *a).collect();
+            let policy = MultiSigPolicy::new(threshold, authorized)
+                .unwrap_or_else(|_| std::process::abort());
+            let attestations: Vec<SignatureEntry> = signers
+                .iter()
+                .take(threshold as usize)
+                .map(|(who, key)| sign_attestation(&version, *who, key))
+                .collect();
+            let result = verify_multisig(&version, &attestations, &policy)
+                .unwrap_or_else(|_| std::process::abort());
+            assert!(result.threshold_met);
+            assert_eq!(result.valid_count, threshold);
+        }
+
+        #[hegel::test]
+        fn prop_multisig_kminus1_distinct_rejects(tc: hegel::TestCase) {
+            let n = tc.draw(gs::integers::<u32>().min_value(2).max_value(8));
+            let threshold = tc.draw(gs::integers::<u32>().min_value(2).max_value(n));
+            let version_author =
+                AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1).max_value(u64::MAX)));
+            let version = make_version(version_author);
+            let signers = distinct_signers(n, version_author);
+            let authorized: Vec<AuthorId> = signers.iter().map(|(a, _)| *a).collect();
+            let policy = MultiSigPolicy::new(threshold, authorized)
+                .unwrap_or_else(|_| std::process::abort());
+            let short = threshold.saturating_sub(1) as usize;
+            let attestations: Vec<SignatureEntry> = signers
+                .iter()
+                .take(short)
+                .map(|(who, key)| sign_attestation(&version, *who, key))
+                .collect();
+            let result = verify_multisig(&version, &attestations, &policy)
+                .unwrap_or_else(|_| std::process::abort());
+            assert!(!result.threshold_met);
+        }
+
+        #[hegel::test]
+        fn prop_multisig_duplicate_attestations_count_once(tc: hegel::TestCase) {
+            let n = tc.draw(gs::integers::<u32>().min_value(2).max_value(8));
+            let threshold = tc.draw(gs::integers::<u32>().min_value(2).max_value(n));
+            let dups = tc.draw(gs::integers::<u32>().min_value(2).max_value(8));
+            let version_author =
+                AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1).max_value(u64::MAX)));
+            let version = make_version(version_author);
+            let signers = distinct_signers(n, version_author);
+            let authorized: Vec<AuthorId> = signers.iter().map(|(a, _)| *a).collect();
+            let policy = MultiSigPolicy::new(threshold, authorized)
+                .unwrap_or_else(|_| std::process::abort());
+            // All signatures come from the same signer, repeated `dups` times.
+            let first = signers.first().unwrap_or_else(|| std::process::abort());
+            let att = sign_attestation(&version, first.0, &first.1);
+            let attestations: Vec<SignatureEntry> = (0..dups).map(|_| att).collect();
+            let result = verify_multisig(&version, &attestations, &policy)
+                .unwrap_or_else(|_| std::process::abort());
+            assert_eq!(result.valid_count, 1);
+            assert!(!result.threshold_met);
+        }
+
+        #[hegel::test]
+        fn prop_unauthorized_signers_do_not_count(tc: hegel::TestCase) {
+            let author_id = tc.draw(gs::integers::<u64>().min_value(1).max_value(u64::MAX / 2));
+            let author = AuthorId::new(author_id);
+            let version = make_version(author);
+            let impostor = AuthorId::new(author_id.wrapping_add(1).max(2));
+            let key = SigningKey::generate();
+            let sig = sign_attestation(&version, impostor, &key);
+            let policy =
+                MultiSigPolicy::new(1, vec![author]).unwrap_or_else(|_| std::process::abort());
+            let result = verify_multisig(&version, &[sig], &policy)
+                .unwrap_or_else(|_| std::process::abort());
+            assert_eq!(result.valid_count, 0);
+            assert!(!result.threshold_met);
+        }
+
+        #[hegel::test]
+        fn prop_forged_author_id_rejects(tc: hegel::TestCase) {
+            let version_author =
+                AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1).max_value(u64::MAX / 2)));
+            let version = make_version(version_author);
+            let real_signer = AuthorId::new(version_author.as_u64().saturating_add(1));
+            let fake_signer = AuthorId::new(real_signer.as_u64().saturating_add(1));
+            let key = SigningKey::generate();
+            let mut sig = sign_attestation(&version, real_signer, &key);
+            sig.author_id = fake_signer.as_u64();
+            let policy =
+                MultiSigPolicy::new(1, vec![fake_signer]).unwrap_or_else(|_| std::process::abort());
+            let result = verify_multisig(&version, &[sig], &policy)
+                .unwrap_or_else(|_| std::process::abort());
+            assert_eq!(result.valid_count, 0);
+            assert!(!result.threshold_met);
+        }
     }
 }

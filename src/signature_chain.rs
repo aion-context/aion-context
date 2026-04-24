@@ -59,6 +59,12 @@ use crate::Result;
 /// other applications that use Ed25519.
 const SIGNATURE_DOMAIN: &[u8] = b"AION_V2_VERSION_SIGNATURE_V1";
 
+/// Domain separator for multi-party attestation messages (RFC-0021).
+///
+/// Distinct from [`SIGNATURE_DOMAIN`] so that a single-signer version
+/// signature cannot be replayed as a multi-party attestation nor vice versa.
+const ATTESTATION_DOMAIN: &[u8] = b"AION_V2_ATTESTATION_V1";
+
 /// Compute the canonical message to be signed for a version entry
 ///
 /// The canonical format ensures deterministic serialization:
@@ -227,6 +233,57 @@ pub fn verify_signature(version: &VersionEntry, signature: &SignatureEntry) -> R
     let message = canonical_version_message(version);
 
     // Verify the signature
+    let verifying_key = VerifyingKey::from_bytes(&signature.public_key)?;
+    verifying_key.verify(&message, &signature.signature)
+}
+
+/// Build the canonical attestation message binding `(version, signer)` — RFC-0021.
+///
+/// Each signer in a multi-party attestation signs a message that embeds
+/// the full version identity **and** the signer's own `AuthorId`. This
+/// prevents signature replay across signers and across protocols.
+#[must_use]
+#[allow(clippy::arithmetic_side_effects)] // capacity calculation over consts
+pub fn canonical_attestation_message(version: &VersionEntry, signer: AuthorId) -> Vec<u8> {
+    let mut message = Vec::with_capacity(128 + 8 + ATTESTATION_DOMAIN.len());
+    message.extend_from_slice(ATTESTATION_DOMAIN);
+    message.extend_from_slice(&version.version_number.to_le_bytes());
+    message.extend_from_slice(&version.parent_hash);
+    message.extend_from_slice(&version.rules_hash);
+    message.extend_from_slice(&version.author_id.to_le_bytes());
+    message.extend_from_slice(&version.timestamp.to_le_bytes());
+    message.extend_from_slice(&version.message_offset.to_le_bytes());
+    message.extend_from_slice(&version.message_length.to_le_bytes());
+    message.extend_from_slice(&signer.as_u64().to_le_bytes());
+    message
+}
+
+/// Produce an attestation signature over a version — RFC-0021.
+///
+/// Unlike [`sign_version`], the signer need not equal `version.author_id`:
+/// attestations are multi-party by design. Returns a `SignatureEntry` whose
+/// `author_id` is the attesting signer's id.
+#[must_use]
+pub fn sign_attestation(
+    version: &VersionEntry,
+    signer: AuthorId,
+    signing_key: &SigningKey,
+) -> SignatureEntry {
+    let message = canonical_attestation_message(version, signer);
+    let signature = signing_key.sign(&message);
+    let public_key = signing_key.verifying_key().to_bytes();
+    SignatureEntry::new(signer, public_key, signature)
+}
+
+/// Verify a multi-party attestation signature — RFC-0021.
+///
+/// The signer identity is taken from `signature.author_id`; there is no
+/// equality constraint against `version.author_id`. Returns `Ok` iff the
+/// embedded Ed25519 signature verifies against the canonical attestation
+/// message for `(version, signature.author_id)`.
+pub fn verify_attestation(version: &VersionEntry, signature: &SignatureEntry) -> Result<()> {
+    let signer = AuthorId::new(signature.author_id);
+    let message = canonical_attestation_message(version, signer);
     let verifying_key = VerifyingKey::from_bytes(&signature.public_key)?;
     verifying_key.verify(&message, &signature.signature)
 }
@@ -1614,6 +1671,134 @@ mod tests {
 
             assert_ne!(compute_version_hash(&modified_v1), expected_hash);
             assert_ne!(compute_version_hash(&modified_v1), v2.parent_hash);
+        }
+    }
+
+    mod properties {
+        use super::*;
+        use hegel::generators as gs;
+
+        fn draw_hash(tc: &hegel::TestCase) -> [u8; 32] {
+            let bytes = tc.draw(gs::binary().min_size(32).max_size(32));
+            let mut h = [0u8; 32];
+            h.copy_from_slice(&bytes);
+            h
+        }
+
+        fn build_chain(tc: &hegel::TestCase, n: usize) -> Vec<VersionEntry> {
+            let author = AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1)));
+            let ts_base = tc.draw(gs::integers::<u64>().min_value(1).max_value(1u64 << 60));
+            let mut chain = Vec::with_capacity(n);
+            chain.push(create_genesis_version(draw_hash(tc), author, ts_base, 0, 0));
+            for _ in 1..n {
+                let parent = chain
+                    .last()
+                    .copied()
+                    .unwrap_or_else(|| std::process::abort());
+                let child = create_child_version(&parent, draw_hash(tc), author, ts_base, 0, 0);
+                chain.push(child);
+            }
+            chain
+        }
+
+        #[hegel::test]
+        fn prop_append_verify_ok_for_any_n(tc: hegel::TestCase) {
+            let n = tc.draw(gs::integers::<usize>().min_value(1).max_value(20));
+            let chain = build_chain(&tc, n);
+            assert!(verify_hash_chain(&chain).is_ok());
+        }
+
+        #[hegel::test]
+        fn prop_tamper_non_terminal_entry_fails(tc: hegel::TestCase) {
+            let n = tc.draw(gs::integers::<usize>().min_value(2).max_value(20));
+            let mut chain = build_chain(&tc, n);
+            let max_idx = n.saturating_sub(2);
+            let idx = tc.draw(gs::integers::<usize>().max_value(max_idx));
+            if let Some(entry) = chain.get_mut(idx) {
+                if let Some(b) = entry.rules_hash.get_mut(0) {
+                    *b ^= 0x01;
+                }
+            }
+            assert!(verify_hash_chain(&chain).is_err());
+        }
+
+        #[hegel::test]
+        fn prop_sign_verify_roundtrip_for_any_version(tc: hegel::TestCase) {
+            let author = AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1)));
+            let rules_hash = draw_hash(&tc);
+            let version =
+                create_genesis_version(rules_hash, author, 1_700_000_000_000_000_000, 0, 0);
+            let key = SigningKey::generate();
+            let mut sig = sign_version(&version, &key);
+            sig.author_id = author.as_u64();
+            assert!(verify_signature(&version, &sig).is_ok());
+        }
+
+        #[hegel::test]
+        fn prop_attestation_roundtrip(tc: hegel::TestCase) {
+            let version_author = AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1)));
+            let signer = AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1)));
+            let version = create_genesis_version(
+                draw_hash(&tc),
+                version_author,
+                1_700_000_000_000_000_000,
+                0,
+                0,
+            );
+            let key = SigningKey::generate();
+            let att = sign_attestation(&version, signer, &key);
+            assert!(verify_attestation(&version, &att).is_ok());
+        }
+
+        #[hegel::test]
+        fn prop_attestation_rejects_wrong_signer(tc: hegel::TestCase) {
+            let version_author = AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1)));
+            let real_signer =
+                AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1).max_value(u64::MAX / 2)));
+            let fake_signer = AuthorId::new(real_signer.as_u64().saturating_add(1));
+            let version = create_genesis_version(
+                draw_hash(&tc),
+                version_author,
+                1_700_000_000_000_000_000,
+                0,
+                0,
+            );
+            let key = SigningKey::generate();
+            let mut att = sign_attestation(&version, real_signer, &key);
+            // Tamper with signer identity after signing.
+            att.author_id = fake_signer.as_u64();
+            assert!(verify_attestation(&version, &att).is_err());
+        }
+
+        #[hegel::test]
+        fn prop_attestation_rejects_wrong_version(tc: hegel::TestCase) {
+            let author = AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1)));
+            let signer = AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1)));
+            let v1 =
+                create_genesis_version(draw_hash(&tc), author, 1_700_000_000_000_000_000, 0, 0);
+            let mut v2 = v1;
+            // Different rules content -> different canonical message.
+            v2.rules_hash[0] ^= 0x01;
+            let key = SigningKey::generate();
+            let att = sign_attestation(&v1, signer, &key);
+            assert!(verify_attestation(&v2, &att).is_err());
+        }
+
+        #[hegel::test]
+        fn prop_attestation_and_version_signature_are_domain_separated(tc: hegel::TestCase) {
+            // A signature produced by sign_version should NOT verify as an
+            // attestation under verify_attestation, even when every byte
+            // except the domain tag matches. This guards the RFC-0021 domain
+            // separator `AION_V2_ATTESTATION_V1`.
+            let author = AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1)));
+            let version =
+                create_genesis_version(draw_hash(&tc), author, 1_700_000_000_000_000_000, 0, 0);
+            let key = SigningKey::generate();
+            let mut version_sig = sign_version(&version, &key);
+            version_sig.author_id = author.as_u64();
+            // verify_version should pass; verify_attestation must not.
+            assert!(verify_signature(&version, &version_sig).is_ok());
+            assert!(verify_attestation(&version, &version_sig).is_err());
         }
     }
 }
