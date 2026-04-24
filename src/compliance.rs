@@ -678,8 +678,8 @@ fn days_to_ymd(days: u64) -> (u64, u64, u64) {
         if remaining_days < days_in_year {
             break;
         }
-        remaining_days -= days_in_year;
-        year += 1;
+        remaining_days = remaining_days.saturating_sub(days_in_year);
+        year = year.saturating_add(1);
     }
 
     let days_in_months: [i64; 12] = if is_leap_year(year) {
@@ -693,11 +693,11 @@ fn days_to_ymd(days: u64) -> (u64, u64, u64) {
         if remaining_days < days_in_month {
             break;
         }
-        remaining_days -= days_in_month;
-        month += 1;
+        remaining_days = remaining_days.saturating_sub(days_in_month);
+        month = month.saturating_add(1);
     }
 
-    let day = remaining_days as u64 + 1;
+    let day = (remaining_days as u64).saturating_add(1);
 
     (year, month, day)
 }
