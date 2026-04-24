@@ -22,11 +22,15 @@
 //! ```
 //! use aion_context::hybrid_sig::HybridSigningKey;
 //!
+//! # fn run() -> aion_context::Result<()> {
 //! let key = HybridSigningKey::generate();
 //! let vk = key.verifying_key();
 //! let payload = b"attested bytes";
-//! let sig = key.sign(payload);
-//! vk.verify(payload, &sig).unwrap();
+//! let sig = key.sign(payload)?;
+//! vk.verify(payload, &sig)?;
+//! # Ok(())
+//! # }
+//! # run().unwrap();
 //! ```
 
 use pqcrypto_mldsa::mldsa65;
@@ -74,9 +78,16 @@ impl PqAlgorithm {
 /// signatures.
 ///
 /// Does not derive `Debug` — the ML-DSA secret is sensitive.
+///
+/// The ML-DSA-65 secret is held as raw bytes inside a
+/// [`zeroize::Zeroizing`] wrapper (RFC-0033 C9) and re-parsed into
+/// a [`mldsa65::SecretKey`] on every call to [`Self::sign`]. The
+/// `pqcrypto-mldsa` C-FFI `SecretKey` type does not implement
+/// `Zeroize`, so holding it live would leave ~4 KB of key material
+/// unzeroed in heap on drop.
 pub struct HybridSigningKey {
     classical: ClassicalSigningKey,
-    pq_secret: mldsa65::SecretKey,
+    pq_secret_bytes: zeroize::Zeroizing<Vec<u8>>,
     pq_public: mldsa65::PublicKey,
 }
 
@@ -117,9 +128,10 @@ impl HybridSigningKey {
     pub fn generate() -> Self {
         let classical = ClassicalSigningKey::generate();
         let (pq_public, pq_secret) = mldsa65::keypair();
+        let pq_secret_bytes = zeroize::Zeroizing::new(pq_secret.as_bytes().to_vec());
         Self {
             classical,
-            pq_secret,
+            pq_secret_bytes,
             pq_public,
         }
     }
@@ -132,9 +144,10 @@ impl HybridSigningKey {
     #[must_use]
     pub fn from_classical(classical: ClassicalSigningKey) -> Self {
         let (pq_public, pq_secret) = mldsa65::keypair();
+        let pq_secret_bytes = zeroize::Zeroizing::new(pq_secret.as_bytes().to_vec());
         Self {
             classical,
-            pq_secret,
+            pq_secret_bytes,
             pq_public,
         }
     }
@@ -150,16 +163,28 @@ impl HybridSigningKey {
     }
 
     /// Produce a hybrid signature over `payload`.
-    #[must_use]
-    pub fn sign(&self, payload: &[u8]) -> HybridSignature {
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if the cached ML-DSA secret bytes fail to
+    /// reconstitute into an `mldsa65::SecretKey`. In normal
+    /// operation the bytes originate from `mldsa65::keypair()` and
+    /// this branch is unreachable; a failure here indicates memory
+    /// corruption or manual tampering with the field contents.
+    pub fn sign(&self, payload: &[u8]) -> Result<HybridSignature> {
         let message = canonical_hybrid_message(payload);
         let classical = self.classical.sign(&message);
-        let pq_sig = mldsa65::detached_sign(&message, &self.pq_secret);
-        HybridSignature {
+        let pq_secret = mldsa65::SecretKey::from_bytes(&self.pq_secret_bytes).map_err(|e| {
+            AionError::InvalidFormat {
+                reason: format!("internal: ML-DSA-65 secret key reconstitution failed: {e}"),
+            }
+        })?;
+        let pq_sig = mldsa65::detached_sign(&message, &pq_secret);
+        Ok(HybridSignature {
             algorithm: PqAlgorithm::MlDsa65,
             classical,
             pq: pq_sig.as_bytes().to_vec(),
-        }
+        })
     }
 
     /// 32-byte Ed25519 classical seed, for callers that need to
@@ -181,7 +206,7 @@ impl HybridSigningKey {
     /// in Phase A.
     #[must_use]
     pub fn export_pq_secret(&self) -> zeroize::Zeroizing<Vec<u8>> {
-        zeroize::Zeroizing::new(self.pq_secret.as_bytes().to_vec())
+        zeroize::Zeroizing::new(self.pq_secret_bytes.as_slice().to_vec())
     }
 }
 
@@ -254,7 +279,7 @@ mod tests {
     fn sign_verify_round_trip() {
         let key = HybridSigningKey::generate();
         let vk = key.verifying_key();
-        let sig = key.sign(b"hello hybrid");
+        let sig = key.sign(b"hello hybrid").unwrap();
         vk.verify(b"hello hybrid", &sig).unwrap();
     }
 
@@ -262,7 +287,7 @@ mod tests {
     fn tampered_payload_rejects() {
         let key = HybridSigningKey::generate();
         let vk = key.verifying_key();
-        let sig = key.sign(b"hello hybrid");
+        let sig = key.sign(b"hello hybrid").unwrap();
         assert!(vk.verify(b"hello HYBRID", &sig).is_err());
     }
 
@@ -270,7 +295,7 @@ mod tests {
     fn corrupted_classical_sig_rejects() {
         let key = HybridSigningKey::generate();
         let vk = key.verifying_key();
-        let mut sig = key.sign(b"payload");
+        let mut sig = key.sign(b"payload").unwrap();
         sig.classical[0] ^= 0x01;
         assert!(vk.verify(b"payload", &sig).is_err());
     }
@@ -279,7 +304,7 @@ mod tests {
     fn corrupted_pq_sig_rejects() {
         let key = HybridSigningKey::generate();
         let vk = key.verifying_key();
-        let mut sig = key.sign(b"payload");
+        let mut sig = key.sign(b"payload").unwrap();
         sig.pq[0] ^= 0x01;
         assert!(vk.verify(b"payload", &sig).is_err());
     }
@@ -307,7 +332,7 @@ mod tests {
             let payload = tc.draw(gs::binary().max_size(512));
             let key = HybridSigningKey::generate();
             let vk = key.verifying_key();
-            let sig = key.sign(&payload);
+            let sig = key.sign(&payload).unwrap();
             vk.verify(&payload, &sig)
                 .unwrap_or_else(|_| std::process::abort());
         }
@@ -317,7 +342,7 @@ mod tests {
             let payload = tc.draw(gs::binary().min_size(1).max_size(512));
             let key = HybridSigningKey::generate();
             let vk = key.verifying_key();
-            let sig = key.sign(&payload);
+            let sig = key.sign(&payload).unwrap();
             let mut tampered = payload.clone();
             let idx = tc.draw(gs::integers::<usize>().max_value(tampered.len().saturating_sub(1)));
             if let Some(b) = tampered.get_mut(idx) {
@@ -330,7 +355,7 @@ mod tests {
         fn prop_hybrid_wrong_classical_key_rejects(tc: hegel::TestCase) {
             let payload = tc.draw(gs::binary().max_size(512));
             let key = HybridSigningKey::generate();
-            let sig = key.sign(&payload);
+            let sig = key.sign(&payload).unwrap();
             // Build a verifying key whose classical half is from a
             // fresh keypair — PQ half still matches `key`.
             let impostor_classical = ClassicalSigningKey::generate();
@@ -346,7 +371,7 @@ mod tests {
         fn prop_hybrid_wrong_pq_key_rejects(tc: hegel::TestCase) {
             let payload = tc.draw(gs::binary().max_size(512));
             let key = HybridSigningKey::generate();
-            let sig = key.sign(&payload);
+            let sig = key.sign(&payload).unwrap();
             // Build a verifying key whose PQ half is from a fresh
             // keypair — classical half still matches `key`.
             let (impostor_pq_pub, _) = mldsa65::keypair();
@@ -363,7 +388,7 @@ mod tests {
             let payload = tc.draw(gs::binary().max_size(512));
             let key = HybridSigningKey::generate();
             let vk = key.verifying_key();
-            let mut sig = key.sign(&payload);
+            let mut sig = key.sign(&payload).unwrap();
             let idx = tc.draw(gs::integers::<usize>().max_value(sig.classical.len() - 1));
             if let Some(b) = sig.classical.get_mut(idx) {
                 *b ^= 0x01;
@@ -376,7 +401,7 @@ mod tests {
             let payload = tc.draw(gs::binary().max_size(512));
             let key = HybridSigningKey::generate();
             let vk = key.verifying_key();
-            let mut sig = key.sign(&payload);
+            let mut sig = key.sign(&payload).unwrap();
             // PQ signature is long — flipping any byte should break
             // the ML-DSA verification.
             let idx = tc.draw(gs::integers::<usize>().max_value(sig.pq.len().saturating_sub(1)));
@@ -401,7 +426,8 @@ mod tests {
             // pass alone — the only failing component is classical,
             // which signed the wrong message.
             let domain_msg = canonical_hybrid_message(&payload);
-            let pq_sig = mldsa65::detached_sign(&domain_msg, &key.pq_secret);
+            let pq_secret = mldsa65::SecretKey::from_bytes(&key.pq_secret_bytes).unwrap();
+            let pq_sig = mldsa65::detached_sign(&domain_msg, &pq_secret);
             let sig = HybridSignature {
                 algorithm: PqAlgorithm::MlDsa65,
                 classical: classical_only,
@@ -417,7 +443,7 @@ mod tests {
             let payload = tc.draw(gs::binary().max_size(256));
             let key = HybridSigningKey::generate();
             let vk = key.verifying_key();
-            let mut sig = key.sign(&payload);
+            let mut sig = key.sign(&payload).unwrap();
             // Invent a discriminant the enum doesn't recognize by
             // constructing a fake signature with a different type
             // discriminant. Since PqAlgorithm only has MlDsa65, we
