@@ -413,7 +413,7 @@ struct SectionOffsets {
 
 impl SectionOffsets {
     #[allow(clippy::arithmetic_side_effects)]
-    fn from_sizes(sizes: &SectionSizes) -> Self {
+    const fn from_sizes(sizes: &SectionSizes) -> Self {
         let encrypted_rules = HEADER_SIZE as u64;
         let version_chain = encrypted_rules + sizes.encrypted_rules as u64;
         let signatures = version_chain + sizes.version_chain as u64;

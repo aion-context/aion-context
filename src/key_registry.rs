@@ -376,7 +376,7 @@ impl KeyRegistry {
             .verify(&message, &record.master_signature)?;
 
         let mut updated = false;
-        for epoch in author_record.epochs.iter_mut() {
+        for epoch in &mut author_record.epochs {
             if epoch.epoch != record.revoked_epoch {
                 continue;
             }

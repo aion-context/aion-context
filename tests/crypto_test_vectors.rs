@@ -586,9 +586,7 @@ fn test_signature_single_bit_tampering() {
             let result = verifying_key.verify(message, &tampered_sig);
             assert!(
                 result.is_err(),
-                "Should detect bit flip at byte {} bit {}",
-                byte_idx,
-                bit_idx
+                "Should detect bit flip at byte {byte_idx} bit {bit_idx}"
             );
         }
     }
@@ -611,8 +609,7 @@ fn test_message_single_bit_tampering() {
         let result = verifying_key.verify(&tampered_message, &signature);
         assert!(
             result.is_err(),
-            "Should detect message modification at byte {}",
-            byte_idx
+            "Should detect message modification at byte {byte_idx}"
         );
     }
 }
@@ -635,8 +632,7 @@ fn test_ciphertext_tampering_detection() {
         let result = decrypt(&key, &nonce, &tampered, aad);
         assert!(
             result.is_err(),
-            "Should detect ciphertext tampering at byte {}",
-            byte_idx
+            "Should detect ciphertext tampering at byte {byte_idx}"
         );
     }
 }
@@ -712,8 +708,7 @@ fn test_truncated_ciphertext_detection() {
             let result = decrypt(&key, &nonce, truncated, aad);
             assert!(
                 result.is_err(),
-                "Should detect truncation at {} bytes",
-                truncate_at
+                "Should detect truncation at {truncate_at} bytes"
             );
         }
     }

@@ -139,9 +139,7 @@ fn test_cli_key_generate_and_list() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         stdout.contains(&key_id),
-        "Key list should contain {}: {}",
-        key_id,
-        stdout
+        "Key list should contain {key_id}: {stdout}"
     );
 
     // Cleanup
@@ -332,8 +330,7 @@ fn test_cli_init_fails_if_file_exists() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("exists") || stderr.contains("already"),
-        "Should mention file exists: {}",
-        stderr
+        "Should mention file exists: {stderr}"
     );
 
     cleanup_key(&key_id);
@@ -387,9 +384,8 @@ fn test_cli_commit_adds_version() {
     let output = run_cli(&["show", file_path.to_str().unwrap(), "info"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("2") || stdout.contains("versions"),
-        "Should show 2 versions: {}",
-        stdout
+        stdout.contains('2') || stdout.contains("versions"),
+        "Should show 2 versions: {stdout}"
     );
 
     cleanup_key(&key_id);
@@ -476,8 +472,7 @@ fn test_cli_verify_valid_file() {
             || stdout.to_lowercase().contains("ok")
             || stdout.contains("✓")
             || stdout.contains("passed"),
-        "Should indicate valid: {}",
-        stdout
+        "Should indicate valid: {stdout}"
     );
 
     cleanup_key(&key_id);
@@ -509,8 +504,7 @@ fn test_cli_verify_verbose_output() {
     // Verbose should show more details
     assert!(
         stdout.len() > 50,
-        "Verbose output should be detailed: {}",
-        stdout
+        "Verbose output should be detailed: {stdout}"
     );
 
     cleanup_key(&key_id);
@@ -545,7 +539,7 @@ fn test_cli_verify_corrupted_file_fails() {
     let output = run_cli(&["verify", file_path.to_str().unwrap()]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    let combined = format!("{}{}", stdout, stderr);
+    let combined = format!("{stdout}{stderr}");
 
     // Either non-zero exit or indicates invalid
     assert!(
@@ -591,8 +585,7 @@ fn test_cli_show_rules() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         stdout.contains("threshold") || stdout.contains("500"),
-        "Should show rules content: {}",
-        stdout
+        "Should show rules content: {stdout}"
     );
 
     cleanup_key(&key_id);
@@ -637,8 +630,8 @@ fn test_cli_show_history() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("First") || stdout.contains("1"));
-    assert!(stdout.contains("Second") || stdout.contains("2"));
+    assert!(stdout.contains("First") || stdout.contains('1'));
+    assert!(stdout.contains("Second") || stdout.contains('2'));
 
     cleanup_key(&key_id);
 }
@@ -667,7 +660,7 @@ fn test_cli_show_signatures() {
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     // Should show signature info
-    assert!(stdout.len() > 10, "Should show signature info: {}", stdout);
+    assert!(stdout.len() > 10, "Should show signature info: {stdout}");
 
     cleanup_key(&key_id);
 }
@@ -698,8 +691,7 @@ fn test_cli_show_info() {
     // Should show file metadata
     assert!(
         stdout.contains("version") || stdout.contains("author") || stdout.contains("5004"),
-        "Should show file info: {}",
-        stdout
+        "Should show file info: {stdout}"
     );
 
     cleanup_key(&key_id);
@@ -782,7 +774,6 @@ fn test_cli_init_with_nonexistent_key_fails() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("key") || stderr.contains("not found") || stderr.contains("error"),
-        "Should indicate key error: {}",
-        stderr
+        "Should indicate key error: {stderr}"
     );
 }

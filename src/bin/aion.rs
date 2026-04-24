@@ -239,10 +239,10 @@ enum FrameworkType {
 impl From<FrameworkType> for ComplianceFramework {
     fn from(ft: FrameworkType) -> Self {
         match ft {
-            FrameworkType::Sox => ComplianceFramework::Sox,
-            FrameworkType::Hipaa => ComplianceFramework::Hipaa,
-            FrameworkType::Gdpr => ComplianceFramework::Gdpr,
-            FrameworkType::Generic => ComplianceFramework::Generic,
+            FrameworkType::Sox => Self::Sox,
+            FrameworkType::Hipaa => Self::Hipaa,
+            FrameworkType::Gdpr => Self::Gdpr,
+            FrameworkType::Generic => Self::Generic,
         }
     }
 }
@@ -260,9 +260,9 @@ enum ReportFormatType {
 impl From<ReportFormatType> for ReportFormat {
     fn from(rft: ReportFormatType) -> Self {
         match rft {
-            ReportFormatType::Text => ReportFormat::Text,
-            ReportFormatType::Markdown => ReportFormat::Markdown,
-            ReportFormatType::Json => ReportFormat::Json,
+            ReportFormatType::Text => Self::Text,
+            ReportFormatType::Markdown => Self::Markdown,
+            ReportFormatType::Json => Self::Json,
         }
     }
 }
@@ -305,9 +305,9 @@ enum ExportFormatType {
 impl From<ExportFormatType> for ExportFormat {
     fn from(eft: ExportFormatType) -> Self {
         match eft {
-            ExportFormatType::Json => ExportFormat::Json,
-            ExportFormatType::Yaml => ExportFormat::Yaml,
-            ExportFormatType::Csv => ExportFormat::Csv,
+            ExportFormatType::Json => Self::Json,
+            ExportFormatType::Yaml => Self::Yaml,
+            ExportFormatType::Csv => Self::Csv,
         }
     }
 }
@@ -907,7 +907,7 @@ fn cmd_export(args: &ExportArgs) -> Result<()> {
     Ok(())
 }
 
-fn format_name(format: ExportFormatType) -> &'static str {
+const fn format_name(format: ExportFormatType) -> &'static str {
     match format {
         ExportFormatType::Json => "JSON",
         ExportFormatType::Yaml => "YAML",

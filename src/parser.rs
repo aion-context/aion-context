@@ -398,7 +398,7 @@ impl<'a> AionParser<'a> {
     /// slice by `new` and cached on the parser, so this accessor is
     /// a simple field read and cannot fail.
     #[must_use]
-    pub fn header(&self) -> &'a FileHeader {
+    pub const fn header(&self) -> &'a FileHeader {
         self.header
     }
 
@@ -848,7 +848,7 @@ impl MmapParser {
 
     /// Get reference to file header
     #[must_use]
-    pub fn header(&self) -> &FileHeader {
+    pub const fn header(&self) -> &FileHeader {
         self.parser.header()
     }
 

@@ -72,7 +72,7 @@ pub struct Subject {
     pub digest: BTreeMap<String, String>,
 }
 
-/// in-toto v1 ResourceDescriptor — used for resolvedDependencies,
+/// in-toto v1 `ResourceDescriptor` — used for resolvedDependencies,
 /// byproducts, and related lists. All fields optional per spec.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ResourceDescriptor {
@@ -97,7 +97,7 @@ pub struct Builder {
     pub id: String,
 }
 
-/// SLSA v1.1 BuildDefinition block.
+/// SLSA v1.1 `BuildDefinition` block.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BuildDefinition {
     /// URI for the build type schema.
@@ -132,7 +132,7 @@ pub struct BuildMetadata {
     pub finished_on: Option<String>,
 }
 
-/// SLSA v1.1 RunDetails block.
+/// SLSA v1.1 `RunDetails` block.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RunDetails {
     /// Identity of the builder that produced this provenance.
@@ -145,7 +145,7 @@ pub struct RunDetails {
     pub byproducts: Vec<ResourceDescriptor>,
 }
 
-fn is_default_metadata(m: &BuildMetadata) -> bool {
+const fn is_default_metadata(m: &BuildMetadata) -> bool {
     m.invocation_id.is_none() && m.started_on.is_none() && m.finished_on.is_none()
 }
 
@@ -499,7 +499,7 @@ mod tests {
         let verifying = key.verifying_key();
         let env = wrap_statement_dsse(&statement, signer, &key).unwrap();
         assert_eq!(env.payload_type, IN_TOTO_PAYLOAD_TYPE);
-        let verified = verify_envelope(&env, |_| Some(verifying.clone())).unwrap();
+        let verified = verify_envelope(&env, |_| Some(verifying)).unwrap();
         assert_eq!(verified.len(), 1);
         let back = unwrap_statement_dsse(&env).unwrap();
         assert_eq!(back, statement);
@@ -559,7 +559,7 @@ mod tests {
             let verifying = key.verifying_key();
             let env = wrap_statement_dsse(&statement, signer, &key)
                 .unwrap_or_else(|_| std::process::abort());
-            let verified = verify_envelope(&env, |_| Some(verifying.clone()))
+            let verified = verify_envelope(&env, |_| Some(verifying))
                 .unwrap_or_else(|_| std::process::abort());
             assert_eq!(verified.len(), 1);
             let roundtripped =
@@ -610,7 +610,7 @@ mod tests {
             if let Some(b) = env.payload.get_mut(idx) {
                 *b ^= 0x01;
             }
-            let result: Result<Vec<String>> = verify_envelope(&env, |_| Some(verifying.clone()));
+            let result: Result<Vec<String>> = verify_envelope(&env, |_| Some(verifying));
             assert!(result.is_err());
         }
 
@@ -627,10 +627,10 @@ mod tests {
             let env = wrap_statement_dsse(&statement, signer, &key)
                 .unwrap_or_else(|_| std::process::abort());
             assert_eq!(env.payload_type, IN_TOTO_PAYLOAD_TYPE);
-            // Suppress `unused` for the signer variable path.
+            // Suppress `unused` for the signer variable path and keep
+            // the VerifyingKey import live in test builds.
             let _ = signer;
-            // Show VerifyingKey is reachable (keeps the import alive in tests).
-            let _vk: Option<VerifyingKey> = None;
+            let _: fn() -> Option<VerifyingKey> = || None;
         }
 
         #[hegel::test]

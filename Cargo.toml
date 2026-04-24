@@ -118,6 +118,19 @@ too_many_arguments = "allow"
 module_name_repetitions = "allow"
 missing_errors_doc = "allow"
 missing_panics_doc = "allow"
+# Pedantic lints that require API-breaking changes or are pure
+# cosmetic preference. Named explicitly so a reader can see the
+# rationale instead of wondering whether to fix a warning.
+unreadable_literal = "allow"          # digit grouping is style preference; a 10-digit epoch-ns reads fine without underscores
+inconsistent_digit_grouping = "allow" # same — existing groupings are domain-appropriate
+unnecessary_wraps = "allow"           # private helpers keep Result for symmetry with callers that may grow fallible later
+struct_excessive_bools = "allow"      # VerificationSummary is a public API; its bool shape is the honest contract
+ref_option = "allow"                  # serde serialize-fn signature demands &Option<T> — not our choice
+cast_possible_truncation = "allow"    # bounded by invariants (file counts fit in usize, version numbers small)
+cast_possible_wrap = "allow"          # deliberate in clock-skew / timestamp math where saturating semantics match intent
+cast_sign_loss = "allow"              # deliberate in i64 → u64 day counters
+format_push_string = "allow"          # writeln!/write! do not round-trip cleanly through a mut String in all our cases; push_str(&format!()) is fine
+format_in_format_args = "allow"       # outer format! + inner format! is the clearest form for per-entry hex truncation
 
 [[bench]]
 name = "crypto_benchmarks"

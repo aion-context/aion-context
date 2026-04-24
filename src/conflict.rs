@@ -118,6 +118,7 @@ impl std::fmt::Display for MergeStrategy {
 /// # Returns
 ///
 /// Conflict report with detected type and suggested strategy
+#[must_use]
 pub fn detect_conflict(local: &FileInfo, remote: &FileInfo) -> ConflictReport {
     if local.file_id != remote.file_id {
         return file_id_mismatch_report(local, remote);
@@ -206,8 +207,7 @@ fn versions_match(local: &FileInfo, remote: &FileInfo) -> bool {
 fn format_version_hash(info: &FileInfo) -> String {
     info.versions
         .last()
-        .map(|v| hex::encode(&v.rules_hash[..8]))
-        .unwrap_or_else(|| "empty".to_string())
+        .map_or_else(|| "empty".to_string(), |v| hex::encode(&v.rules_hash[..8]))
 }
 
 /// Check if shorter history is a linear prefix of longer
@@ -280,6 +280,7 @@ pub enum MarkerType {
 /// remote content
 /// >>>>>>> REMOTE
 /// ```
+#[must_use]
 pub fn create_conflict_markers(
     local_content: &[u8],
     remote_content: &[u8],
@@ -317,6 +318,7 @@ pub fn create_conflict_markers(
 }
 
 /// Check if content contains conflict markers
+#[must_use]
 pub fn has_conflict_markers(content: &[u8]) -> bool {
     let content_str = String::from_utf8_lossy(content);
     content_str.contains("<<<<<<<") && content_str.contains(">>>>>>>")
@@ -324,7 +326,8 @@ pub fn has_conflict_markers(content: &[u8]) -> bool {
 
 /// Parse conflict markers from content
 ///
-/// Returns (local_content, remote_content) if markers found
+/// Returns (`local_content`, `remote_content`) if markers found
+#[must_use]
 pub fn parse_conflict_markers(content: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
     let content_str = String::from_utf8_lossy(content);
 
@@ -394,6 +397,6 @@ mod tests {
         };
         let display = conflict.to_string();
         assert!(display.contains("Divergent"));
-        assert!(display.contains("5"));
+        assert!(display.contains('5'));
     }
 }

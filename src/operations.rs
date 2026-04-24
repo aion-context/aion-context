@@ -823,9 +823,8 @@ pub fn verify_file(path: &Path) -> Result<VerificationReport> {
             .push(format!("File integrity hash mismatch: {e}")),
     }
 
-    let versions = match collect_versions_into_report(&parser, &mut report)? {
-        Some(v) => v,
-        None => return Ok(report),
+    let Some(versions) = collect_versions_into_report(&parser, &mut report)? else {
+        return Ok(report);
     };
 
     match verify_hash_chain(&versions) {
@@ -835,9 +834,8 @@ pub fn verify_file(path: &Path) -> Result<VerificationReport> {
             .push(format!("Hash chain verification failed: {e}")),
     }
 
-    let signatures = match collect_signatures_into_report(&parser, &mut report)? {
-        Some(s) => s,
-        None => return Ok(report),
+    let Some(signatures) = collect_signatures_into_report(&parser, &mut report)? else {
+        return Ok(report);
     };
 
     match verify_signatures_batch(&versions, &signatures) {

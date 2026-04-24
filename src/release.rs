@@ -250,7 +250,7 @@ impl ReleaseBuilder {
     }
 
     /// Validate preconditions and assemble the unsigned core
-    /// artifacts (manifest, model_ref, AIBOM, SLSA statement).
+    /// artifacts (manifest, `model_ref`, AIBOM, SLSA statement).
     /// Called once by [`Self::seal`]; consumes the builder.
     fn build_core(self) -> Result<SealedCore> {
         let Self {
@@ -556,7 +556,7 @@ impl SignedRelease {
         let expected_keyid = dsse::keyid_for(self.signer);
         let lookup = |keyid: &str| -> Option<VerifyingKey> {
             if keyid == expected_keyid {
-                Some(verifying_key.clone())
+                Some(*verifying_key)
             } else {
                 None
             }

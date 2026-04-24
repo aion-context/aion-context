@@ -123,10 +123,7 @@ fn export_csv(file_info: &FileInfo) -> Result<String> {
     for version in &file_info.versions {
         let timestamp = format_timestamp_nanos(version.timestamp);
         let rules_hash = hex::encode(version.rules_hash);
-        let parent_hash = version
-            .parent_hash
-            .map(|h| hex::encode(h))
-            .unwrap_or_default();
+        let parent_hash = version.parent_hash.map(hex::encode).unwrap_or_default();
 
         // Escape message for CSV (handle commas and quotes)
         let escaped_message = escape_csv_field(&version.message);
@@ -164,7 +161,7 @@ fn build_export_data(path: &Path, file_info: &FileInfo) -> ExportData {
                 timestamp: format_timestamp_nanos(v.timestamp),
                 message: v.message.clone(),
                 rules_hash: hex::encode(v.rules_hash),
-                parent_hash: v.parent_hash.map(|h| hex::encode(h)),
+                parent_hash: v.parent_hash.map(hex::encode),
             })
             .collect(),
         signatures: file_info
@@ -198,10 +195,7 @@ fn format_timestamp_nanos(nanos: u64) -> String {
     let minutes = (time_of_day % 3600) / 60;
     let seconds = time_of_day % 60;
     let (year, month, day) = days_to_ymd(days);
-    format!(
-        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
-        year, month, day, hours, minutes, seconds
-    )
+    format!("{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}Z")
 }
 
 /// Convert days since epoch to year/month/day
@@ -233,7 +227,7 @@ fn days_to_ymd(days: u64) -> (u64, u64, u64) {
     (year, month, day)
 }
 
-fn is_leap_year(year: u64) -> bool {
+const fn is_leap_year(year: u64) -> bool {
     (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
 }
 

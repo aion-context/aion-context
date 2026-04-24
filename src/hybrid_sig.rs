@@ -8,7 +8,7 @@
 //! ML-DSA-65 (FIPS 204) comes from the [`pqcrypto_mldsa`] crate —
 //! the C reference implementation wrapped via FFI, the most
 //! scrutinized PQ signature library in Rust today. When pure-Rust
-//! alternatives (`ml-dsa` from RustCrypto) mature and receive
+//! alternatives (`ml-dsa` from `RustCrypto`) mature and receive
 //! third-party review, Phase C swaps backends behind the same
 //! `HybridSigningKey` API.
 //!
@@ -347,7 +347,7 @@ mod tests {
             let key = HybridSigningKey::generate();
             let vk = key.verifying_key();
             let sig = key.sign(&payload).unwrap();
-            let mut tampered = payload.clone();
+            let mut tampered = payload;
             let idx = tc.draw(gs::integers::<usize>().max_value(tampered.len().saturating_sub(1)));
             if let Some(b) = tampered.get_mut(idx) {
                 *b ^= 0x01;
