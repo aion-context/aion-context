@@ -73,6 +73,7 @@ pub mod multisig; // Issue #29: Multi-signature support
 pub mod oci; // RFC-0030: OCI artifact packaging
 pub mod operations; // Issue #15: Version commit operation
 pub mod parser; // Issue #9: Zero-copy parser
+pub mod release; // RFC-0032: Release orchestration
 pub mod serializer; // Issue #10: Deterministic Serializer
 pub mod signature_chain; // Issue #14: Version signing protocol
 pub mod slsa; // RFC-0024: SLSA v1.1 provenance emitter
