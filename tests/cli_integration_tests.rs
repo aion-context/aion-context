@@ -1046,6 +1046,222 @@ fn test_cli_commit_force_unregistered_bypasses() {
 }
 
 // ============================================================================
+// Registry rotate / revoke (issue #27)
+// ============================================================================
+
+/// Helper: pin an author with a distinct master key so rotation is
+/// possible. `pin_author` uses the same key for both.
+fn pin_with_distinct_master(
+    registry_path: &std::path::Path,
+    author_id: &str,
+    op_key_id: &str,
+    master_key_id: &str,
+) {
+    let output = run_cli(&[
+        "registry",
+        "pin",
+        "--author",
+        author_id,
+        "--key",
+        op_key_id,
+        "--master",
+        master_key_id,
+        "--output",
+        registry_path.to_str().expect("utf8"),
+    ]);
+    assert!(
+        output.status.success(),
+        "registry pin (with master) failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn test_cli_registry_rotate_happy_path() {
+    let (temp_dir, op_key) = setup_test_env();
+    let master_key = format!("{}", rand::random::<u32>() % 900000 + 270000);
+    let new_op_key = format!("{}", rand::random::<u32>() % 900000 + 370000);
+    run_cli(&["key", "generate", "--id", &master_key]);
+    run_cli(&["key", "generate", "--id", &new_op_key]);
+
+    let registry_path = temp_dir.path().join("registry.json");
+    pin_with_distinct_master(&registry_path, "7001", &op_key, &master_key);
+
+    // File signed by the ORIGINAL operational key at version 1
+    let file_path = temp_dir.path().join("before.aion");
+    run_cli_with_stdin(
+        &[
+            "init",
+            file_path.to_str().unwrap(),
+            "--author",
+            "7001",
+            "--key",
+            &op_key,
+        ],
+        b"before rotation",
+    );
+
+    // Rotate
+    let output = run_cli(&[
+        "registry",
+        "rotate",
+        "--author",
+        "7001",
+        "--from-epoch",
+        "0",
+        "--to-epoch",
+        "1",
+        "--new-key",
+        &new_op_key,
+        "--master-key",
+        &master_key,
+        "--effective-from-version",
+        "5",
+        "--registry",
+        registry_path.to_str().unwrap(),
+    ]);
+    assert!(
+        output.status.success(),
+        "rotate failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // Old file still verifies (signed at v1, epoch 0 active window is [0, 5))
+    let verify_old = run_cli(&[
+        "verify",
+        file_path.to_str().unwrap(),
+        "--registry",
+        registry_path.to_str().unwrap(),
+    ]);
+    assert!(
+        verify_old.status.success(),
+        "pre-rotation file must still verify after rotation, got {}",
+        verify_old.status
+    );
+
+    cleanup_key(&op_key);
+    cleanup_key(&master_key);
+    cleanup_key(&new_op_key);
+}
+
+#[test]
+fn test_cli_registry_rotate_rejects_wrong_master() {
+    let (temp_dir, op_key) = setup_test_env();
+    let real_master = format!("{}", rand::random::<u32>() % 900000 + 280000);
+    let fake_master = format!("{}", rand::random::<u32>() % 900000 + 380000);
+    let new_op_key = format!("{}", rand::random::<u32>() % 900000 + 480000);
+    run_cli(&["key", "generate", "--id", &real_master]);
+    run_cli(&["key", "generate", "--id", &fake_master]);
+    run_cli(&["key", "generate", "--id", &new_op_key]);
+
+    let registry_path = temp_dir.path().join("registry.json");
+    pin_with_distinct_master(&registry_path, "7002", &op_key, &real_master);
+    let pre_bytes = fs::read(&registry_path).expect("read pre");
+
+    // Attempt rotation with the WRONG master key.
+    let output = run_cli(&[
+        "registry",
+        "rotate",
+        "--author",
+        "7002",
+        "--from-epoch",
+        "0",
+        "--to-epoch",
+        "1",
+        "--new-key",
+        &new_op_key,
+        "--master-key",
+        &fake_master,
+        "--effective-from-version",
+        "5",
+        "--registry",
+        registry_path.to_str().unwrap(),
+    ]);
+    assert!(
+        !output.status.success(),
+        "wrong-master rotation must fail, got {}",
+        output.status
+    );
+
+    // Registry file must be byte-identical — write_registry_atomic only
+    // renames-over after apply_rotation succeeds.
+    let post_bytes = fs::read(&registry_path).expect("read post");
+    assert_eq!(
+        pre_bytes, post_bytes,
+        "failed rotation must not mutate the registry file"
+    );
+
+    cleanup_key(&op_key);
+    cleanup_key(&real_master);
+    cleanup_key(&fake_master);
+    cleanup_key(&new_op_key);
+}
+
+#[test]
+fn test_cli_registry_revoke_happy_path() {
+    let (temp_dir, op_key) = setup_test_env();
+    let master_key = format!("{}", rand::random::<u32>() % 900000 + 290000);
+    run_cli(&["key", "generate", "--id", &master_key]);
+
+    let registry_path = temp_dir.path().join("registry.json");
+    pin_with_distinct_master(&registry_path, "7003", &op_key, &master_key);
+
+    // File signed at v1 — pre-revocation window.
+    let pre_file = temp_dir.path().join("pre.aion");
+    run_cli_with_stdin(
+        &[
+            "init",
+            pre_file.to_str().unwrap(),
+            "--author",
+            "7003",
+            "--key",
+            &op_key,
+        ],
+        b"before revoke",
+    );
+
+    // Revoke epoch 0 from version 3 onward.
+    let output = run_cli(&[
+        "registry",
+        "revoke",
+        "--author",
+        "7003",
+        "--epoch",
+        "0",
+        "--reason",
+        "compromised",
+        "--master-key",
+        &master_key,
+        "--effective-from-version",
+        "3",
+        "--registry",
+        registry_path.to_str().unwrap(),
+    ]);
+    assert!(
+        output.status.success(),
+        "revoke failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // Pre-revocation file (signed at v1) still verifies:
+    // epoch 0's window becomes [0, 3); v1 is inside.
+    let verify_pre = run_cli(&[
+        "verify",
+        pre_file.to_str().unwrap(),
+        "--registry",
+        registry_path.to_str().unwrap(),
+    ]);
+    assert!(
+        verify_pre.status.success(),
+        "pre-revocation file must still verify, got {}",
+        verify_pre.status
+    );
+
+    cleanup_key(&op_key);
+    cleanup_key(&master_key);
+}
+
+// ============================================================================
 // Error Case CLI Tests
 // ============================================================================
 
