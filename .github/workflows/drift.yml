@@ -1,0 +1,37 @@
+name: Drift
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  drift:
+    name: masterpiece drift
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Generate live snapshot
+        run: bash .claude/drift/generate.sh > /tmp/live.json
+      - name: Diff against baseline
+        run: |
+          python3 - <<'PY'
+          import json, sys, pathlib
+          base = json.loads(pathlib.Path('.claude/drift/baseline.json').read_text())
+          live = json.loads(pathlib.Path('/tmp/live.json').read_text())
+          fail = []
+          for crate, b in base['crates'].items():
+              l = live['crates'].get(crate)
+              if l is None:
+                  fail.append(f"{crate}: missing from live snapshot")
+                  continue
+              if l['panics']  > b['panics']:  fail.append(f"{crate}: panics {b['panics']} -> {l['panics']}")
+              if l['max_fn']  > b['max_fn']:  fail.append(f"{crate}: max_fn {b['max_fn']} -> {l['max_fn']}")
+              if l['tests']   < b['tests']:   fail.append(f"{crate}: tests {b['tests']} -> {l['tests']}")
+          if fail:
+              print("DRIFT REGRESSION:")
+              for line in fail: print("  -", line)
+              sys.exit(1)
+          print("drift: no regression")
+          PY
