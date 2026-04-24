@@ -803,4 +803,85 @@ mod tests {
             assert!(entry3.validate_chain(&entry1).is_err());
         }
     }
+
+    mod properties {
+        use super::*;
+        use hegel::generators as gs;
+
+        fn draw_action(tc: &hegel::TestCase) -> ActionCode {
+            match tc.draw(gs::integers::<u8>().min_value(1).max_value(4)) {
+                1 => ActionCode::CreateGenesis,
+                2 => ActionCode::CommitVersion,
+                3 => ActionCode::Verify,
+                _ => ActionCode::Inspect,
+            }
+        }
+
+        fn build_chain(tc: &hegel::TestCase, n: usize) -> Vec<AuditEntry> {
+            let ts0 = tc.draw(gs::integers::<u64>().min_value(1).max_value(1u64 << 60));
+            let author_id0 = tc.draw(gs::integers::<u64>());
+            let genesis =
+                AuditEntry::new(ts0, AuthorId(author_id0), draw_action(tc), 0, 0, [0u8; 32]);
+            let mut chain = Vec::with_capacity(n);
+            chain.push(genesis);
+            for _ in 1..n {
+                let prev = chain
+                    .last()
+                    .copied()
+                    .unwrap_or_else(|| std::process::abort());
+                let dt = tc.draw(gs::integers::<u64>().max_value(10_000_000_000));
+                let ts = prev.timestamp().saturating_add(dt);
+                let entry = AuditEntry::new(
+                    ts,
+                    AuthorId(tc.draw(gs::integers::<u64>())),
+                    draw_action(tc),
+                    0,
+                    0,
+                    prev.compute_hash(),
+                );
+                chain.push(entry);
+            }
+            chain
+        }
+
+        #[hegel::test]
+        fn prop_append_validate_ok_for_any_n(tc: hegel::TestCase) {
+            let n = tc.draw(gs::integers::<usize>().min_value(2).max_value(20));
+            let chain = build_chain(&tc, n);
+            for i in 1..chain.len() {
+                let prev = chain
+                    .get(i.saturating_sub(1))
+                    .unwrap_or_else(|| std::process::abort());
+                let curr = chain.get(i).unwrap_or_else(|| std::process::abort());
+                assert!(curr.validate_chain(prev).is_ok());
+            }
+        }
+
+        #[hegel::test]
+        fn prop_tamper_previous_hash_breaks_validate(tc: hegel::TestCase) {
+            let n = tc.draw(gs::integers::<usize>().min_value(2).max_value(20));
+            let chain = build_chain(&tc, n);
+            let idx_max = n.saturating_sub(1);
+            let idx = tc.draw(gs::integers::<usize>().min_value(1).max_value(idx_max));
+            let entry = chain.get(idx).unwrap_or_else(|| std::process::abort());
+            let prev = chain
+                .get(idx.saturating_sub(1))
+                .unwrap_or_else(|| std::process::abort());
+            let mut bad_prev_hash = *entry.previous_hash();
+            if let Some(b) = bad_prev_hash.get_mut(0) {
+                *b ^= 0x01;
+            }
+            let tampered = AuditEntry::new(
+                entry.timestamp(),
+                entry.author_id(),
+                entry
+                    .action_code()
+                    .unwrap_or_else(|_| std::process::abort()),
+                entry.details_offset(),
+                entry.details_length(),
+                bad_prev_hash,
+            );
+            assert!(tampered.validate_chain(prev).is_err());
+        }
+    }
 }

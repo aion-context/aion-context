@@ -605,4 +605,40 @@ mod tests {
         assert_eq!(header.version_chain_offset, HEADER_SIZE as u64 + 100);
         assert_eq!(header.version_chain_count, 1);
     }
+
+    mod properties {
+        use super::*;
+        use hegel::generators as gs;
+
+        fn draw_file(tc: &hegel::TestCase) -> AionFile {
+            let file_id = tc.draw(gs::integers::<u64>());
+            let created_at = tc.draw(gs::integers::<u64>().min_value(1).max_value(1u64 << 62));
+            let bump = tc.draw(gs::integers::<u64>().max_value(10_000_000_000));
+            let modified_at = created_at.saturating_add(bump);
+            AionFile::builder()
+                .file_id(FileId::new(file_id))
+                .created_at(created_at)
+                .modified_at(modified_at)
+                .build()
+                .unwrap_or_else(|_| std::process::abort())
+        }
+
+        #[hegel::test]
+        fn prop_serialize_parse_integrity_holds(tc: hegel::TestCase) {
+            let file = draw_file(&tc);
+            let bytes = AionSerializer::serialize(&file).unwrap_or_else(|_| std::process::abort());
+            let parser = AionParser::new(&bytes).unwrap_or_else(|_| std::process::abort());
+            parser
+                .verify_integrity()
+                .unwrap_or_else(|_| std::process::abort());
+        }
+
+        #[hegel::test]
+        fn prop_serialize_is_deterministic(tc: hegel::TestCase) {
+            let file = draw_file(&tc);
+            let a = AionSerializer::serialize(&file).unwrap_or_else(|_| std::process::abort());
+            let b = AionSerializer::serialize(&file).unwrap_or_else(|_| std::process::abort());
+            assert_eq!(a, b);
+        }
+    }
 }
