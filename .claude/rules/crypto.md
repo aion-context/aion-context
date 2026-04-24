@@ -54,6 +54,24 @@ RFC, not a PR.
    chain verify *every* link on read. `verify()` must be O(entries)
    and read nothing external.
 
+## External-spec exceptions
+
+External specifications whose wire format mandates a hash
+algorithm other than BLAKE3 may use that algorithm **only** at
+the transport/interop boundary, and only when it gates no
+aion-internal security decision. Every such exception is named
+below with its scope.
+
+- **OCI Image Manifest (`src/oci.rs`)**: SHA-256 is mandated by
+  the OCI Image Manifest v1.1 specification for the `digest`
+  field on descriptors, layers, and config blobs. aion-context
+  emits SHA-256 at the OCI transport layer so artifacts interop
+  with cosign / ORAS / registries. Internal content attestation
+  (manifest verification, audit chain, transparency log, hybrid
+  signatures) remains BLAKE3-only. The SHA-256 use at
+  `src/oci.rs` is transport-only; no aion-internal accept/reject
+  decision is gated on a SHA-256 comparison.
+
 ## Key material lifecycle
 
 - Keystore integration uses the OS keyring (`keyring` crate) or an
