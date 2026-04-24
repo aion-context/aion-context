@@ -69,6 +69,26 @@ fn setup_test_env() -> (TempDir, String) {
     (temp_dir, key_id)
 }
 
+/// Build a trusted registry file pinning one author → `key_id`. If
+/// `registry_path` already exists, appends the author in place.
+fn pin_author(registry_path: &std::path::Path, author_id: &str, key_id: &str) {
+    let output = run_cli(&[
+        "registry",
+        "pin",
+        "--author",
+        author_id,
+        "--key",
+        key_id,
+        "--output",
+        registry_path.to_str().expect("registry path utf8"),
+    ]);
+    assert!(
+        output.status.success(),
+        "registry pin failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 /// Cleanup test key
 fn cleanup_key(key_id: &str) {
     let _ = run_cli(&["key", "delete", key_id, "--force"]);
@@ -344,6 +364,8 @@ fn test_cli_init_fails_if_file_exists() {
 fn test_cli_commit_adds_version() {
     let (temp_dir, key_id) = setup_test_env();
     let file_path = temp_dir.path().join("commit_test.aion");
+    let registry_path = temp_dir.path().join("registry.json");
+    pin_author(&registry_path, "2001", &key_id);
 
     // Init file
     let output = run_cli_with_stdin(
@@ -370,6 +392,8 @@ fn test_cli_commit_adds_version() {
             &key_id,
             "--message",
             "Updated rules",
+            "--registry",
+            registry_path.to_str().unwrap(),
         ],
         b"v2 rules",
     );
@@ -381,7 +405,13 @@ fn test_cli_commit_adds_version() {
     );
 
     // Verify version count
-    let output = run_cli(&["show", file_path.to_str().unwrap(), "info"]);
+    let output = run_cli(&[
+        "show",
+        file_path.to_str().unwrap(),
+        "--registry",
+        registry_path.to_str().unwrap(),
+        "info",
+    ]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         stdout.contains('2') || stdout.contains("versions"),
@@ -398,6 +428,9 @@ fn test_cli_commit_with_different_author() {
     run_cli(&["key", "generate", "--id", &key_id2]);
 
     let file_path = temp_dir.path().join("multi_author.aion");
+    let registry_path = temp_dir.path().join("registry.json");
+    pin_author(&registry_path, "3001", &key_id1);
+    pin_author(&registry_path, "3002", &key_id2);
 
     // Init with author 1
     let output = run_cli_with_stdin(
@@ -424,13 +457,21 @@ fn test_cli_commit_with_different_author() {
             &key_id2,
             "--message",
             "Author 2 update",
+            "--registry",
+            registry_path.to_str().unwrap(),
         ],
         b"author2 rules",
     );
     assert!(output.status.success());
 
     // Check history shows both authors
-    let output = run_cli(&["show", file_path.to_str().unwrap(), "history"]);
+    let output = run_cli(&[
+        "show",
+        file_path.to_str().unwrap(),
+        "--registry",
+        registry_path.to_str().unwrap(),
+        "history",
+    ]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("3001") || stdout.contains("Author"));
     assert!(stdout.contains("3002") || stdout.contains("Author"));
@@ -447,6 +488,8 @@ fn test_cli_commit_with_different_author() {
 fn test_cli_verify_valid_file() {
     let (temp_dir, key_id) = setup_test_env();
     let file_path = temp_dir.path().join("verify_test.aion");
+    let registry_path = temp_dir.path().join("registry.json");
+    pin_author(&registry_path, "4001", &key_id);
 
     // Create file
     let output = run_cli_with_stdin(
@@ -463,7 +506,12 @@ fn test_cli_verify_valid_file() {
     assert!(output.status.success());
 
     // Verify file
-    let output = run_cli(&["verify", file_path.to_str().unwrap()]);
+    let output = run_cli(&[
+        "verify",
+        file_path.to_str().unwrap(),
+        "--registry",
+        registry_path.to_str().unwrap(),
+    ]);
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -482,6 +530,8 @@ fn test_cli_verify_valid_file() {
 fn test_cli_verify_verbose_output() {
     let (temp_dir, key_id) = setup_test_env();
     let file_path = temp_dir.path().join("verbose_verify.aion");
+    let registry_path = temp_dir.path().join("registry.json");
+    pin_author(&registry_path, "4002", &key_id);
 
     // Create file
     run_cli_with_stdin(
@@ -497,7 +547,13 @@ fn test_cli_verify_verbose_output() {
     );
 
     // Verify with verbose
-    let output = run_cli(&["verify", file_path.to_str().unwrap(), "--verbose"]);
+    let output = run_cli(&[
+        "verify",
+        file_path.to_str().unwrap(),
+        "--verbose",
+        "--registry",
+        registry_path.to_str().unwrap(),
+    ]);
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -563,6 +619,8 @@ fn test_cli_verify_corrupted_file_fails() {
 fn test_cli_show_rules() {
     let (temp_dir, key_id) = setup_test_env();
     let file_path = temp_dir.path().join("show_rules.aion");
+    let registry_path = temp_dir.path().join("registry.json");
+    pin_author(&registry_path, "5001", &key_id);
     let rules_content = "threshold: 500\nmode: relaxed";
 
     // Create file
@@ -579,7 +637,13 @@ fn test_cli_show_rules() {
     );
 
     // Show rules
-    let output = run_cli(&["show", file_path.to_str().unwrap(), "rules"]);
+    let output = run_cli(&[
+        "show",
+        file_path.to_str().unwrap(),
+        "--registry",
+        registry_path.to_str().unwrap(),
+        "rules",
+    ]);
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -595,6 +659,8 @@ fn test_cli_show_rules() {
 fn test_cli_show_history() {
     let (temp_dir, key_id) = setup_test_env();
     let file_path = temp_dir.path().join("show_history.aion");
+    let registry_path = temp_dir.path().join("registry.json");
+    pin_author(&registry_path, "5002", &key_id);
 
     // Create file with multiple versions
     run_cli_with_stdin(
@@ -621,12 +687,20 @@ fn test_cli_show_history() {
             &key_id,
             "--message",
             "Second commit",
+            "--registry",
+            registry_path.to_str().unwrap(),
         ],
         b"v2",
     );
 
     // Show history
-    let output = run_cli(&["show", file_path.to_str().unwrap(), "history"]);
+    let output = run_cli(&[
+        "show",
+        file_path.to_str().unwrap(),
+        "--registry",
+        registry_path.to_str().unwrap(),
+        "history",
+    ]);
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -640,6 +714,8 @@ fn test_cli_show_history() {
 fn test_cli_show_signatures() {
     let (temp_dir, key_id) = setup_test_env();
     let file_path = temp_dir.path().join("show_sigs.aion");
+    let registry_path = temp_dir.path().join("registry.json");
+    pin_author(&registry_path, "5003", &key_id);
 
     // Create file
     run_cli_with_stdin(
@@ -655,7 +731,13 @@ fn test_cli_show_signatures() {
     );
 
     // Show signatures
-    let output = run_cli(&["show", file_path.to_str().unwrap(), "signatures"]);
+    let output = run_cli(&[
+        "show",
+        file_path.to_str().unwrap(),
+        "--registry",
+        registry_path.to_str().unwrap(),
+        "signatures",
+    ]);
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -669,6 +751,8 @@ fn test_cli_show_signatures() {
 fn test_cli_show_info() {
     let (temp_dir, key_id) = setup_test_env();
     let file_path = temp_dir.path().join("show_info.aion");
+    let registry_path = temp_dir.path().join("registry.json");
+    pin_author(&registry_path, "5004", &key_id);
 
     // Create file
     run_cli_with_stdin(
@@ -684,7 +768,13 @@ fn test_cli_show_info() {
     );
 
     // Show info
-    let output = run_cli(&["show", file_path.to_str().unwrap(), "info"]);
+    let output = run_cli(&[
+        "show",
+        file_path.to_str().unwrap(),
+        "--registry",
+        registry_path.to_str().unwrap(),
+        "info",
+    ]);
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);

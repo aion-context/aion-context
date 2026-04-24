@@ -86,8 +86,12 @@ pub struct ExportSignature {
 /// # Returns
 ///
 /// Exported data as a string in the requested format
-pub fn export_file(path: &Path, format: ExportFormat) -> Result<String> {
-    let file_info = show_file_info(path)?;
+pub fn export_file(
+    path: &Path,
+    format: ExportFormat,
+    registry: &crate::key_registry::KeyRegistry,
+) -> Result<String> {
+    let file_info = show_file_info(path, registry)?;
 
     match format {
         ExportFormat::Json => export_json(path, &file_info),

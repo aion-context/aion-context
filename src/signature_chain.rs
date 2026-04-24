@@ -191,10 +191,25 @@ pub fn sign_version(version: &VersionEntry, signing_key: &SigningKey) -> Signatu
     SignatureEntry::new(AuthorId::new(version.author_id), public_key, signature)
 }
 
-/// Verify a signature entry against a version entry
+/// Verify a single-signer version signature against a pinned
+/// [`KeyRegistry`](crate::key_registry::KeyRegistry) — RFC-0034.
 ///
-/// Returns `Ok(())` if the signature is valid, or an error describing why
-/// verification failed.
+/// This is the canonical verifier. It cross-checks
+/// `signature.public_key` against the active epoch for
+/// `(version.author_id, version.version_number)` in `registry`
+/// before running the Ed25519 check, closing the
+/// `public_key`-substitution gap that the Phase A raw-key path
+/// left open.
+///
+/// # Errors
+///
+/// Returns [`crate::AionError::SignatureVerificationFailed`] if:
+/// - `version.author_id != signature.author_id`,
+/// - `registry` has no active epoch for the signer at
+///   `version.version_number`,
+/// - the signature's embedded public key does not match that
+///   epoch's public key,
+/// - the Ed25519 signature does not verify.
 ///
 /// # Example
 ///
@@ -202,50 +217,54 @@ pub fn sign_version(version: &VersionEntry, signing_key: &SigningKey) -> Signatu
 /// use aion_context::signature_chain::{sign_version, verify_signature};
 /// use aion_context::serializer::VersionEntry;
 /// use aion_context::crypto::SigningKey;
+/// use aion_context::key_registry::KeyRegistry;
 /// use aion_context::types::{AuthorId, VersionNumber};
+///
+/// let author = AuthorId::new(50001);
+/// let master = SigningKey::generate();
+/// let signing_key = SigningKey::generate();
+/// let mut registry = KeyRegistry::new();
+/// registry
+///     .register_author(author, master.verifying_key(), signing_key.verifying_key(), 0)
+///     .unwrap();
 ///
 /// let version = VersionEntry::new(
 ///     VersionNumber::GENESIS,
 ///     [0u8; 32],
 ///     [0xAB; 32],
-///     AuthorId::new(50001),
+///     author,
 ///     1700000000_000_000_000,
 ///     0,
 ///     0,
 /// );
-///
-/// let signing_key = SigningKey::generate();
 /// let signature_entry = sign_version(&version, &signing_key);
-///
-/// // Verification should succeed
-/// # #[allow(deprecated)]
-/// # { assert!(verify_signature(&version, &signature_entry).is_ok()); }
+/// assert!(verify_signature(&version, &signature_entry, &registry).is_ok());
 /// ```
-///
-/// # Migration (RFC-0034)
-///
-/// Prefer [`verify_signature_with_registry`] when you maintain a
-/// pinned [`crate::key_registry::KeyRegistry`]. The registry-aware
-/// path cross-checks `signature.public_key` against the active
-/// epoch for the signer before running the Ed25519 verify, closing
-/// the `public_key`-substitution gap.
-#[deprecated(
-    since = "0.2.0",
-    note = "use verify_signature_with_registry; RFC-0034 — raw-key verify trusts the caller's out-of-band pinning"
-)]
-pub fn verify_signature(version: &VersionEntry, signature: &SignatureEntry) -> Result<()> {
-    // Verify author ID matches
+pub fn verify_signature(
+    version: &VersionEntry,
+    signature: &SignatureEntry,
+    registry: &crate::key_registry::KeyRegistry,
+) -> Result<()> {
     if version.author_id != signature.author_id {
         return Err(crate::AionError::SignatureVerificationFailed {
             version: version.version_number,
             author: AuthorId::new(signature.author_id),
         });
     }
-
-    // Reconstruct the canonical message
+    let signer = AuthorId::new(version.author_id);
+    let epoch = registry
+        .active_epoch_at(signer, version.version_number)
+        .ok_or(crate::AionError::SignatureVerificationFailed {
+            version: version.version_number,
+            author: signer,
+        })?;
+    if signature.public_key != epoch.public_key {
+        return Err(crate::AionError::SignatureVerificationFailed {
+            version: version.version_number,
+            author: signer,
+        });
+    }
     let message = canonical_version_message(version);
-
-    // Verify the signature
     let verifying_key = VerifyingKey::from_bytes(&signature.public_key)?;
     verifying_key.verify(&message, &signature.signature)
 }
@@ -288,203 +307,57 @@ pub fn sign_attestation(
     SignatureEntry::new(signer, public_key, signature)
 }
 
-/// Verify a multi-party attestation signature — RFC-0021.
+/// Verify a multi-party attestation signature against a pinned
+/// [`KeyRegistry`](crate::key_registry::KeyRegistry) — RFC-0021 / RFC-0034.
 ///
-/// The signer identity is taken from `signature.author_id`; there is no
-/// equality constraint against `version.author_id`. Returns `Ok` iff the
-/// embedded Ed25519 signature verifies against the canonical attestation
-/// message for `(version, signature.author_id)`.
+/// The signer identity is taken from `signature.author_id`; there
+/// is no equality constraint against `version.author_id`
+/// (attestations are multi-party by design).
 ///
-/// # Migration (RFC-0034)
+/// # Errors
 ///
-/// Prefer [`verify_attestation_with_registry`] when you maintain a
-/// pinned [`crate::key_registry::KeyRegistry`].
-#[deprecated(
-    since = "0.2.0",
-    note = "use verify_attestation_with_registry; RFC-0034 — raw-key verify trusts the caller's out-of-band pinning"
-)]
-pub fn verify_attestation(version: &VersionEntry, signature: &SignatureEntry) -> Result<()> {
+/// Returns `Err` if the registry has no active epoch for the
+/// attester at `version.version_number`, if the signature's
+/// embedded public key does not match that epoch, or if the
+/// Ed25519 signature does not verify.
+pub fn verify_attestation(
+    version: &VersionEntry,
+    signature: &SignatureEntry,
+    registry: &crate::key_registry::KeyRegistry,
+) -> Result<()> {
     let signer = AuthorId::new(signature.author_id);
+    let epoch = registry
+        .active_epoch_at(signer, version.version_number)
+        .ok_or(crate::AionError::SignatureVerificationFailed {
+            version: version.version_number,
+            author: signer,
+        })?;
+    if signature.public_key != epoch.public_key {
+        return Err(crate::AionError::SignatureVerificationFailed {
+            version: version.version_number,
+            author: signer,
+        });
+    }
     let message = canonical_attestation_message(version, signer);
     let verifying_key = VerifyingKey::from_bytes(&signature.public_key)?;
     verifying_key.verify(&message, &signature.signature)
 }
 
-/// Registry-aware verification of a single-signer version signature — RFC-0028.
+/// Verify signatures for multiple versions in batch, registry-pinned.
 ///
-/// Cross-checks `signature.public_key` against the active epoch for
-/// `(version.author_id, version.version_number)` in `registry` before
-/// delegating to [`verify_signature`]. Rejects signatures made by keys
-/// that have been rotated out or revoked as of the target version.
-///
-/// # Errors
-///
-/// Returns `Err` if `registry` has no active epoch for the version's
-/// author at `version.version_number`, if the signature's embedded
-/// public key does not match that epoch, or if the underlying
-/// Ed25519 verification fails.
-#[allow(deprecated)] // delegates to raw-key verify_signature as the final step of the 4-step algorithm
-pub fn verify_signature_with_registry(
-    version: &VersionEntry,
-    signature: &SignatureEntry,
-    registry: &crate::key_registry::KeyRegistry,
-) -> Result<()> {
-    let signer = AuthorId::new(version.author_id);
-    let epoch = registry
-        .active_epoch_at(signer, version.version_number)
-        .ok_or(crate::AionError::SignatureVerificationFailed {
-            version: version.version_number,
-            author: signer,
-        })?;
-    if signature.public_key != epoch.public_key {
-        return Err(crate::AionError::SignatureVerificationFailed {
-            version: version.version_number,
-            author: signer,
-        });
-    }
-    verify_signature(version, signature)
-}
-
-/// Registry-aware verification of a multi-party attestation — RFC-0028.
-///
-/// Like [`verify_signature_with_registry`] but the signer is
-/// `signature.author_id`, which need not equal `version.author_id`
-/// (attestations are multi-party by design).
+/// Applies [`verify_signature`] to every `(version, signature)`
+/// pair: each must have a matching active epoch in `registry` at
+/// the signed version number AND the Ed25519 signature must
+/// verify under the pinned public key. Uses rayon in parallel
+/// for batches of more than 10 pairs; sequential otherwise.
 ///
 /// # Errors
 ///
-/// Same as [`verify_signature_with_registry`].
-#[allow(deprecated)] // delegates to raw-key verify_attestation as the final step of the 4-step algorithm
-pub fn verify_attestation_with_registry(
-    version: &VersionEntry,
-    signature: &SignatureEntry,
-    registry: &crate::key_registry::KeyRegistry,
-) -> Result<()> {
-    let signer = AuthorId::new(signature.author_id);
-    let epoch = registry
-        .active_epoch_at(signer, version.version_number)
-        .ok_or(crate::AionError::SignatureVerificationFailed {
-            version: version.version_number,
-            author: signer,
-        })?;
-    if signature.public_key != epoch.public_key {
-        return Err(crate::AionError::SignatureVerificationFailed {
-            version: version.version_number,
-            author: signer,
-        });
-    }
-    verify_attestation(version, signature)
-}
-
-/// Verify signatures for multiple versions in batch
-///
-/// This function verifies Ed25519 signatures for a slice of version/signature pairs.
-/// It performs the same cryptographic validation as `verify_signature()` but optimized
-/// for processing multiple entries.
-///
-/// # Arguments
-///
-/// * `versions` - Slice of version entries to verify
-/// * `signatures` - Slice of corresponding signature entries (must match length)
-///
-/// # Returns
-///
-/// * `Ok(())` - All signatures verified successfully
-/// * `Err(AionError)` - First verification failure encountered
-///
-/// # Errors
-///
-/// - `AionError::InvalidFormat` if slice lengths don't match
-/// - `AionError::SignatureVerificationFailed` if any signature is invalid
-/// - `AionError::InvalidPublicKey` if any public key is malformed
-///
-/// # Security
-///
-/// - Constant-time signature verification operations (via ed25519-dalek)
-/// - Fails fast on first error to avoid timing attacks
-/// - Author ID validation prevents signature reuse across authors
-///
-/// # Performance
-///
-/// For N signatures, this function performs N individual verifications.
-/// Average time: ~1ms per signature on modern hardware.
-///
-/// # Example
-///
-/// ```
-/// use aion_context::signature_chain::{sign_version, verify_signatures_batch};
-/// use aion_context::serializer::VersionEntry;
-/// use aion_context::crypto::SigningKey;
-/// use aion_context::types::{AuthorId, VersionNumber};
-///
-/// let key = SigningKey::generate();
-///
-/// let v1 = VersionEntry::new(
-///     VersionNumber::GENESIS,
-///     [0u8; 32],
-///     [0xAB; 32],
-///     AuthorId::new(50001),
-///     1700000000_000_000_000,
-///     0,
-///     15,
-/// );
-///
-/// let v2 = VersionEntry::new(
-///     VersionNumber(2),
-///     [0xCD; 32],
-///     [0xEF; 32],
-///     AuthorId::new(50001),
-///     1700000001_000_000_000,
-///     16,
-///     12,
-/// );
-///
-/// let sig1 = sign_version(&v1, &key);
-/// let sig2 = sign_version(&v2, &key);
-///
-/// let versions = vec![v1, v2];
-/// let signatures = vec![sig1, sig2];
-///
-/// // Verify all signatures at once
-/// assert!(verify_signatures_batch(&versions, &signatures).is_ok());
-/// ```
+/// - `AionError::InvalidFormat` if the two slices differ in length.
+/// - `AionError::SignatureVerificationFailed` on the first pair
+///   where registry lookup or the Ed25519 verify fails.
+/// - `AionError::InvalidPublicKey` if any embedded public key is malformed.
 pub fn verify_signatures_batch(
-    versions: &[VersionEntry],
-    signatures: &[SignatureEntry],
-) -> Result<()> {
-    // Verify slice lengths match
-    if versions.len() != signatures.len() {
-        return Err(crate::AionError::InvalidFormat {
-            reason: format!(
-                "Version and signature count mismatch: {} versions vs {} signatures",
-                versions.len(),
-                signatures.len()
-            ),
-        });
-    }
-
-    // Use parallel verification for large batches (>10 signatures)
-    // For small batches, sequential is faster due to thread overhead
-    if versions.len() > 10 {
-        verify_signatures_parallel(versions, signatures)
-    } else {
-        verify_signatures_sequential(versions, signatures)
-    }
-}
-
-/// Registry-aware batch verification — RFC-0034 Phase C.
-///
-/// Verifies every `(version, signature)` pair via
-/// [`verify_signature_with_registry`], so each pair must both
-/// cryptographically verify AND have a matching active epoch in
-/// `registry` at the signed version number.
-///
-/// # Errors
-///
-/// Returns `Err` on the first pair where registry lookup or
-/// signature verification fails, or if the two slices differ in
-/// length.
-pub fn verify_signatures_batch_with_registry(
     versions: &[VersionEntry],
     signatures: &[SignatureEntry],
     registry: &crate::key_registry::KeyRegistry,
@@ -503,45 +376,13 @@ pub fn verify_signatures_batch_with_registry(
         versions
             .par_iter()
             .zip(signatures.par_iter())
-            .try_for_each(|(version, signature)| {
-                verify_signature_with_registry(version, signature, registry)
-            })
+            .try_for_each(|(version, signature)| verify_signature(version, signature, registry))
     } else {
         for (version, signature) in versions.iter().zip(signatures.iter()) {
-            verify_signature_with_registry(version, signature, registry)?;
+            verify_signature(version, signature, registry)?;
         }
         Ok(())
     }
-}
-
-/// Sequential signature verification (for small batches)
-#[allow(deprecated)] // RFC-0034 Phase D: batch wrapper over raw-key verify; registry-aware batch in Phase E
-fn verify_signatures_sequential(
-    versions: &[VersionEntry],
-    signatures: &[SignatureEntry],
-) -> Result<()> {
-    for (version, signature) in versions.iter().zip(signatures.iter()) {
-        verify_signature(version, signature)?;
-    }
-    Ok(())
-}
-
-/// Parallel signature verification using rayon (for large batches)
-///
-/// This provides significant speedup for files with many versions.
-/// Each signature is verified independently on a thread pool.
-#[allow(deprecated)] // RFC-0034 Phase D: parallel batch wrapper over raw-key verify; registry-aware batch in Phase E
-fn verify_signatures_parallel(
-    versions: &[VersionEntry],
-    signatures: &[SignatureEntry],
-) -> Result<()> {
-    use rayon::prelude::*;
-
-    // Parallel verification - collect first error
-    versions
-        .par_iter()
-        .zip(signatures.par_iter())
-        .try_for_each(|(version, signature)| verify_signature(version, signature))
 }
 
 /// Create a genesis version entry (version 1 with no parent)
@@ -764,11 +605,27 @@ fn verify_chain_links(versions: &[VersionEntry]) -> Result<()> {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 #[allow(clippy::inconsistent_digit_grouping)]
-#[allow(deprecated)] // RFC-0034 Phase D: tests exercise the deprecated raw-key verify contract on purpose
 mod tests {
     use super::*;
     use crate::crypto::SigningKey;
+    use crate::key_registry::KeyRegistry;
     use crate::types::VersionNumber;
+
+    /// Minimal test fixture: pin `signing_key` as the active operational
+    /// key for `author_id` in a fresh [`KeyRegistry`]. Master key is a
+    /// throwaway since these tests don't exercise rotation.
+    fn reg_pinning(author_id: u64, signing_key: &SigningKey) -> KeyRegistry {
+        let mut reg = KeyRegistry::new();
+        let master = SigningKey::generate();
+        reg.register_author(
+            AuthorId::new(author_id),
+            master.verifying_key(),
+            signing_key.verifying_key(),
+            0,
+        )
+        .unwrap_or_else(|_| std::process::abort());
+        reg
+    }
 
     mod canonical_serialization {
         use super::*;
@@ -922,453 +779,6 @@ mod tests {
             );
 
             assert_ne!(compute_version_hash(&v1), compute_version_hash(&v2));
-        }
-    }
-
-    mod signing {
-        use super::*;
-
-        #[test]
-        fn should_create_valid_signature_entry() {
-            let version = VersionEntry::new(
-                VersionNumber::GENESIS,
-                [0u8; 32],
-                [0xAB; 32],
-                AuthorId::new(50001),
-                1700000000_000_000_000,
-                0,
-                15,
-            );
-
-            let signing_key = SigningKey::generate();
-            let sig_entry = sign_version(&version, &signing_key);
-
-            assert_eq!(sig_entry.author_id, 50001);
-            assert_eq!(sig_entry.public_key, signing_key.verifying_key().to_bytes());
-            assert_eq!(sig_entry.signature.len(), 64);
-        }
-
-        #[test]
-        fn should_verify_valid_signature() {
-            let version = VersionEntry::new(
-                VersionNumber::GENESIS,
-                [0u8; 32],
-                [0xAB; 32],
-                AuthorId::new(50001),
-                1700000000_000_000_000,
-                0,
-                15,
-            );
-
-            let signing_key = SigningKey::generate();
-            let sig_entry = sign_version(&version, &signing_key);
-
-            assert!(verify_signature(&version, &sig_entry).is_ok());
-        }
-
-        #[test]
-        fn should_reject_tampered_version() {
-            let version = VersionEntry::new(
-                VersionNumber::GENESIS,
-                [0u8; 32],
-                [0xAB; 32],
-                AuthorId::new(50001),
-                1700000000_000_000_000,
-                0,
-                15,
-            );
-
-            let signing_key = SigningKey::generate();
-            let sig_entry = sign_version(&version, &signing_key);
-
-            // Tamper with version
-            let tampered = VersionEntry::new(
-                VersionNumber::GENESIS,
-                [0u8; 32],
-                [0xCD; 32], // Different rules hash
-                AuthorId::new(50001),
-                1700000000_000_000_000,
-                0,
-                15,
-            );
-
-            assert!(verify_signature(&tampered, &sig_entry).is_err());
-        }
-
-        #[test]
-        fn should_reject_wrong_author() {
-            let version = VersionEntry::new(
-                VersionNumber::GENESIS,
-                [0u8; 32],
-                [0xAB; 32],
-                AuthorId::new(50001),
-                1700000000_000_000_000,
-                0,
-                15,
-            );
-
-            let signing_key = SigningKey::generate();
-            let mut sig_entry = sign_version(&version, &signing_key);
-            sig_entry.author_id = 99999; // Wrong author
-
-            assert!(verify_signature(&version, &sig_entry).is_err());
-        }
-
-        #[test]
-        fn should_reject_tampered_signature() {
-            let version = VersionEntry::new(
-                VersionNumber::GENESIS,
-                [0u8; 32],
-                [0xAB; 32],
-                AuthorId::new(50001),
-                1700000000_000_000_000,
-                0,
-                15,
-            );
-
-            let signing_key = SigningKey::generate();
-            let mut sig_entry = sign_version(&version, &signing_key);
-            sig_entry.signature[0] ^= 1; // Tamper with signature
-
-            assert!(verify_signature(&version, &sig_entry).is_err());
-        }
-
-        #[test]
-        fn should_reject_wrong_public_key() {
-            let version = VersionEntry::new(
-                VersionNumber::GENESIS,
-                [0u8; 32],
-                [0xAB; 32],
-                AuthorId::new(50001),
-                1700000000_000_000_000,
-                0,
-                15,
-            );
-
-            let signing_key = SigningKey::generate();
-            let other_key = SigningKey::generate();
-            let mut sig_entry = sign_version(&version, &signing_key);
-            sig_entry.public_key = other_key.verifying_key().to_bytes();
-
-            assert!(verify_signature(&version, &sig_entry).is_err());
-        }
-    }
-
-    mod batch_signature_verification {
-        use super::*;
-
-        #[test]
-        fn should_verify_batch_with_single_signature() {
-            let key = SigningKey::generate();
-            let version = VersionEntry::new(
-                VersionNumber::GENESIS,
-                [0u8; 32],
-                [0xAB; 32],
-                AuthorId::new(50001),
-                1700000000_000_000_000,
-                0,
-                15,
-            );
-
-            let signature = sign_version(&version, &key);
-            let versions = vec![version];
-            let signatures = vec![signature];
-
-            assert!(verify_signatures_batch(&versions, &signatures).is_ok());
-        }
-
-        #[test]
-        fn should_verify_batch_with_multiple_signatures() {
-            let key = SigningKey::generate();
-
-            let v1 = VersionEntry::new(
-                VersionNumber::GENESIS,
-                [0u8; 32],
-                [0xAB; 32],
-                AuthorId::new(50001),
-                1700000000_000_000_000,
-                0,
-                15,
-            );
-
-            let v2 = VersionEntry::new(
-                VersionNumber(2),
-                [0xCD; 32],
-                [0xEF; 32],
-                AuthorId::new(50001),
-                1700000001_000_000_000,
-                16,
-                12,
-            );
-
-            let v3 = VersionEntry::new(
-                VersionNumber(3),
-                [0x12; 32],
-                [0x34; 32],
-                AuthorId::new(50001),
-                1700000002_000_000_000,
-                28,
-                10,
-            );
-
-            let sig1 = sign_version(&v1, &key);
-            let sig2 = sign_version(&v2, &key);
-            let sig3 = sign_version(&v3, &key);
-
-            let versions = vec![v1, v2, v3];
-            let signatures = vec![sig1, sig2, sig3];
-
-            assert!(verify_signatures_batch(&versions, &signatures).is_ok());
-        }
-
-        #[test]
-        fn should_verify_batch_with_different_authors() {
-            let key1 = SigningKey::generate();
-            let key2 = SigningKey::generate();
-            let key3 = SigningKey::generate();
-
-            let v1 = VersionEntry::new(
-                VersionNumber::GENESIS,
-                [0u8; 32],
-                [0xAB; 32],
-                AuthorId::new(50001),
-                1700000000_000_000_000,
-                0,
-                15,
-            );
-
-            let v2 = VersionEntry::new(
-                VersionNumber(2),
-                [0xCD; 32],
-                [0xEF; 32],
-                AuthorId::new(50002),
-                1700000001_000_000_000,
-                16,
-                12,
-            );
-
-            let v3 = VersionEntry::new(
-                VersionNumber(3),
-                [0x12; 32],
-                [0x34; 32],
-                AuthorId::new(50003),
-                1700000002_000_000_000,
-                28,
-                10,
-            );
-
-            let sig1 = sign_version(&v1, &key1);
-            let sig2 = sign_version(&v2, &key2);
-            let sig3 = sign_version(&v3, &key3);
-
-            let versions = vec![v1, v2, v3];
-            let signatures = vec![sig1, sig2, sig3];
-
-            assert!(verify_signatures_batch(&versions, &signatures).is_ok());
-        }
-
-        #[test]
-        fn should_reject_batch_with_length_mismatch() {
-            let key = SigningKey::generate();
-
-            let v1 = VersionEntry::new(
-                VersionNumber::GENESIS,
-                [0u8; 32],
-                [0xAB; 32],
-                AuthorId::new(50001),
-                1700000000_000_000_000,
-                0,
-                15,
-            );
-
-            let v2 = VersionEntry::new(
-                VersionNumber(2),
-                [0xCD; 32],
-                [0xEF; 32],
-                AuthorId::new(50001),
-                1700000001_000_000_000,
-                16,
-                12,
-            );
-
-            let sig1 = sign_version(&v1, &key);
-
-            let versions = vec![v1, v2];
-            let signatures = vec![sig1]; // Only one signature for two versions
-
-            let result = verify_signatures_batch(&versions, &signatures);
-            assert!(result.is_err());
-            assert!(matches!(
-                result,
-                Err(crate::AionError::InvalidFormat { .. })
-            ));
-        }
-
-        #[test]
-        fn should_reject_batch_with_one_tampered_signature() {
-            let key = SigningKey::generate();
-
-            let v1 = VersionEntry::new(
-                VersionNumber::GENESIS,
-                [0u8; 32],
-                [0xAB; 32],
-                AuthorId::new(50001),
-                1700000000_000_000_000,
-                0,
-                15,
-            );
-
-            let v2 = VersionEntry::new(
-                VersionNumber(2),
-                [0xCD; 32],
-                [0xEF; 32],
-                AuthorId::new(50001),
-                1700000001_000_000_000,
-                16,
-                12,
-            );
-
-            let sig1 = sign_version(&v1, &key);
-            let mut sig2 = sign_version(&v2, &key);
-            sig2.signature[0] ^= 1; // Tamper with second signature
-
-            let versions = vec![v1, v2];
-            let signatures = vec![sig1, sig2];
-
-            let result = verify_signatures_batch(&versions, &signatures);
-            assert!(result.is_err());
-        }
-
-        #[test]
-        fn should_reject_batch_with_wrong_author_id() {
-            let key = SigningKey::generate();
-
-            let v1 = VersionEntry::new(
-                VersionNumber::GENESIS,
-                [0u8; 32],
-                [0xAB; 32],
-                AuthorId::new(50001),
-                1700000000_000_000_000,
-                0,
-                15,
-            );
-
-            let v2 = VersionEntry::new(
-                VersionNumber(2),
-                [0xCD; 32],
-                [0xEF; 32],
-                AuthorId::new(50001),
-                1700000001_000_000_000,
-                16,
-                12,
-            );
-
-            let sig1 = sign_version(&v1, &key);
-            let mut sig2 = sign_version(&v2, &key);
-            sig2.author_id = 99999; // Wrong author ID
-
-            let versions = vec![v1, v2];
-            let signatures = vec![sig1, sig2];
-
-            let result = verify_signatures_batch(&versions, &signatures);
-            assert!(result.is_err());
-            assert!(matches!(
-                result,
-                Err(crate::AionError::SignatureVerificationFailed { .. })
-            ));
-        }
-
-        #[test]
-        fn should_verify_empty_batch() {
-            let versions: Vec<VersionEntry> = vec![];
-            let signatures: Vec<SignatureEntry> = vec![];
-
-            // Empty batch is valid (no signatures to verify)
-            assert!(verify_signatures_batch(&versions, &signatures).is_ok());
-        }
-
-        #[test]
-        fn should_verify_large_batch() {
-            // Test with 100 signatures
-            let key = SigningKey::generate();
-            let mut versions = Vec::with_capacity(100);
-            let mut signatures = Vec::with_capacity(100);
-
-            #[allow(clippy::cast_possible_truncation)] // Test code: intentional modulo wrapping
-            for i in 1..=100 {
-                let version = VersionEntry::new(
-                    VersionNumber(i),
-                    if i == 1 { [0u8; 32] } else { [0xFF; 32] },
-                    [(i % 256) as u8; 32],
-                    AuthorId::new(50001),
-                    1700000000_000_000_000 + i * 1_000_000_000,
-                    i * 16,
-                    12,
-                );
-                let signature = sign_version(&version, &key);
-                versions.push(version);
-                signatures.push(signature);
-            }
-
-            assert!(verify_signatures_batch(&versions, &signatures).is_ok());
-        }
-
-        #[test]
-        fn should_detect_swapped_signatures() {
-            let key = SigningKey::generate();
-
-            let v1 = VersionEntry::new(
-                VersionNumber::GENESIS,
-                [0u8; 32],
-                [0xAB; 32],
-                AuthorId::new(50001),
-                1700000000_000_000_000,
-                0,
-                15,
-            );
-
-            let v2 = VersionEntry::new(
-                VersionNumber(2),
-                [0xCD; 32],
-                [0xEF; 32],
-                AuthorId::new(50001),
-                1700000001_000_000_000,
-                16,
-                12,
-            );
-
-            let sig1 = sign_version(&v1, &key);
-            let sig2 = sign_version(&v2, &key);
-
-            let versions = vec![v1, v2];
-            let signatures = vec![sig2, sig1]; // Swapped order
-
-            let result = verify_signatures_batch(&versions, &signatures);
-            assert!(result.is_err());
-        }
-
-        #[test]
-        fn should_reject_batch_with_invalid_public_key() {
-            let key = SigningKey::generate();
-
-            let v1 = VersionEntry::new(
-                VersionNumber::GENESIS,
-                [0u8; 32],
-                [0xAB; 32],
-                AuthorId::new(50001),
-                1700000000_000_000_000,
-                0,
-                15,
-            );
-
-            let mut sig1 = sign_version(&v1, &key);
-            sig1.public_key = [0xFF; 32]; // Invalid public key
-
-            let versions = vec![v1];
-            let signatures = vec![sig1];
-
-            let result = verify_signatures_batch(&versions, &signatures);
-            assert!(result.is_err());
         }
     }
 
@@ -1852,13 +1262,21 @@ mod tests {
             let key = SigningKey::generate();
             let mut sig = sign_version(&version, &key);
             sig.author_id = author.as_u64();
-            assert!(verify_signature(&version, &sig).is_ok());
+            let reg = reg_pinning(author.as_u64(), &key);
+            assert!(verify_signature(&version, &sig, &reg).is_ok());
         }
 
         #[hegel::test]
         fn prop_attestation_roundtrip(tc: hegel::TestCase) {
             let version_author = AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1)));
-            let signer = AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1)));
+            let signer =
+                AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1).max_value(u64::MAX / 2)));
+            // Avoid collision between version_author and signer
+            let signer = if signer == version_author {
+                AuthorId::new(signer.as_u64().saturating_add(1))
+            } else {
+                signer
+            };
             let version = create_genesis_version(
                 draw_hash(&tc),
                 version_author,
@@ -1868,7 +1286,8 @@ mod tests {
             );
             let key = SigningKey::generate();
             let att = sign_attestation(&version, signer, &key);
-            assert!(verify_attestation(&version, &att).is_ok());
+            let reg = reg_pinning(signer.as_u64(), &key);
+            assert!(verify_attestation(&version, &att, &reg).is_ok());
         }
 
         #[hegel::test]
@@ -1888,7 +1307,10 @@ mod tests {
             let mut att = sign_attestation(&version, real_signer, &key);
             // Tamper with signer identity after signing.
             att.author_id = fake_signer.as_u64();
-            assert!(verify_attestation(&version, &att).is_err());
+            // Registry pins the real_signer — the tampered att claims to be fake_signer,
+            // which isn't in the registry; verify must reject.
+            let reg = reg_pinning(real_signer.as_u64(), &key);
+            assert!(verify_attestation(&version, &att, &reg).is_err());
         }
 
         #[hegel::test]
@@ -1902,7 +1324,8 @@ mod tests {
             v2.rules_hash[0] ^= 0x01;
             let key = SigningKey::generate();
             let att = sign_attestation(&v1, signer, &key);
-            assert!(verify_attestation(&v2, &att).is_err());
+            let reg = reg_pinning(signer.as_u64(), &key);
+            assert!(verify_attestation(&v2, &att, &reg).is_err());
         }
 
         #[hegel::test]
@@ -1917,9 +1340,10 @@ mod tests {
             let key = SigningKey::generate();
             let mut version_sig = sign_version(&version, &key);
             version_sig.author_id = author.as_u64();
-            // verify_version should pass; verify_attestation must not.
-            assert!(verify_signature(&version, &version_sig).is_ok());
-            assert!(verify_attestation(&version, &version_sig).is_err());
+            let reg = reg_pinning(author.as_u64(), &key);
+            // verify_signature should pass; verify_attestation must not.
+            assert!(verify_signature(&version, &version_sig, &reg).is_ok());
+            assert!(verify_attestation(&version, &version_sig, &reg).is_err());
         }
 
         // ------------------------------------------------------------------
@@ -1954,7 +1378,7 @@ mod tests {
             let version = make_version_at(author, version_number);
             let mut sig = sign_version(&version, &op0);
             sig.author_id = author.as_u64();
-            assert!(verify_signature_with_registry(&version, &sig, &reg).is_ok());
+            assert!(verify_signature(&version, &sig, &reg).is_ok());
         }
 
         #[hegel::test]
@@ -1988,7 +1412,7 @@ mod tests {
             // Sign with the ROTATED-OUT op0 key — this should now fail.
             let mut sig = sign_version(&version, &op0);
             sig.author_id = author.as_u64();
-            assert!(verify_signature_with_registry(&version, &sig, &reg).is_err());
+            assert!(verify_signature(&version, &sig, &reg).is_err());
         }
 
         #[hegel::test]
@@ -2019,7 +1443,7 @@ mod tests {
             let version = make_version_at(author, v_after);
             let mut sig = sign_version(&version, &op0);
             sig.author_id = author.as_u64();
-            assert!(verify_signature_with_registry(&version, &sig, &reg).is_err());
+            assert!(verify_signature(&version, &sig, &reg).is_err());
         }
 
         #[hegel::test]
@@ -2037,7 +1461,7 @@ mod tests {
             sig.author_id = author.as_u64();
             // Attacker swaps the embedded public_key to a key they control.
             sig.public_key = attacker.verifying_key().to_bytes();
-            assert!(verify_signature_with_registry(&version, &sig, &reg).is_err());
+            assert!(verify_signature(&version, &sig, &reg).is_err());
         }
     }
 }

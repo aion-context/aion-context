@@ -644,6 +644,65 @@ impl KeyRegistry {
         }
         Ok(())
     }
+
+    /// Serialize the registry to the trusted-JSON format parsed by
+    /// [`Self::from_trusted_json`]. Authors and epochs are emitted in
+    /// stable, sorted order (`author_id` ascending, then epoch
+    /// ascending) so output is deterministic.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if `serde_json` fails to serialize — which in
+    /// practice does not happen with the on-disk shape this method
+    /// constructs.
+    pub fn to_trusted_json(&self) -> Result<String> {
+        let mut authors: Vec<(&AuthorId, &AuthorRecord)> = self.authors.iter().collect();
+        authors.sort_by_key(|(id, _)| id.as_u64());
+        let mut entries = Vec::with_capacity(authors.len());
+        for (author, record) in authors {
+            entries.push(serialize_author_entry(*author, record));
+        }
+        let file = TrustedRegistryFile {
+            version: 1,
+            authors: entries,
+        };
+        serde_json::to_string_pretty(&file).map_err(|e| AionError::InvalidFormat {
+            reason: format!("registry JSON serialize failed: {e}"),
+        })
+    }
+}
+
+fn serialize_author_entry(author: AuthorId, record: &AuthorRecord) -> TrustedAuthorEntry {
+    use base64::Engine;
+    let engine = base64::engine::general_purpose::STANDARD;
+    let mut sorted_epochs: Vec<&KeyEpoch> = record.epochs.iter().collect();
+    sorted_epochs.sort_by_key(|e| e.epoch);
+    let mut epochs = Vec::with_capacity(sorted_epochs.len());
+    let mut revocations = Vec::new();
+    for epoch in sorted_epochs {
+        epochs.push(TrustedEpochEntry {
+            epoch: epoch.epoch,
+            public_key: engine.encode(epoch.public_key),
+            active_from_version: epoch.created_at_version,
+        });
+        if let KeyStatus::Revoked {
+            reason,
+            effective_from_version,
+        } = epoch.status
+        {
+            revocations.push(TrustedRevocationEntry {
+                epoch: epoch.epoch,
+                reason,
+                effective_from_version,
+            });
+        }
+    }
+    TrustedAuthorEntry {
+        author_id: author.as_u64(),
+        master_key: engine.encode(record.master_key.to_bytes()),
+        epochs,
+        revocations,
+    }
 }
 
 fn decode_registry_key_bytes(encoded: &str, field: &str) -> Result<[u8; 32]> {
@@ -662,29 +721,29 @@ fn decode_registry_key_bytes(encoded: &str, field: &str) -> Result<[u8; 32]> {
     })
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, serde::Serialize)]
 struct TrustedRegistryFile {
     version: u32,
     authors: Vec<TrustedAuthorEntry>,
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, serde::Serialize)]
 struct TrustedAuthorEntry {
     author_id: u64,
     master_key: String,
     epochs: Vec<TrustedEpochEntry>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     revocations: Vec<TrustedRevocationEntry>,
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, serde::Serialize)]
 struct TrustedEpochEntry {
     epoch: u32,
     public_key: String,
     active_from_version: u64,
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, serde::Serialize)]
 struct TrustedRevocationEntry {
     epoch: u32,
     reason: RevocationReason,

@@ -17,6 +17,7 @@
 //! use aion_context::slsa::SlsaStatementBuilder;
 //! use aion_context::dsse::verify_envelope;
 //! use aion_context::crypto::SigningKey;
+//! use aion_context::key_registry::KeyRegistry;
 //! use aion_context::types::AuthorId;
 //! use serde_json::json;
 //!
@@ -30,11 +31,15 @@
 //! let statement = b.build().unwrap();
 //!
 //! let signer = AuthorId::new(42);
+//! let master = SigningKey::generate();
 //! let key = SigningKey::generate();
-//! let env = aion_context::slsa::wrap_statement_dsse(&statement, signer, &key).unwrap();
+//! let mut registry = KeyRegistry::new();
+//! registry
+//!     .register_author(signer, master.verifying_key(), key.verifying_key(), 0)
+//!     .unwrap();
 //!
-//! let verifying = key.verifying_key();
-//! let verified = verify_envelope(&env, |_| Some(verifying.clone())).unwrap();
+//! let env = aion_context::slsa::wrap_statement_dsse(&statement, signer, &key).unwrap();
+//! let verified = verify_envelope(&env, &registry, 1).unwrap();
 //! assert_eq!(verified.len(), 1);
 //! ```
 
@@ -433,12 +438,21 @@ pub fn unwrap_statement_dsse(envelope: &DsseEnvelope) -> Result<InTotoStatement>
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
-#[allow(deprecated)] // RFC-0034 Phase D: tests use verify_envelope to exercise the DSSE wrapper path
 mod tests {
     use super::*;
     use crate::dsse::verify_envelope;
+    use crate::key_registry::KeyRegistry;
     use crate::manifest::ArtifactManifestBuilder;
     use serde_json::json;
+
+    /// Pin `signer` with `key` as the active op pubkey at epoch 0.
+    fn reg_pinning(signer: AuthorId, key: &SigningKey) -> KeyRegistry {
+        let mut reg = KeyRegistry::new();
+        let master = SigningKey::generate();
+        reg.register_author(signer, master.verifying_key(), key.verifying_key(), 0)
+            .unwrap();
+        reg
+    }
 
     fn build_sample_manifest() -> ArtifactManifest {
         let mut m = ArtifactManifestBuilder::new();
@@ -497,10 +511,10 @@ mod tests {
         let statement = b.build().unwrap();
         let signer = AuthorId::new(42);
         let key = SigningKey::generate();
-        let verifying = key.verifying_key();
         let env = wrap_statement_dsse(&statement, signer, &key).unwrap();
         assert_eq!(env.payload_type, IN_TOTO_PAYLOAD_TYPE);
-        let verified = verify_envelope(&env, |_| Some(verifying)).unwrap();
+        let reg = reg_pinning(signer, &key);
+        let verified = verify_envelope(&env, &reg, 1).unwrap();
         assert_eq!(verified.len(), 1);
         let back = unwrap_statement_dsse(&env).unwrap();
         assert_eq!(back, statement);
@@ -557,11 +571,10 @@ mod tests {
             let statement = builder.build().unwrap_or_else(|_| std::process::abort());
             let signer = AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1)));
             let key = SigningKey::generate();
-            let verifying = key.verifying_key();
             let env = wrap_statement_dsse(&statement, signer, &key)
                 .unwrap_or_else(|_| std::process::abort());
-            let verified = verify_envelope(&env, |_| Some(verifying))
-                .unwrap_or_else(|_| std::process::abort());
+            let reg = reg_pinning(signer, &key);
+            let verified = verify_envelope(&env, &reg, 1).unwrap_or_else(|_| std::process::abort());
             assert_eq!(verified.len(), 1);
             let roundtripped =
                 unwrap_statement_dsse(&env).unwrap_or_else(|_| std::process::abort());
@@ -602,7 +615,6 @@ mod tests {
             let statement = builder.build().unwrap_or_else(|_| std::process::abort());
             let signer = AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1)));
             let key = SigningKey::generate();
-            let verifying = key.verifying_key();
             let mut env = wrap_statement_dsse(&statement, signer, &key)
                 .unwrap_or_else(|_| std::process::abort());
             // Flip a byte in the payload (the JSON body) → verification fails.
@@ -611,7 +623,8 @@ mod tests {
             if let Some(b) = env.payload.get_mut(idx) {
                 *b ^= 0x01;
             }
-            let result: Result<Vec<String>> = verify_envelope(&env, |_| Some(verifying));
+            let reg = reg_pinning(signer, &key);
+            let result: Result<Vec<String>> = verify_envelope(&env, &reg, 1);
             assert!(result.is_err());
         }
 

@@ -19,12 +19,20 @@
 //! ```
 //! use aion_context::aibom::{FrameworkRef, License, LicenseScope};
 //! use aion_context::crypto::SigningKey;
+//! use aion_context::key_registry::KeyRegistry;
 //! use aion_context::release::ReleaseBuilder;
 //! use aion_context::transparency_log::TransparencyLog;
 //! use aion_context::types::AuthorId;
 //!
 //! let mut log = TransparencyLog::new();
+//! let signer = AuthorId::new(50_001);
+//! let master = SigningKey::generate();
 //! let key = SigningKey::generate();
+//! let mut registry = KeyRegistry::new();
+//! registry
+//!     .register_author(signer, master.verifying_key(), key.verifying_key(), 0)
+//!     .unwrap();
+//!
 //! let mut b = ReleaseBuilder::new("acme-7b-chat", "0.3.1", "safetensors");
 //! b.primary_artifact("model.safetensors", vec![0xAA; 128])
 //!     .add_framework(FrameworkRef {
@@ -39,8 +47,8 @@
 //!     })
 //!     .builder_id("https://example.com/ci/run/1")
 //!     .current_aion_version(1);
-//! let signed = b.seal(AuthorId::new(50_001), &key, &mut log).unwrap();
-//! signed.verify(&key.verifying_key()).unwrap();
+//! let signed = b.seal(signer, &key, &mut log).unwrap();
+//! signed.verify(&registry, 1).unwrap();
 //! ```
 
 use std::collections::BTreeMap;
@@ -49,14 +57,12 @@ use crate::aibom::{
     AiBom, DatasetRef, ExportControl, ExternalReference, FrameworkRef, License, ModelRef,
     SafetyAttestation,
 };
-use crate::crypto::{SigningKey, VerifyingKey};
+use crate::crypto::SigningKey;
 use crate::dsse::{self, DsseEnvelope, AION_MANIFEST_TYPE};
 use crate::key_registry::KeyRegistry;
-#[allow(deprecated)]
-// RFC-0034 Phase D: SignedRelease::verify wraps raw-key verify_manifest_signature
 use crate::manifest::{
-    sign_manifest, verify_manifest_signature, verify_manifest_signature_with_registry,
-    ArtifactEntry, ArtifactManifest, ArtifactManifestBuilder,
+    sign_manifest, verify_manifest_signature, ArtifactEntry, ArtifactManifest,
+    ArtifactManifestBuilder,
 };
 use crate::oci::{
     build_aion_manifest, build_attestation_manifest, AionConfig, OciArtifactManifest,
@@ -540,82 +546,22 @@ impl SignedRelease {
     ///
     /// Returns `Err` if any signature fails to verify, any OCI
     /// digest is inconsistent, or the AIBOM / SLSA linkages to the
-    /// manifest are broken.
-    ///
-    /// # Migration (RFC-0034)
-    ///
-    /// Prefer [`Self::verify_with_registry`] when you maintain a
-    /// pinned [`KeyRegistry`]. The raw-key form here trusts the
-    /// caller's out-of-band pinning.
-    #[deprecated(
-        since = "0.2.0",
-        note = "use SignedRelease::verify_with_registry; RFC-0034 — raw-key verify trusts the caller's out-of-band pinning"
-    )]
-    #[allow(deprecated)] // wraps raw-key verify_manifest_signature + verify_envelope
-    pub fn verify(&self, verifying_key: &VerifyingKey) -> Result<()> {
-        verify_manifest_signature(&self.manifest, &self.manifest_signature)?;
-        self.verify_dsse_envelopes(verifying_key)?;
-        self.verify_aibom_manifest_linkage()?;
-        verify_slsa_subjects_against_manifest(&self.slsa_statement, &self.manifest)?;
-        self.verify_oci_linkage()?;
-        self.verify_log_entry_kinds()?;
-        Ok(())
-    }
-
-    /// Registry-aware release verification — RFC-0034 Phase C.
-    ///
-    /// Resolves every signing key from `registry` at `at_version`
-    /// instead of trusting a raw `VerifyingKey`. Specifically:
-    ///
-    /// - The manifest signature is checked via
-    ///   [`verify_manifest_signature_with_registry`].
-    /// - Every DSSE envelope (manifest / AIBOM / SLSA) has its
-    ///   signer keyids resolved through the registry via
-    ///   [`crate::dsse::verify_envelope_with_registry`].
-    /// - AIBOM / SLSA / OCI linkage checks are byte-equality and
-    ///   unchanged from [`Self::verify`].
-    ///
-    /// # Errors
-    ///
-    /// Returns `Err` on the same conditions as [`Self::verify`],
-    /// plus `AionError::SignatureVerificationFailed` if the
-    /// registry has no active epoch for the release's signer at
-    /// `at_version`, or if any DSSE signer's pinned key does not
-    /// match the signature's embedded public key.
-    pub fn verify_with_registry(&self, registry: &KeyRegistry, at_version: u64) -> Result<()> {
-        verify_manifest_signature_with_registry(
+    /// manifest are broken. Resolves every signing key from
+    /// `registry` at `at_version`.
+    pub fn verify(&self, registry: &KeyRegistry, at_version: u64) -> Result<()> {
+        verify_manifest_signature(
             &self.manifest,
             &self.manifest_signature,
             registry,
             at_version,
         )?;
-        let _ = dsse::verify_envelope_with_registry(&self.manifest_dsse, registry, at_version)?;
-        let _ = dsse::verify_envelope_with_registry(&self.aibom_dsse, registry, at_version)?;
-        let _ = dsse::verify_envelope_with_registry(&self.slsa_dsse, registry, at_version)?;
+        let _ = dsse::verify_envelope(&self.manifest_dsse, registry, at_version)?;
+        let _ = dsse::verify_envelope(&self.aibom_dsse, registry, at_version)?;
+        let _ = dsse::verify_envelope(&self.slsa_dsse, registry, at_version)?;
         self.verify_aibom_manifest_linkage()?;
         verify_slsa_subjects_against_manifest(&self.slsa_statement, &self.manifest)?;
         self.verify_oci_linkage()?;
         self.verify_log_entry_kinds()?;
-        Ok(())
-    }
-
-    /// Verify every DSSE envelope under the signer's pinned key.
-    /// Any envelope carrying a keyid other than
-    /// `dsse::keyid_for(self.signer)` is rejected before the
-    /// Ed25519 verify runs.
-    #[allow(deprecated)] // wraps raw-key dsse::verify_envelope; only called from deprecated SignedRelease::verify
-    fn verify_dsse_envelopes(&self, verifying_key: &VerifyingKey) -> Result<()> {
-        let expected_keyid = dsse::keyid_for(self.signer);
-        let lookup = |keyid: &str| -> Option<VerifyingKey> {
-            if keyid == expected_keyid {
-                Some(*verifying_key)
-            } else {
-                None
-            }
-        };
-        let _ = dsse::verify_envelope(&self.manifest_dsse, lookup)?;
-        let _ = dsse::verify_envelope(&self.aibom_dsse, lookup)?;
-        let _ = dsse::verify_envelope(&self.slsa_dsse, lookup)?;
         Ok(())
     }
 
@@ -734,9 +680,17 @@ fn verify_slsa_subjects_against_manifest(
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
-#[allow(deprecated)] // RFC-0034 Phase D: tests exercise the deprecated SignedRelease::verify contract
 mod tests {
     use super::*;
+
+    /// Build a registry pinning `signer` with `key` as the active op at epoch 0.
+    fn reg_pinning(signer: AuthorId, key: &SigningKey) -> KeyRegistry {
+        let mut reg = KeyRegistry::new();
+        let master = SigningKey::generate();
+        reg.register_author(signer, master.verifying_key(), key.verifying_key(), 0)
+            .unwrap();
+        reg
+    }
 
     fn sample_builder() -> ReleaseBuilder {
         let mut b = ReleaseBuilder::new("acme-7b-chat", "0.3.1", "safetensors");
@@ -782,7 +736,9 @@ mod tests {
         let signed = sample_builder()
             .seal(AuthorId::new(50_001), &key, &mut log)
             .unwrap();
-        signed.verify(&key.verifying_key()).unwrap();
+        signed
+            .verify(&reg_pinning(AuthorId::new(50_001), &key), 1)
+            .unwrap();
     }
 
     #[test]
@@ -837,7 +793,9 @@ mod tests {
             .seal(AuthorId::new(50_001), &key, &mut log)
             .unwrap();
         signed.aibom_dsse.payload[0] ^= 0x01;
-        assert!(signed.verify(&key.verifying_key()).is_err());
+        assert!(signed
+            .verify(&reg_pinning(AuthorId::new(50_001), &key), 1)
+            .is_err());
     }
 
     #[test]
@@ -848,7 +806,10 @@ mod tests {
         let signed = sample_builder()
             .seal(AuthorId::new(50_001), &key, &mut log)
             .unwrap();
-        assert!(signed.verify(&other.verifying_key()).is_err());
+        // Pin the WRONG key for the author — registry check rejects.
+        assert!(signed
+            .verify(&reg_pinning(AuthorId::new(50_001), &other), 1)
+            .is_err());
     }
 
     mod properties {
@@ -879,14 +840,11 @@ mod tests {
         fn prop_release_seal_verify_roundtrip(tc: hegel::TestCase) {
             let mut log = TransparencyLog::new();
             let key = SigningKey::generate();
-            let signed = build_and_seal(
-                &tc,
-                &mut log,
-                AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1))),
-                &key,
-            );
+            let signer = AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1)));
+            let signed = build_and_seal(&tc, &mut log, signer, &key);
+            let reg = reg_pinning(signer, &key);
             signed
-                .verify(&key.verifying_key())
+                .verify(&reg, 1)
                 .unwrap_or_else(|_| std::process::abort());
         }
 
@@ -907,7 +865,9 @@ mod tests {
             if let Some(b) = signed.manifest_dsse.payload.get_mut(idx) {
                 *b ^= 0x01;
             }
-            assert!(signed.verify(&key.verifying_key()).is_err());
+            assert!(signed
+                .verify(&reg_pinning(AuthorId::new(50_001), &key), 1)
+                .is_err());
         }
 
         #[hegel::test]
@@ -987,7 +947,7 @@ mod tests {
             let signed = build_and_seal(&tc, &mut log, signer, &op);
             let at = tc.draw(gs::integers::<u64>().min_value(1).max_value(1 << 20));
             signed
-                .verify_with_registry(&reg, at)
+                .verify(&reg, at)
                 .unwrap_or_else(|_| std::process::abort());
         }
 
@@ -1017,7 +977,7 @@ mod tests {
             // Seal the release with the rotated-OUT op0 key.
             let signed = build_and_seal(&tc, &mut log, signer, &op0);
             let v_after = effective.saturating_add(1);
-            assert!(signed.verify_with_registry(&reg, v_after).is_err());
+            assert!(signed.verify(&reg, v_after).is_err());
         }
     }
 }

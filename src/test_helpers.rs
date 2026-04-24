@@ -672,7 +672,7 @@ mod tests {
     #[allow(clippy::unwrap_used)]
     mod test_registry {
         use super::*;
-        use crate::signature_chain::{sign_version, verify_signature_with_registry};
+        use crate::signature_chain::{sign_version, verify_signature};
         use crate::types::VersionNumber;
 
         fn make_version(author: AuthorId, version: u64) -> crate::serializer::VersionEntry {
@@ -722,7 +722,7 @@ mod tests {
             let author = reg.pin(&master, &op).unwrap();
             let version = make_version(author, 7);
             let sig = sign_version(&version, &op);
-            verify_signature_with_registry(&version, &sig, reg.as_registry()).unwrap();
+            verify_signature(&version, &sig, reg.as_registry()).unwrap();
         }
 
         #[test]
@@ -739,7 +739,7 @@ mod tests {
             // A signature at version 200 signed by the rotated-out op0 must be rejected.
             let version = make_version(author, 200);
             let sig = sign_version(&version, &op0);
-            assert!(verify_signature_with_registry(&version, &sig, reg.as_registry()).is_err());
+            assert!(verify_signature(&version, &sig, reg.as_registry()).is_err());
         }
 
         #[test]
@@ -754,7 +754,7 @@ mod tests {
             reg.rotate(author, &master, &op1, 100).unwrap();
             let version = make_version(author, 150);
             let sig = sign_version(&version, &op1);
-            verify_signature_with_registry(&version, &sig, reg.as_registry()).unwrap();
+            verify_signature(&version, &sig, reg.as_registry()).unwrap();
         }
 
         #[test]
@@ -766,7 +766,7 @@ mod tests {
                 .unwrap();
             let version = make_version(author, 100);
             let sig = sign_version(&version, &op);
-            assert!(verify_signature_with_registry(&version, &sig, reg.as_registry()).is_err());
+            assert!(verify_signature(&version, &sig, reg.as_registry()).is_err());
         }
 
         #[test]
@@ -779,7 +779,7 @@ mod tests {
             // A signature at version 50 (before revocation) is still valid.
             let version = make_version(author, 50);
             let sig = sign_version(&version, &op);
-            verify_signature_with_registry(&version, &sig, reg.as_registry()).unwrap();
+            verify_signature(&version, &sig, reg.as_registry()).unwrap();
         }
 
         #[test]

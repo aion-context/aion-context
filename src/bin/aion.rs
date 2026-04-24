@@ -48,6 +48,9 @@ enum Commands {
 
     /// Export file data to JSON/YAML/CSV
     Export(ExportArgs),
+
+    /// Manage trusted key registries (RFC-0028 / RFC-0034)
+    Registry(RegistryArgs),
 }
 
 #[derive(Args, Debug)]
@@ -102,6 +105,12 @@ struct CommitArgs {
     /// Commit message
     #[arg(short, long, value_name = "MESSAGE")]
     message: String,
+
+    /// Path to a JSON registry file (RFC-0034). Required post-Phase-E:
+    /// commit pre-verifies the existing signature chain through the
+    /// registry-aware path before appending the new version.
+    #[arg(long, value_name = "REGISTRY_FILE")]
+    registry: PathBuf,
 }
 
 #[derive(Args, Debug)]
@@ -119,12 +128,11 @@ struct VerifyArgs {
     verbose: bool,
 
     /// Path to a JSON registry file pinning the master and operational keys
-    /// for each expected author (RFC-0034). When set, every signature in the
-    /// file is cross-checked against the active epoch for its signer at the
-    /// signed version number. Without this flag, verification trusts the
-    /// public keys embedded in each signature.
+    /// for each expected author (RFC-0034). Required post-Phase-E — every
+    /// signature is cross-checked against the active epoch for its signer
+    /// at the signed version number.
     #[arg(long, value_name = "REGISTRY_FILE")]
-    registry: Option<PathBuf>,
+    registry: PathBuf,
 }
 
 #[derive(Args, Debug)]
@@ -141,11 +149,11 @@ struct ShowArgs {
     #[arg(short, long, value_name = "FORMAT", default_value = "text")]
     format: OutputFormat,
 
-    /// Path to a JSON registry file (RFC-0034). Currently consulted by the
-    /// `signatures` subcommand for registry-aware verification of each
-    /// embedded signature; ignored by subcommands that do not verify.
+    /// Path to a JSON registry file (RFC-0034). Required post-Phase-E
+    /// by every subcommand that verifies signatures or summarises the
+    /// file state (which internally runs verify).
     #[arg(long, value_name = "REGISTRY_FILE")]
-    registry: Option<PathBuf>,
+    registry: PathBuf,
 }
 
 #[derive(Subcommand, Debug)]
@@ -236,6 +244,11 @@ struct ReportArgs {
     /// Output file (stdout if omitted)
     #[arg(short, long, value_name = "OUTPUT")]
     output: Option<PathBuf>,
+
+    /// Path to a JSON registry file (RFC-0034) used for the verify
+    /// step that feeds the report.
+    #[arg(long, value_name = "REGISTRY_FILE")]
+    registry: PathBuf,
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
@@ -301,9 +314,55 @@ struct ExportArgs {
     #[arg(short, long, value_enum, default_value = "json")]
     format: ExportFormatType,
 
+    /// Path to a JSON registry file (RFC-0034) used for the
+    /// verify step that feeds the export.
+    #[arg(long, value_name = "REGISTRY_FILE")]
+    registry: PathBuf,
+
     /// Output file (stdout if omitted)
     #[arg(short, long, value_name = "OUTPUT")]
     output: Option<PathBuf>,
+}
+
+#[derive(Args, Debug)]
+struct RegistryArgs {
+    #[command(subcommand)]
+    subcommand: RegistrySubcommand,
+}
+
+#[derive(Subcommand, Debug)]
+enum RegistrySubcommand {
+    /// Pin an author to a keystore-held signing key.
+    ///
+    /// Writes a trusted-registry JSON file recognised by
+    /// `aion verify --registry`, `aion show --registry`, and
+    /// friends. If `--output` already exists, the author is
+    /// appended to the existing registry.
+    ///
+    /// If `--master` is omitted, the operational key is pinned as
+    /// both master and epoch 0. This is a convenience for single-
+    /// key development and tests; production deployments should
+    /// supply a distinct master key so rotations can be authorised.
+    Pin {
+        /// `AuthorId` (u64) that signs the AION file's versions.
+        #[arg(long, value_name = "AUTHOR_ID")]
+        author: u64,
+
+        /// Keystore key ID whose verifying key pins this author's
+        /// epoch 0 operational key.
+        #[arg(long, value_name = "KEY_ID")]
+        key: String,
+
+        /// Optional keystore key ID whose verifying key becomes the
+        /// master key for this author. Defaults to `--key`.
+        #[arg(long, value_name = "MASTER_KEY_ID")]
+        master: Option<String>,
+
+        /// Output registry JSON file. If it exists, the author is
+        /// appended in place.
+        #[arg(short, long, value_name = "OUTPUT")]
+        output: PathBuf,
+    },
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
@@ -337,6 +396,7 @@ fn main() -> Result<()> {
         Commands::Key(args) => cmd_key(&args),
         Commands::Report(args) => cmd_report(&args),
         Commands::Export(args) => cmd_export(&args),
+        Commands::Registry(args) => cmd_registry(&args),
     }
 }
 
@@ -432,7 +492,8 @@ fn cmd_commit(args: &CommitArgs) -> Result<()> {
     };
 
     // Commit the new version
-    let result = commit_version(&args.path, &rules, &options)
+    let registry = load_registry_from_path(&args.registry)?;
+    let result = commit_version(&args.path, &rules, &options, &registry)
         .with_context(|| format!("Failed to commit new version to: {}", args.path.display()))?;
 
     println!("\n✅ Version committed successfully!");
@@ -448,25 +509,12 @@ fn cmd_verify(args: &VerifyArgs) -> Result<()> {
     if !args.path.exists() {
         anyhow::bail!("File not found: {}", args.path.display());
     }
-    let registry = args
-        .registry
-        .as_deref()
-        .map(load_registry_from_path)
-        .transpose()?;
-    let report = registry
-        .as_ref()
-        .map_or_else(
-            || verify_file(&args.path),
-            |reg| {
-                println!(
-                    "   Registry: {} (registry-aware verify)",
-                    args.registry
-                        .as_ref()
-                        .map_or("<unset>", |p| p.to_str().unwrap_or("<invalid path>"))
-                );
-                aion_context::operations::verify_file_with_registry(&args.path, reg)
-            },
-        )
+    let registry = load_registry_from_path(&args.registry)?;
+    println!(
+        "   Registry: {} (registry-aware verify)",
+        args.registry.to_str().unwrap_or("<invalid path>")
+    );
+    let report = verify_file(&args.path, &registry)
         .with_context(|| format!("Failed to verify file: {}", args.path.display()))?;
 
     match args.format {
@@ -599,13 +647,8 @@ fn show_history_subcommand(args: &ShowArgs) -> Result<()> {
 }
 
 fn show_signatures_subcommand(args: &ShowArgs) -> Result<()> {
-    let signatures = match args.registry.as_deref() {
-        Some(path) => {
-            let registry = load_registry_from_path(path)?;
-            aion_context::operations::show_signatures_with_registry(&args.path, &registry)?
-        }
-        None => show_signatures(&args.path)?,
-    };
+    let registry = load_registry_from_path(&args.registry)?;
+    let signatures = show_signatures(&args.path, &registry)?;
     match args.format {
         OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&signatures)?),
         OutputFormat::Yaml => println!("{}", serde_yaml::to_string(&signatures)?),
@@ -632,7 +675,8 @@ fn show_signatures_subcommand(args: &ShowArgs) -> Result<()> {
 }
 
 fn show_info_subcommand(args: &ShowArgs) -> Result<()> {
-    let info = show_file_info(&args.path)?;
+    let registry = load_registry_from_path(&args.registry)?;
+    let info = show_file_info(&args.path, &registry)?;
     match args.format {
         OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&info)?),
         OutputFormat::Yaml => println!("{}", serde_yaml::to_string(&info)?),
@@ -913,7 +957,8 @@ fn cmd_report(args: &ReportArgs) -> Result<()> {
     eprintln!("   Format: {:?}", args.format);
 
     // Generate the report
-    let report = generate_compliance_report(&args.path, framework, format)
+    let registry = load_registry_from_path(&args.registry)?;
+    let report = generate_compliance_report(&args.path, framework, format, &registry)
         .context("Failed to generate compliance report")?;
 
     // Output to file or stdout
@@ -941,7 +986,8 @@ fn cmd_export(args: &ExportArgs) -> Result<()> {
         args.path.display()
     );
 
-    let output = export_file(&args.path, format).context("Failed to export file")?;
+    let registry = load_registry_from_path(&args.registry)?;
+    let output = export_file(&args.path, format, &registry).context("Failed to export file")?;
 
     if let Some(output_path) = &args.output {
         std::fs::write(output_path, &output)
@@ -960,4 +1006,67 @@ const fn format_name(format: ExportFormatType) -> &'static str {
         ExportFormatType::Yaml => "YAML",
         ExportFormatType::Csv => "CSV",
     }
+}
+
+fn cmd_registry(args: &RegistryArgs) -> Result<()> {
+    match &args.subcommand {
+        RegistrySubcommand::Pin {
+            author,
+            key,
+            master,
+            output,
+        } => cmd_registry_pin(*author, key, master.as_deref(), output),
+    }
+}
+
+fn cmd_registry_pin(
+    author: u64,
+    key_id: &str,
+    master_key_id: Option<&str>,
+    output: &std::path::Path,
+) -> Result<()> {
+    let keystore = KeyStore::new();
+    let op_signer = load_key_for_registry(&keystore, key_id)?;
+    let master_signer = match master_key_id {
+        Some(id) => load_key_for_registry(&keystore, id)?,
+        None => op_signer.clone(),
+    };
+
+    let author_id = AuthorId::new(author);
+    let mut registry = if output.exists() {
+        let existing = std::fs::read_to_string(output)
+            .with_context(|| format!("Failed to read existing registry: {}", output.display()))?;
+        aion_context::key_registry::KeyRegistry::from_trusted_json(&existing)
+            .with_context(|| format!("Failed to parse existing registry: {}", output.display()))?
+    } else {
+        aion_context::key_registry::KeyRegistry::new()
+    };
+    registry
+        .register_author(
+            author_id,
+            master_signer.verifying_key(),
+            op_signer.verifying_key(),
+            0,
+        )
+        .with_context(|| format!("Failed to pin author {author}"))?;
+
+    let json = registry
+        .to_trusted_json()
+        .context("Failed to serialize registry")?;
+    std::fs::write(output, json)
+        .with_context(|| format!("Failed to write registry file: {}", output.display()))?;
+
+    println!("✅ Pinned author {author} with key '{key_id}'");
+    println!("   Registry: {}", output.display());
+    Ok(())
+}
+
+fn load_key_for_registry(
+    keystore: &KeyStore,
+    key_id: &str,
+) -> Result<aion_context::crypto::SigningKey> {
+    let parsed_id = parse_key_id(key_id)?;
+    keystore
+        .load_signing_key(parsed_id)
+        .with_context(|| format!("Failed to load key '{key_id}' from keystore"))
 }

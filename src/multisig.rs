@@ -10,8 +10,7 @@
 //! - **Backup Recovery**: 2-of-3 for key recovery scenarios
 
 use crate::serializer::{SignatureEntry, VersionEntry};
-#[allow(deprecated)] // RFC-0034 Phase D: verify_multisig wraps raw-key verify_attestation
-use crate::signature_chain::{verify_attestation, verify_attestation_with_registry};
+use crate::signature_chain::verify_attestation;
 use crate::types::AuthorId;
 use crate::{AionError, Result};
 
@@ -130,103 +129,22 @@ impl MultiSigVerification {
     }
 }
 
-/// Verify multiple signatures against a policy
+/// Verify multiple signatures against a policy, pinned by a
+/// [`KeyRegistry`](crate::key_registry::KeyRegistry) — RFC-0021 / RFC-0034.
 ///
-/// # Arguments
-///
-/// * `version` - The version entry being verified
-/// * `signatures` - All signatures for this version
-/// * `policy` - The multi-signature policy to enforce
-///
-/// # Returns
-///
-/// Detailed verification result including which signers validated
-///
-/// # Example
-///
-/// ```ignore
-/// let result = verify_multisig(&version, &signatures, &policy)?;
-/// if result.threshold_met {
-///     println!("Approved by {} signers", result.valid_count);
-/// }
-/// ```
-///
-/// # Migration (RFC-0034)
-///
-/// Prefer [`verify_multisig_with_registry`] when you maintain a
-/// pinned [`crate::key_registry::KeyRegistry`]. The registry-aware
-/// path rejects signers whose pinned active epoch does not match
-/// the signature's embedded `public_key`, closing the
-/// substitution gap in the raw-key path.
-#[deprecated(
-    since = "0.2.0",
-    note = "use verify_multisig_with_registry; RFC-0034 — raw-key verify trusts the caller's out-of-band pinning"
-)]
-#[allow(deprecated)] // wraps raw-key verify_attestation internally
-pub fn verify_multisig(
-    version: &VersionEntry,
-    signatures: &[SignatureEntry],
-    policy: &MultiSigPolicy,
-) -> Result<MultiSigVerification> {
-    let mut valid_signers = Vec::new();
-    let mut invalid_signers = Vec::new();
-    let mut seen: std::collections::HashSet<AuthorId> = std::collections::HashSet::new();
-
-    // Per RFC-0021: verify each attestation; a signer may contribute at most
-    // once toward the threshold. Duplicates from the same signer are skipped
-    // (they neither help the threshold nor count as invalid).
-    for sig in signatures {
-        let author = AuthorId::new(sig.author_id);
-
-        if !policy.is_authorized(author) {
-            continue;
-        }
-        if !seen.insert(author) {
-            continue;
-        }
-        match verify_attestation(version, sig) {
-            Ok(()) => valid_signers.push(author),
-            Err(_) => invalid_signers.push(author),
-        }
-    }
-
-    let missing_signers: Vec<_> = policy
-        .authorized_signers
-        .iter()
-        .filter(|a| !seen.contains(a))
-        .copied()
-        .collect();
-
-    let valid_count = valid_signers.len() as u32;
-    let threshold_met = valid_count >= policy.threshold;
-
-    Ok(MultiSigVerification {
-        threshold_met,
-        valid_count,
-        required: policy.threshold,
-        valid_signers,
-        invalid_signers,
-        missing_signers,
-    })
-}
-
-/// Registry-aware multi-signature verification — RFC-0034 Phase C.
-///
-/// Like [`verify_multisig`], but each per-signer attestation is
-/// checked against `registry` at `version.version_number` via
-/// [`verify_attestation_with_registry`]. A signer whose pinned
-/// active epoch does not match the signature's embedded
-/// `public_key` is classified as `invalid_signers`, not
+/// Each per-signer attestation is checked against `registry` at
+/// `version.version_number` via [`verify_attestation`]. A signer
+/// whose pinned active epoch does not match the signature's
+/// embedded `public_key` is classified as `invalid_signers`, not
 /// `valid_signers`, regardless of whether the raw Ed25519 bytes
 /// would verify on their own.
 ///
 /// # Errors
 ///
-/// Same shape as [`verify_multisig`]; returns `Ok(_)` in the
-/// happy path and in every "signer rejected" path. Returns `Err`
-/// only for structural issues with the `version`/`signatures`
-/// slices themselves.
-pub fn verify_multisig_with_registry(
+/// Returns `Ok(_)` in the happy path and in every "signer
+/// rejected" path. Returns `Err` only for structural issues with
+/// the `version` / `signatures` slices themselves.
+pub fn verify_multisig(
     version: &VersionEntry,
     signatures: &[SignatureEntry],
     policy: &MultiSigPolicy,
@@ -244,7 +162,7 @@ pub fn verify_multisig_with_registry(
         if !seen.insert(author) {
             continue;
         }
-        match verify_attestation_with_registry(version, sig, registry) {
+        match verify_attestation(version, sig, registry) {
             Ok(()) => valid_signers.push(author),
             Err(_) => invalid_signers.push(author),
         }
@@ -375,10 +293,24 @@ mod tests {
     mod properties {
         use super::*;
         use crate::crypto::SigningKey;
+        use crate::key_registry::KeyRegistry;
         use crate::serializer::VersionEntry;
         use crate::signature_chain::sign_attestation;
         use crate::types::VersionNumber;
         use hegel::generators as gs;
+
+        /// Build a registry pinning every `(author, key)` pair, each
+        /// at epoch 0. Sufficient for the multisig property tests
+        /// that pin all authorized signers under their own keys.
+        fn pin_all(signers: &[(AuthorId, SigningKey)]) -> KeyRegistry {
+            let mut reg = KeyRegistry::new();
+            for (author, key) in signers {
+                let master = SigningKey::generate();
+                reg.register_author(*author, master.verifying_key(), key.verifying_key(), 0)
+                    .unwrap_or_else(|_| std::process::abort());
+            }
+            reg
+        }
 
         fn make_version(author: AuthorId) -> VersionEntry {
             VersionEntry::new(
@@ -423,7 +355,8 @@ mod tests {
                 .take(threshold as usize)
                 .map(|(who, key)| sign_attestation(&version, *who, key))
                 .collect();
-            let result = verify_multisig(&version, &attestations, &policy)
+            let reg = pin_all(&signers);
+            let result = verify_multisig(&version, &attestations, &policy, &reg)
                 .unwrap_or_else(|_| std::process::abort());
             assert!(result.threshold_met);
             assert_eq!(result.valid_count, threshold);
@@ -446,7 +379,8 @@ mod tests {
                 .take(short)
                 .map(|(who, key)| sign_attestation(&version, *who, key))
                 .collect();
-            let result = verify_multisig(&version, &attestations, &policy)
+            let reg = pin_all(&signers);
+            let result = verify_multisig(&version, &attestations, &policy, &reg)
                 .unwrap_or_else(|_| std::process::abort());
             assert!(!result.threshold_met);
         }
@@ -467,7 +401,8 @@ mod tests {
             let first = signers.first().unwrap_or_else(|| std::process::abort());
             let att = sign_attestation(&version, first.0, &first.1);
             let attestations: Vec<SignatureEntry> = (0..dups).map(|_| att).collect();
-            let result = verify_multisig(&version, &attestations, &policy)
+            let reg = pin_all(&signers);
+            let result = verify_multisig(&version, &attestations, &policy, &reg)
                 .unwrap_or_else(|_| std::process::abort());
             assert_eq!(result.valid_count, 1);
             assert!(!result.threshold_met);
@@ -483,7 +418,11 @@ mod tests {
             let sig = sign_attestation(&version, impostor, &key);
             let policy =
                 MultiSigPolicy::new(1, vec![author]).unwrap_or_else(|_| std::process::abort());
-            let result = verify_multisig(&version, &[sig], &policy)
+            // Pin the authorized author, not the impostor — verify still rejects the
+            // impostor because they're not in the policy's authorized_signers.
+            let author_key = SigningKey::generate();
+            let reg = pin_all(&[(author, author_key)]);
+            let result = verify_multisig(&version, &[sig], &policy, &reg)
                 .unwrap_or_else(|_| std::process::abort());
             assert_eq!(result.valid_count, 0);
             assert!(!result.threshold_met);
@@ -501,7 +440,11 @@ mod tests {
             sig.author_id = fake_signer.as_u64();
             let policy =
                 MultiSigPolicy::new(1, vec![fake_signer]).unwrap_or_else(|_| std::process::abort());
-            let result = verify_multisig(&version, &[sig], &policy)
+            // Pin the fake_signer — registry check detects the pubkey mismatch
+            // (sig was made by real_signer's key, pinned key is different).
+            let fake_key = SigningKey::generate();
+            let reg = pin_all(&[(fake_signer, fake_key)]);
+            let result = verify_multisig(&version, &[sig], &policy, &reg)
                 .unwrap_or_else(|_| std::process::abort());
             assert_eq!(result.valid_count, 0);
             assert!(!result.threshold_met);

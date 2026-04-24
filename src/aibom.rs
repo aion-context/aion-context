@@ -436,11 +436,20 @@ mod hex_bytes32_opt {
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
-#[allow(deprecated)] // RFC-0034 Phase D: tests use verify_envelope to exercise the DSSE wrapper path
 mod tests {
     use super::*;
     use crate::dsse::verify_envelope;
+    use crate::key_registry::KeyRegistry;
     use serde_json::json;
+
+    /// Pin `signer` with `key` as the active op pubkey at epoch 0.
+    fn reg_pinning(signer: AuthorId, key: &SigningKey) -> KeyRegistry {
+        let mut reg = KeyRegistry::new();
+        let master = SigningKey::generate();
+        reg.register_author(signer, master.verifying_key(), key.verifying_key(), 0)
+            .unwrap();
+        reg
+    }
 
     fn sample_model() -> ModelRef {
         ModelRef {
@@ -509,10 +518,10 @@ mod tests {
         let aibom = sample_aibom();
         let signer = AuthorId::new(1001);
         let key = SigningKey::generate();
-        let verifying = key.verifying_key();
         let env = wrap_aibom_dsse(&aibom, signer, &key).unwrap();
         assert_eq!(env.payload_type, AIBOM_PAYLOAD_TYPE);
-        let verified = verify_envelope(&env, |_| Some(verifying)).unwrap();
+        let reg = reg_pinning(signer, &key);
+        let verified = verify_envelope(&env, &reg, 1).unwrap();
         assert_eq!(verified.len(), 1);
         let back = unwrap_aibom_dsse(&env).unwrap();
         assert_eq!(back, aibom);
@@ -609,11 +618,10 @@ mod tests {
             let aibom = draw_aibom(&tc);
             let signer = AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1)));
             let key = SigningKey::generate();
-            let verifying = key.verifying_key();
             let env =
                 wrap_aibom_dsse(&aibom, signer, &key).unwrap_or_else(|_| std::process::abort());
-            let verified = verify_envelope(&env, |_| Some(verifying))
-                .unwrap_or_else(|_| std::process::abort());
+            let reg = reg_pinning(signer, &key);
+            let verified = verify_envelope(&env, &reg, 1).unwrap_or_else(|_| std::process::abort());
             assert_eq!(verified.len(), 1);
             let back = unwrap_aibom_dsse(&env).unwrap_or_else(|_| std::process::abort());
             assert_eq!(back, aibom);
@@ -624,7 +632,6 @@ mod tests {
             let aibom = draw_aibom(&tc);
             let signer = AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1)));
             let key = SigningKey::generate();
-            let verifying = key.verifying_key();
             let mut env =
                 wrap_aibom_dsse(&aibom, signer, &key).unwrap_or_else(|_| std::process::abort());
             let max_idx = env.payload.len().saturating_sub(1);
@@ -632,8 +639,8 @@ mod tests {
             if let Some(b) = env.payload.get_mut(idx) {
                 *b ^= 0x01;
             }
-            let result = verify_envelope(&env, |_| Some(verifying));
-            assert!(result.is_err());
+            let reg = reg_pinning(signer, &key);
+            assert!(verify_envelope(&env, &reg, 1).is_err());
         }
 
         #[hegel::test]
@@ -647,17 +654,16 @@ mod tests {
                 AuthorId::new(s1.0.as_u64().saturating_add(1)),
                 SigningKey::generate(),
             );
-            let k1 = s1.1.verifying_key();
-            let k2 = s2.1.verifying_key();
             let mut env =
                 wrap_aibom_dsse(&aibom, s1.0, &s1.1).unwrap_or_else(|_| std::process::abort());
             dsse::add_signature(&mut env, s2.0, &s2.1);
-            let lookup: std::collections::HashMap<String, crate::crypto::VerifyingKey> =
-                [(dsse::keyid_for(s1.0), k1), (dsse::keyid_for(s2.0), k2)]
-                    .into_iter()
-                    .collect();
-            let verified = verify_envelope(&env, |keyid| lookup.get(keyid).copied())
-                .unwrap_or_else(|_| std::process::abort());
+            let mut reg = KeyRegistry::new();
+            for (signer, key) in [(s1.0, &s1.1), (s2.0, &s2.1)] {
+                let master = SigningKey::generate();
+                reg.register_author(signer, master.verifying_key(), key.verifying_key(), 0)
+                    .unwrap_or_else(|_| std::process::abort());
+            }
+            let verified = verify_envelope(&env, &reg, 1).unwrap_or_else(|_| std::process::abort());
             assert_eq!(verified.len(), 2);
         }
 
