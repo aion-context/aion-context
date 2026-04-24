@@ -1,0 +1,7 @@
+{
+  "version": "1",
+  "generated_at": "2026-04-24T05:46:42Z",
+  "crates": {
+    "aion-context": { "panics": 370, "tests": 457, "pub_items": 479, "loc": 21051, "max_fn": 151 }
+  }
+}
