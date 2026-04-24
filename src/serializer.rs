@@ -316,73 +316,15 @@ impl AionSerializer {
     #[allow(clippy::cast_possible_truncation)]
     #[allow(clippy::arithmetic_side_effects)] // Sizes are bounded by input
     pub fn serialize(file: &AionFile) -> Result<Vec<u8>> {
-        let encrypted_rules_len = file.encrypted_rules.len();
-        let version_chain_len = file.versions.len() * VERSION_ENTRY_SIZE;
-        let signatures_len = file.signatures.len() * SIGNATURE_ENTRY_SIZE;
-        let audit_trail_len = file.audit_entries.len() * AUDIT_ENTRY_SIZE;
-        let string_table_len = file.string_table.len();
+        let sizes = SectionSizes::from_file(file);
+        let offsets = SectionOffsets::from_sizes(&sizes);
+        let header = build_header(file, &sizes, &offsets);
 
-        let total_size = HEADER_SIZE
-            + encrypted_rules_len
-            + version_chain_len
-            + signatures_len
-            + audit_trail_len
-            + string_table_len
-            + HASH_SIZE;
-
-        let mut buffer = Vec::with_capacity(total_size);
-
-        // Calculate offsets
-        let encrypted_rules_offset = HEADER_SIZE as u64;
-        let version_chain_offset = encrypted_rules_offset + encrypted_rules_len as u64;
-        let signatures_offset = version_chain_offset + version_chain_len as u64;
-        let audit_trail_offset = signatures_offset + signatures_len as u64;
-        let string_table_offset = audit_trail_offset + audit_trail_len as u64;
-
-        // Build header
-        let header = FileHeader {
-            magic: *b"AION",
-            version: 2,
-            flags: file.flags,
-            file_id: file.file_id.as_u64(),
-            current_version: file.current_version.as_u64(),
-            root_hash: file.root_hash,
-            current_hash: file.current_hash,
-            created_at: file.created_at,
-            modified_at: file.modified_at,
-            encrypted_rules_offset,
-            encrypted_rules_length: encrypted_rules_len as u64,
-            version_chain_offset,
-            version_chain_count: file.versions.len() as u64,
-            signatures_offset,
-            signatures_count: file.signatures.len() as u64,
-            audit_trail_offset,
-            audit_trail_count: file.audit_entries.len() as u64,
-            string_table_offset,
-            string_table_length: string_table_len as u64,
-            reserved: [0; 72],
-        };
-
-        // Write header (256 bytes)
+        let mut buffer = Vec::with_capacity(sizes.total);
         buffer.extend_from_slice(header.as_bytes());
-
-        // Write sections in deterministic order
-        buffer.extend_from_slice(&file.encrypted_rules);
-        for version in &file.versions {
-            buffer.extend_from_slice(version.as_bytes());
-        }
-        for signature in &file.signatures {
-            buffer.extend_from_slice(signature.as_bytes());
-        }
-        for entry in &file.audit_entries {
-            buffer.extend_from_slice(entry.as_bytes());
-        }
-        buffer.extend_from_slice(&file.string_table);
-
-        // Compute and append integrity hash
+        write_body_sections(&mut buffer, file);
         let integrity_hash = hash(&buffer);
         buffer.extend_from_slice(&integrity_hash);
-
         Ok(buffer)
     }
 
@@ -422,6 +364,109 @@ impl AionSerializer {
         }
         (table, offsets)
     }
+}
+
+#[allow(clippy::arithmetic_side_effects)]
+struct SectionSizes {
+    encrypted_rules: usize,
+    version_chain: usize,
+    signatures: usize,
+    audit_trail: usize,
+    string_table: usize,
+    total: usize,
+}
+
+impl SectionSizes {
+    #[allow(clippy::arithmetic_side_effects)]
+    fn from_file(file: &AionFile) -> Self {
+        let encrypted_rules = file.encrypted_rules.len();
+        let version_chain = file.versions.len() * VERSION_ENTRY_SIZE;
+        let signatures = file.signatures.len() * SIGNATURE_ENTRY_SIZE;
+        let audit_trail = file.audit_entries.len() * AUDIT_ENTRY_SIZE;
+        let string_table = file.string_table.len();
+        let total = HEADER_SIZE
+            + encrypted_rules
+            + version_chain
+            + signatures
+            + audit_trail
+            + string_table
+            + HASH_SIZE;
+        Self {
+            encrypted_rules,
+            version_chain,
+            signatures,
+            audit_trail,
+            string_table,
+            total,
+        }
+    }
+}
+
+#[allow(clippy::arithmetic_side_effects)]
+struct SectionOffsets {
+    encrypted_rules: u64,
+    version_chain: u64,
+    signatures: u64,
+    audit_trail: u64,
+    string_table: u64,
+}
+
+impl SectionOffsets {
+    #[allow(clippy::arithmetic_side_effects)]
+    fn from_sizes(sizes: &SectionSizes) -> Self {
+        let encrypted_rules = HEADER_SIZE as u64;
+        let version_chain = encrypted_rules + sizes.encrypted_rules as u64;
+        let signatures = version_chain + sizes.version_chain as u64;
+        let audit_trail = signatures + sizes.signatures as u64;
+        let string_table = audit_trail + sizes.audit_trail as u64;
+        Self {
+            encrypted_rules,
+            version_chain,
+            signatures,
+            audit_trail,
+            string_table,
+        }
+    }
+}
+
+#[allow(clippy::cast_possible_truncation)]
+fn build_header(file: &AionFile, sizes: &SectionSizes, offsets: &SectionOffsets) -> FileHeader {
+    FileHeader {
+        magic: *b"AION",
+        version: 2,
+        flags: file.flags,
+        file_id: file.file_id.as_u64(),
+        current_version: file.current_version.as_u64(),
+        root_hash: file.root_hash,
+        current_hash: file.current_hash,
+        created_at: file.created_at,
+        modified_at: file.modified_at,
+        encrypted_rules_offset: offsets.encrypted_rules,
+        encrypted_rules_length: sizes.encrypted_rules as u64,
+        version_chain_offset: offsets.version_chain,
+        version_chain_count: file.versions.len() as u64,
+        signatures_offset: offsets.signatures,
+        signatures_count: file.signatures.len() as u64,
+        audit_trail_offset: offsets.audit_trail,
+        audit_trail_count: file.audit_entries.len() as u64,
+        string_table_offset: offsets.string_table,
+        string_table_length: sizes.string_table as u64,
+        reserved: [0; 72],
+    }
+}
+
+fn write_body_sections(buffer: &mut Vec<u8>, file: &AionFile) {
+    buffer.extend_from_slice(&file.encrypted_rules);
+    for version in &file.versions {
+        buffer.extend_from_slice(version.as_bytes());
+    }
+    for signature in &file.signatures {
+        buffer.extend_from_slice(signature.as_bytes());
+    }
+    for entry in &file.audit_entries {
+        buffer.extend_from_slice(entry.as_bytes());
+    }
+    buffer.extend_from_slice(&file.string_table);
 }
 
 #[cfg(test)]

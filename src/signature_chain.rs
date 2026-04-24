@@ -641,26 +641,20 @@ pub fn create_child_version(
 /// assert!(verify_hash_chain(&versions).is_ok());
 /// ```
 pub fn verify_hash_chain(versions: &[VersionEntry]) -> Result<()> {
-    // Empty chain is invalid
-    if versions.is_empty() {
-        return Err(crate::AionError::InvalidFormat {
-            reason: "Version chain is empty".to_string(),
-        });
-    }
+    let genesis = versions.first().ok_or(crate::AionError::InvalidFormat {
+        reason: "Version chain is empty".to_string(),
+    })?;
+    verify_genesis_version(genesis)?;
+    verify_chain_links(versions)
+}
 
-    // Step 1: Verify genesis version
-    #[allow(clippy::indexing_slicing)] // Safe: checked empty above
-    let genesis = &versions[0];
-
-    // Genesis must be version 1
+fn verify_genesis_version(genesis: &VersionEntry) -> Result<()> {
     if genesis.version_number != 1 {
         return Err(crate::AionError::InvalidVersionNumber {
             version: genesis.version_number,
             current: 1,
         });
     }
-
-    // Genesis parent hash must be all zeros
     if genesis.parent_hash != [0u8; 32] {
         return Err(crate::AionError::InvalidFormat {
             reason: format!(
@@ -669,15 +663,15 @@ pub fn verify_hash_chain(versions: &[VersionEntry]) -> Result<()> {
             ),
         });
     }
+    Ok(())
+}
 
-    // Step 2: Verify chain links and monotonicity
-    #[allow(clippy::indexing_slicing)] // Safe: i is always < len
-    #[allow(clippy::arithmetic_side_effects)] // Safe: i starts at 1, so i-1 is always valid
-    for i in 1..versions.len() {
-        let current = &versions[i];
-        let parent = &versions[i - 1];
-
-        // Verify version monotonicity (current = parent + 1)
+fn verify_chain_links(versions: &[VersionEntry]) -> Result<()> {
+    for pair in versions.windows(2) {
+        let (parent, current) = match pair {
+            [p, c] => (p, c),
+            _ => continue,
+        };
         let expected_version =
             parent
                 .version_number
@@ -685,23 +679,18 @@ pub fn verify_hash_chain(versions: &[VersionEntry]) -> Result<()> {
                 .ok_or(crate::AionError::VersionOverflow {
                     max: parent.version_number,
                 })?;
-
         if current.version_number != expected_version {
             return Err(crate::AionError::InvalidVersionNumber {
                 version: current.version_number,
                 current: expected_version,
             });
         }
-
-        // Verify parent hash linkage
-        let computed_parent_hash = compute_version_hash(parent);
-        if current.parent_hash != computed_parent_hash {
+        if current.parent_hash != compute_version_hash(parent) {
             return Err(crate::AionError::BrokenVersionChain {
                 version: current.version_number,
             });
         }
     }
-
     Ok(())
 }
 
