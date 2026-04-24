@@ -9,7 +9,7 @@
 //! - **Divergent**: Files diverge at some point in history
 //! - **Gap**: Missing versions in the chain
 
-use crate::operations::FileInfo;
+use crate::operations::{FileInfo, VersionInfo};
 
 /// Conflict type detected between two file states
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -198,14 +198,11 @@ pub fn detect_conflict(local: &FileInfo, remote: &FileInfo) -> ConflictReport {
 
 /// Check if two file states have matching latest versions
 fn versions_match(local: &FileInfo, remote: &FileInfo) -> bool {
-    if local.versions.is_empty() || remote.versions.is_empty() {
-        return local.versions.is_empty() && remote.versions.is_empty();
+    match (local.versions.last(), remote.versions.last()) {
+        (Some(l), Some(r)) => l.rules_hash == r.rules_hash,
+        (None, None) => true,
+        _ => false,
     }
-
-    let local_latest = &local.versions[local.versions.len() - 1];
-    let remote_latest = &remote.versions[remote.versions.len() - 1];
-
-    local_latest.rules_hash == remote_latest.rules_hash
 }
 
 /// Format version hash for display
@@ -223,12 +220,9 @@ fn is_linear_extension(shorter: &FileInfo, longer: &FileInfo) -> bool {
     }
 
     for (i, short_ver) in shorter.versions.iter().enumerate() {
-        if i >= longer.versions.len() {
+        let Some(long_ver) = longer.versions.get(i) else {
             return false;
-        }
-        let long_ver = &longer.versions[i];
-
-        // Compare hashes
+        };
         if short_ver.rules_hash != long_ver.rules_hash {
             return false;
         }
@@ -240,23 +234,19 @@ fn is_linear_extension(shorter: &FileInfo, longer: &FileInfo) -> bool {
 /// Find the common ancestor version between two divergent histories
 fn find_common_ancestor(local: &FileInfo, remote: &FileInfo) -> u64 {
     let min_len = std::cmp::min(local.versions.len(), remote.versions.len());
+    let mut last_matching: Option<&VersionInfo> = None;
 
     for i in 0..min_len {
-        if local.versions[i].rules_hash != remote.versions[i].rules_hash {
-            return if i > 0 {
-                local.versions[i - 1].version_number
-            } else {
-                0
-            };
+        let (Some(l), Some(r)) = (local.versions.get(i), remote.versions.get(i)) else {
+            break;
+        };
+        if l.rules_hash != r.rules_hash {
+            return last_matching.map_or(0, |v| v.version_number);
         }
+        last_matching = Some(l);
     }
 
-    // All compared versions match
-    if min_len > 0 {
-        local.versions[min_len - 1].version_number
-    } else {
-        0
-    }
+    last_matching.map_or(0, |v| v.version_number)
 }
 
 /// Conflict marker for manual resolution
