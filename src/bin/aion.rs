@@ -375,6 +375,105 @@ enum RegistrySubcommand {
         #[arg(short, long, value_name = "OUTPUT")]
         output: PathBuf,
     },
+
+    /// Rotate an author's operational key (RFC-0028).
+    ///
+    /// Builds a master-signed rotation record and applies it to the
+    /// supplied registry, minting a new epoch from
+    /// `--effective-from-version` onward. The registry JSON file is
+    /// updated in place via write-then-rename.
+    Rotate {
+        /// `AuthorId` whose key is being rotated.
+        #[arg(long, value_name = "AUTHOR_ID")]
+        author: u64,
+
+        /// Currently-active epoch being rotated out. Must match the
+        /// registry's current active epoch for this author.
+        #[arg(long, value_name = "N")]
+        from_epoch: u32,
+
+        /// New epoch number. Must equal `from_epoch + 1`.
+        #[arg(long, value_name = "N_PLUS_1")]
+        to_epoch: u32,
+
+        /// Keystore key ID whose verifying key becomes the epoch's
+        /// new operational public key.
+        #[arg(long, value_name = "KEY_ID")]
+        new_key: String,
+
+        /// Keystore key ID for the author's master key (must match
+        /// the master key pinned at registration time; otherwise the
+        /// rotation record fails to verify).
+        #[arg(long, value_name = "MASTER_KEY_ID")]
+        master_key: String,
+
+        /// aion version number at which the rotation takes effect.
+        /// Must be at or after the current active epoch's
+        /// `created_at_version`.
+        #[arg(long, value_name = "V")]
+        effective_from_version: u64,
+
+        /// Path to the registry JSON file to mutate in place.
+        #[arg(long, value_name = "REGISTRY_FILE")]
+        registry: PathBuf,
+    },
+
+    /// Revoke an author's epoch (RFC-0028).
+    ///
+    /// Builds a master-signed revocation record and applies it to the
+    /// supplied registry. Signatures from the revoked epoch at or
+    /// after `--effective-from-version` stop resolving; earlier
+    /// signatures remain valid.
+    Revoke {
+        /// `AuthorId` whose epoch is being revoked.
+        #[arg(long, value_name = "AUTHOR_ID")]
+        author: u64,
+
+        /// Epoch number to revoke.
+        #[arg(long, value_name = "N")]
+        epoch: u32,
+
+        /// Reason code for the revocation record.
+        #[arg(long, value_enum)]
+        reason: CliRevocationReason,
+
+        /// Keystore key ID for the author's master key.
+        #[arg(long, value_name = "MASTER_KEY_ID")]
+        master_key: String,
+
+        /// aion version number at which the revocation takes effect.
+        #[arg(long, value_name = "V")]
+        effective_from_version: u64,
+
+        /// Path to the registry JSON file to mutate in place.
+        #[arg(long, value_name = "REGISTRY_FILE")]
+        registry: PathBuf,
+    },
+}
+
+/// CLI surface for [`aion_context::key_registry::RevocationReason`].
+/// Kept distinct so clap remains out of the library.
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum CliRevocationReason {
+    /// Key material is known or suspected to be compromised.
+    Compromised,
+    /// Routine rotation; the prior key is not believed compromised.
+    Superseded,
+    /// Signer leaves the org; no successor epoch.
+    Retired,
+    /// Reason not recorded at protocol level.
+    Unspecified,
+}
+
+impl From<CliRevocationReason> for aion_context::key_registry::RevocationReason {
+    fn from(r: CliRevocationReason) -> Self {
+        match r {
+            CliRevocationReason::Compromised => Self::Compromised,
+            CliRevocationReason::Superseded => Self::Superseded,
+            CliRevocationReason::Retired => Self::Retired,
+            CliRevocationReason::Unspecified => Self::Unspecified,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
@@ -1037,6 +1136,38 @@ fn cmd_registry(args: &RegistryArgs) -> Result<ExitCode> {
             master,
             output,
         } => cmd_registry_pin(*author, key, master.as_deref(), output)?,
+        RegistrySubcommand::Rotate {
+            author,
+            from_epoch,
+            to_epoch,
+            new_key,
+            master_key,
+            effective_from_version,
+            registry,
+        } => cmd_registry_rotate(
+            *author,
+            *from_epoch,
+            *to_epoch,
+            new_key,
+            master_key,
+            *effective_from_version,
+            registry,
+        )?,
+        RegistrySubcommand::Revoke {
+            author,
+            epoch,
+            reason,
+            master_key,
+            effective_from_version,
+            registry,
+        } => cmd_registry_revoke(
+            *author,
+            *epoch,
+            (*reason).into(),
+            master_key,
+            *effective_from_version,
+            registry,
+        )?,
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -1055,14 +1186,7 @@ fn cmd_registry_pin(
     };
 
     let author_id = AuthorId::new(author);
-    let mut registry = if output.exists() {
-        let existing = std::fs::read_to_string(output)
-            .with_context(|| format!("Failed to read existing registry: {}", output.display()))?;
-        aion_context::key_registry::KeyRegistry::from_trusted_json(&existing)
-            .with_context(|| format!("Failed to parse existing registry: {}", output.display()))?
-    } else {
-        aion_context::key_registry::KeyRegistry::new()
-    };
+    let mut registry = load_or_new_registry(output)?;
     registry
         .register_author(
             author_id,
@@ -1072,14 +1196,131 @@ fn cmd_registry_pin(
         )
         .with_context(|| format!("Failed to pin author {author}"))?;
 
-    let json = registry
-        .to_trusted_json()
-        .context("Failed to serialize registry")?;
-    std::fs::write(output, json)
-        .with_context(|| format!("Failed to write registry file: {}", output.display()))?;
+    write_registry_atomic(&registry, output)?;
 
     println!("✅ Pinned author {author} with key '{key_id}'");
     println!("   Registry: {}", output.display());
+    Ok(())
+}
+
+fn cmd_registry_rotate(
+    author: u64,
+    from_epoch: u32,
+    to_epoch: u32,
+    new_key_id: &str,
+    master_key_id: &str,
+    effective_from_version: u64,
+    registry_path: &std::path::Path,
+) -> Result<()> {
+    let keystore = KeyStore::new();
+    let new_op = load_key_for_registry(&keystore, new_key_id)?;
+    let master = load_key_for_registry(&keystore, master_key_id)?;
+
+    let mut registry = load_existing_registry(registry_path)?;
+    let record = aion_context::key_registry::sign_rotation_record(
+        AuthorId::new(author),
+        from_epoch,
+        to_epoch,
+        new_op.verifying_key().to_bytes(),
+        effective_from_version,
+        &master,
+    );
+    registry.apply_rotation(&record).with_context(|| {
+        format!(
+            "Failed to apply rotation for author {author} (from epoch {from_epoch} \
+             to epoch {to_epoch} effective version {effective_from_version})"
+        )
+    })?;
+
+    write_registry_atomic(&registry, registry_path)?;
+
+    println!(
+        "✅ Rotated author {author}: epoch {from_epoch} → {to_epoch}, effective from version {effective_from_version}"
+    );
+    println!("   Registry: {}", registry_path.display());
+    Ok(())
+}
+
+fn cmd_registry_revoke(
+    author: u64,
+    epoch: u32,
+    reason: aion_context::key_registry::RevocationReason,
+    master_key_id: &str,
+    effective_from_version: u64,
+    registry_path: &std::path::Path,
+) -> Result<()> {
+    let keystore = KeyStore::new();
+    let master = load_key_for_registry(&keystore, master_key_id)?;
+
+    let mut registry = load_existing_registry(registry_path)?;
+    let record = aion_context::key_registry::sign_revocation_record(
+        AuthorId::new(author),
+        epoch,
+        reason,
+        effective_from_version,
+        &master,
+    );
+    registry.apply_revocation(&record).with_context(|| {
+        format!(
+            "Failed to apply revocation for author {author} epoch {epoch} \
+             effective version {effective_from_version}"
+        )
+    })?;
+
+    write_registry_atomic(&registry, registry_path)?;
+
+    println!(
+        "✅ Revoked author {author} epoch {epoch} ({reason:?}), effective from version {effective_from_version}"
+    );
+    println!("   Registry: {}", registry_path.display());
+    Ok(())
+}
+
+fn load_existing_registry(
+    path: &std::path::Path,
+) -> Result<aion_context::key_registry::KeyRegistry> {
+    if !path.exists() {
+        anyhow::bail!(
+            "Registry file not found: {}\n\
+             Hint: use `aion registry pin` first to create one.",
+            path.display()
+        );
+    }
+    let bytes = std::fs::read_to_string(path)
+        .with_context(|| format!("Failed to read registry file: {}", path.display()))?;
+    aion_context::key_registry::KeyRegistry::from_trusted_json(&bytes)
+        .with_context(|| format!("Failed to parse registry file: {}", path.display()))
+}
+
+fn load_or_new_registry(path: &std::path::Path) -> Result<aion_context::key_registry::KeyRegistry> {
+    if path.exists() {
+        load_existing_registry(path)
+    } else {
+        Ok(aion_context::key_registry::KeyRegistry::new())
+    }
+}
+
+/// Write a registry to disk atomically: serialise, write to a sibling
+/// `.tmp` file, fsync if possible, then rename over the target. A
+/// crash at any point leaves either the old file or the new file in
+/// place — never a half-written one.
+fn write_registry_atomic(
+    registry: &aion_context::key_registry::KeyRegistry,
+    path: &std::path::Path,
+) -> Result<()> {
+    let json = registry
+        .to_trusted_json()
+        .context("Failed to serialize registry")?;
+    let mut tmp = path.to_path_buf();
+    let file_name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("registry.json");
+    tmp.set_file_name(format!(".{file_name}.tmp"));
+    std::fs::write(&tmp, &json)
+        .with_context(|| format!("Failed to write staging file: {}", tmp.display()))?;
+    std::fs::rename(&tmp, path)
+        .with_context(|| format!("Failed to rename into place: {}", path.display()))?;
     Ok(())
 }
 
