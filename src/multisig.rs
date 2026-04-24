@@ -251,7 +251,7 @@ mod tests {
     #[test]
     fn test_policy_creation() {
         let signers = vec![AuthorId::new(1), AuthorId::new(2), AuthorId::new(3)];
-        let policy = MultiSigPolicy::new(2, signers).unwrap();
+        let policy = MultiSigPolicy::new(2, signers).unwrap_or_else(|_| std::process::abort());
 
         assert_eq!(policy.threshold, 2);
         assert_eq!(policy.total_signers, 3);

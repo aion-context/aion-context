@@ -309,18 +309,14 @@ pub fn verify_signature_with_registry(
     let signer = AuthorId::new(version.author_id);
     let epoch = registry
         .active_epoch_at(signer, version.version_number)
-        .ok_or_else(|| crate::AionError::InvalidFormat {
-            reason: format!(
-                "no active key for author {signer} at version {}",
-                version.version_number
-            ),
+        .ok_or(crate::AionError::SignatureVerificationFailed {
+            version: version.version_number,
+            author: signer,
         })?;
     if signature.public_key != epoch.public_key {
-        return Err(crate::AionError::InvalidFormat {
-            reason: format!(
-                "signature public_key does not match registered active epoch {} for author {signer}",
-                epoch.epoch
-            ),
+        return Err(crate::AionError::SignatureVerificationFailed {
+            version: version.version_number,
+            author: signer,
         });
     }
     verify_signature(version, signature)
@@ -343,18 +339,14 @@ pub fn verify_attestation_with_registry(
     let signer = AuthorId::new(signature.author_id);
     let epoch = registry
         .active_epoch_at(signer, version.version_number)
-        .ok_or_else(|| crate::AionError::InvalidFormat {
-            reason: format!(
-                "no active key for attester {signer} at version {}",
-                version.version_number
-            ),
+        .ok_or(crate::AionError::SignatureVerificationFailed {
+            version: version.version_number,
+            author: signer,
         })?;
     if signature.public_key != epoch.public_key {
-        return Err(crate::AionError::InvalidFormat {
-            reason: format!(
-                "attestation public_key does not match registered active epoch {} for author {signer}",
-                epoch.epoch
-            ),
+        return Err(crate::AionError::SignatureVerificationFailed {
+            version: version.version_number,
+            author: signer,
         });
     }
     verify_attestation(version, signature)
