@@ -252,70 +252,88 @@ fn build_hipaa_sections(
     verification: &VerificationReport,
 ) -> Vec<ReportSection> {
     vec![
-        ReportSection {
-            title: "Access and Audit Controls (§164.312)".to_string(),
-            content: format!(
-                "HIPAA Security Rule Compliance Assessment\n\n\
-                 § 164.312(b) - Audit Controls:\n\
-                 - Audit trail implemented: Yes\n\
-                 - Hardware/software/procedural mechanisms: Cryptographic signatures\n\
-                 - Activity recording: {} versions recorded\n\
-                 - Audit log integrity: {}\n\n\
-                 § 164.312(c) - Integrity Controls:\n\
-                 - Mechanism to authenticate ePHI: Ed25519 digital signatures\n\
-                 - Integrity verification: {}\n\
-                 - Unauthorized alteration detection: BLAKE3 hash chain",
-                file_info.version_count,
-                if verification.hash_chain_valid {
-                    "Verified"
-                } else {
-                    "Failed"
-                },
-                if verification.is_valid {
-                    "PASS"
-                } else {
-                    "FAIL"
-                }
-            ),
-        },
-        ReportSection {
-            title: "Audit Log Entries".to_string(),
-            content: format!(
-                "Activity Type: Business Rule Modification\n\
-                 Total Entries: {}\n\
-                 Entry Authentication: Digital Signature (Ed25519)\n\
-                 Timestamp Precision: Nanosecond\n\
-                 Non-repudiation: Cryptographic proof of authorship\n\n\
-                 Each audit entry contains:\n\
-                 - User identification (Author ID)\n\
-                 - Date and time of activity\n\
-                 - Type of activity (version commit)\n\
-                 - Cryptographic proof of entry integrity",
-                file_info.version_count
-            ),
-        },
-        ReportSection {
-            title: "Technical Safeguards Summary".to_string(),
-            content: format!(
-                "Encryption: ChaCha20-Poly1305 (AEAD)\n\
-                 Digital Signatures: Ed25519\n\
-                 Hashing: BLAKE3\n\
-                 Key Derivation: HKDF-SHA256\n\n\
-                 Verification Status:\n\
-                 - All {} signatures valid: {}\n\
-                 - File integrity verified: {}\n\
-                 - Temporal warnings: {}",
-                file_info.signatures.len(),
-                if verification.signatures_valid {
-                    "Yes"
-                } else {
-                    "No"
-                },
-                if verification.is_valid { "Yes" } else { "No" },
-                verification.temporal_warnings.len()
-            ),
-        },
+        hipaa_audit_controls_section(file_info, verification),
+        hipaa_audit_log_entries_section(file_info),
+        hipaa_technical_safeguards_section(file_info, verification),
     ]
+}
+
+fn hipaa_audit_controls_section(
+    file_info: &FileInfo,
+    verification: &VerificationReport,
+) -> ReportSection {
+    ReportSection {
+        title: "Access and Audit Controls (§164.312)".to_string(),
+        content: format!(
+            "HIPAA Security Rule Compliance Assessment\n\n\
+             § 164.312(b) - Audit Controls:\n\
+             - Audit trail implemented: Yes\n\
+             - Hardware/software/procedural mechanisms: Cryptographic signatures\n\
+             - Activity recording: {} versions recorded\n\
+             - Audit log integrity: {}\n\n\
+             § 164.312(c) - Integrity Controls:\n\
+             - Mechanism to authenticate ePHI: Ed25519 digital signatures\n\
+             - Integrity verification: {}\n\
+             - Unauthorized alteration detection: BLAKE3 hash chain",
+            file_info.version_count,
+            if verification.hash_chain_valid {
+                "Verified"
+            } else {
+                "Failed"
+            },
+            if verification.is_valid {
+                "PASS"
+            } else {
+                "FAIL"
+            }
+        ),
+    }
+}
+
+fn hipaa_audit_log_entries_section(file_info: &FileInfo) -> ReportSection {
+    ReportSection {
+        title: "Audit Log Entries".to_string(),
+        content: format!(
+            "Activity Type: Business Rule Modification\n\
+             Total Entries: {}\n\
+             Entry Authentication: Digital Signature (Ed25519)\n\
+             Timestamp Precision: Nanosecond\n\
+             Non-repudiation: Cryptographic proof of authorship\n\n\
+             Each audit entry contains:\n\
+             - User identification (Author ID)\n\
+             - Date and time of activity\n\
+             - Type of activity (version commit)\n\
+             - Cryptographic proof of entry integrity",
+            file_info.version_count
+        ),
+    }
+}
+
+fn hipaa_technical_safeguards_section(
+    file_info: &FileInfo,
+    verification: &VerificationReport,
+) -> ReportSection {
+    ReportSection {
+        title: "Technical Safeguards Summary".to_string(),
+        content: format!(
+            "Encryption: ChaCha20-Poly1305 (AEAD)\n\
+             Digital Signatures: Ed25519\n\
+             Hashing: BLAKE3\n\
+             Key Derivation: HKDF-SHA256\n\n\
+             Verification Status:\n\
+             - All {} signatures valid: {}\n\
+             - File integrity verified: {}\n\
+             - Temporal warnings: {}",
+            file_info.signatures.len(),
+            if verification.signatures_valid {
+                "Yes"
+            } else {
+                "No"
+            },
+            if verification.is_valid { "Yes" } else { "No" },
+            verification.temporal_warnings.len()
+        ),
+    }
 }
 
 // ============================================================================
@@ -392,66 +410,78 @@ fn build_generic_sections(
     verification: &VerificationReport,
 ) -> Vec<ReportSection> {
     vec![
-        ReportSection {
-            title: "File Summary".to_string(),
-            content: format!(
-                "File ID: 0x{:016x}\n\
-                 Total Versions: {}\n\
-                 Current Version: {}\n\
-                 Total Signatures: {}",
-                file_info.file_id,
-                file_info.version_count,
-                file_info.current_version,
-                file_info.signatures.len()
-            ),
-        },
-        ReportSection {
-            title: "Verification Results".to_string(),
-            content: format!(
-                "Overall Status: {}\n\n\
-                 Checks Performed:\n\
-                 - Structure validation: {}\n\
-                 - Integrity hash: {}\n\
-                 - Hash chain: {}\n\
-                 - Signatures: {}\n\n\
-                 Temporal Warnings: {}",
-                if verification.is_valid {
-                    "VALID"
-                } else {
-                    "INVALID"
-                },
-                if verification.structure_valid {
-                    "PASS"
-                } else {
-                    "FAIL"
-                },
-                if verification.integrity_hash_valid {
-                    "PASS"
-                } else {
-                    "FAIL"
-                },
-                if verification.hash_chain_valid {
-                    "PASS"
-                } else {
-                    "FAIL"
-                },
-                if verification.signatures_valid {
-                    "PASS"
-                } else {
-                    "FAIL"
-                },
-                verification.temporal_warnings.len()
-            ),
-        },
-        ReportSection {
-            title: "Cryptographic Methods".to_string(),
-            content: "Digital Signatures: Ed25519 (RFC 8032)\n\
-                     Encryption: ChaCha20-Poly1305 (RFC 8439)\n\
-                     Hashing: BLAKE3\n\
-                     Key Derivation: HKDF-SHA256 (RFC 5869)"
-                .to_string(),
-        },
+        generic_file_summary_section(file_info),
+        generic_verification_results_section(verification),
+        generic_crypto_methods_section(),
     ]
+}
+
+fn generic_file_summary_section(file_info: &FileInfo) -> ReportSection {
+    ReportSection {
+        title: "File Summary".to_string(),
+        content: format!(
+            "File ID: 0x{:016x}\n\
+             Total Versions: {}\n\
+             Current Version: {}\n\
+             Total Signatures: {}",
+            file_info.file_id,
+            file_info.version_count,
+            file_info.current_version,
+            file_info.signatures.len()
+        ),
+    }
+}
+
+fn generic_verification_results_section(verification: &VerificationReport) -> ReportSection {
+    ReportSection {
+        title: "Verification Results".to_string(),
+        content: format!(
+            "Overall Status: {}\n\n\
+             Checks Performed:\n\
+             - Structure validation: {}\n\
+             - Integrity hash: {}\n\
+             - Hash chain: {}\n\
+             - Signatures: {}\n\n\
+             Temporal Warnings: {}",
+            if verification.is_valid {
+                "VALID"
+            } else {
+                "INVALID"
+            },
+            if verification.structure_valid {
+                "PASS"
+            } else {
+                "FAIL"
+            },
+            if verification.integrity_hash_valid {
+                "PASS"
+            } else {
+                "FAIL"
+            },
+            if verification.hash_chain_valid {
+                "PASS"
+            } else {
+                "FAIL"
+            },
+            if verification.signatures_valid {
+                "PASS"
+            } else {
+                "FAIL"
+            },
+            verification.temporal_warnings.len()
+        ),
+    }
+}
+
+fn generic_crypto_methods_section() -> ReportSection {
+    ReportSection {
+        title: "Cryptographic Methods".to_string(),
+        content: "Digital Signatures: Ed25519 (RFC 8032)\n\
+                 Encryption: ChaCha20-Poly1305 (RFC 8439)\n\
+                 Hashing: BLAKE3\n\
+                 Key Derivation: HKDF-SHA256 (RFC 5869)"
+            .to_string(),
+    }
 }
 
 // ============================================================================
@@ -460,22 +490,31 @@ fn build_generic_sections(
 
 fn format_as_text(report: &ComplianceReport) -> String {
     let mut output = String::new();
+    text_push_header(&mut output, report);
+    text_push_verification_summary(&mut output, &report.verification);
+    text_push_version_history(&mut output, &report.version_history);
+    text_push_framework_sections(&mut output, &report.framework_sections);
+    output.push_str(&format!("{}\n", "=".repeat(70)));
+    output.push_str(&format!("{:^70}\n", "END OF REPORT"));
+    output.push_str(&format!("{}\n", "=".repeat(70)));
+    output
+}
 
-    // Header
+fn text_push_header(output: &mut String, report: &ComplianceReport) {
     output.push_str(&format!("{}\n", "=".repeat(70)));
     output.push_str(&format!("{:^70}\n", report.title));
     output.push_str(&format!("{}\n\n", "=".repeat(70)));
-
     output.push_str(&format!("Generated: {}\n", report.generated_at));
     output.push_str(&format!("File: {}\n", report.file_path));
     output.push_str(&format!("File ID: {}\n", report.file_id));
     output.push_str(&format!("\n{}\n\n", "-".repeat(70)));
+}
 
-    // Verification Summary
+fn text_push_verification_summary(output: &mut String, verification: &VerificationSummary) {
     output.push_str("VERIFICATION SUMMARY\n");
     output.push_str(&format!(
         "  Overall Status: {}\n",
-        if report.verification.is_valid {
+        if verification.is_valid {
             "VALID"
         } else {
             "INVALID"
@@ -483,7 +522,7 @@ fn format_as_text(report: &ComplianceReport) -> String {
     ));
     output.push_str(&format!(
         "  Structure: {}\n",
-        if report.verification.structure_valid {
+        if verification.structure_valid {
             "OK"
         } else {
             "FAILED"
@@ -491,7 +530,7 @@ fn format_as_text(report: &ComplianceReport) -> String {
     ));
     output.push_str(&format!(
         "  Integrity: {}\n",
-        if report.verification.integrity_valid {
+        if verification.integrity_valid {
             "OK"
         } else {
             "FAILED"
@@ -499,7 +538,7 @@ fn format_as_text(report: &ComplianceReport) -> String {
     ));
     output.push_str(&format!(
         "  Hash Chain: {}\n",
-        if report.verification.hash_chain_valid {
+        if verification.hash_chain_valid {
             "OK"
         } else {
             "FAILED"
@@ -507,17 +546,18 @@ fn format_as_text(report: &ComplianceReport) -> String {
     ));
     output.push_str(&format!(
         "  Signatures: {}\n",
-        if report.verification.signatures_valid {
+        if verification.signatures_valid {
             "OK"
         } else {
             "FAILED"
         }
     ));
     output.push_str(&format!("\n{}\n\n", "-".repeat(70)));
+}
 
-    // Version History
+fn text_push_version_history(output: &mut String, history: &[VersionSummary]) {
     output.push_str("VERSION HISTORY\n\n");
-    for v in &report.version_history {
+    for v in history {
         output.push_str(&format!(
             "  Version {}: {} (Author {})\n",
             v.version, v.message, v.author_id
@@ -525,38 +565,42 @@ fn format_as_text(report: &ComplianceReport) -> String {
         output.push_str(&format!("    Timestamp: {}\n\n", v.timestamp));
     }
     output.push_str(&format!("{}\n\n", "-".repeat(70)));
+}
 
-    // Framework Sections
-    for section in &report.framework_sections {
+fn text_push_framework_sections(output: &mut String, sections: &[ReportSection]) {
+    for section in sections {
         output.push_str(&format!("{}\n\n", section.title.to_uppercase()));
         output.push_str(&format!("{}\n\n", section.content));
         output.push_str(&format!("{}\n\n", "-".repeat(70)));
     }
-
-    output.push_str(&format!("{}\n", "=".repeat(70)));
-    output.push_str(&format!("{:^70}\n", "END OF REPORT"));
-    output.push_str(&format!("{}\n", "=".repeat(70)));
-
-    output
 }
 
 fn format_as_markdown(report: &ComplianceReport) -> String {
     let mut output = String::new();
+    md_push_header(&mut output, report);
+    md_push_verification_summary(&mut output, &report.verification);
+    md_push_version_history(&mut output, &report.version_history);
+    md_push_framework_sections(&mut output, &report.framework_sections);
+    output.push_str("---\n\n");
+    output.push_str("*Report generated by AION v2 Compliance Reporting*\n");
+    output
+}
 
-    // Header
+fn md_push_header(output: &mut String, report: &ComplianceReport) {
     output.push_str(&format!("# {}\n\n", report.title));
     output.push_str(&format!("**Generated**: {}  \n", report.generated_at));
     output.push_str(&format!("**File**: `{}`  \n", report.file_path));
     output.push_str(&format!("**File ID**: `{}`\n\n", report.file_id));
     output.push_str("---\n\n");
+}
 
-    // Verification Summary
+fn md_push_verification_summary(output: &mut String, verification: &VerificationSummary) {
     output.push_str("## Verification Summary\n\n");
     output.push_str("| Check | Status |\n");
     output.push_str("|-------|--------|\n");
     output.push_str(&format!(
         "| Overall | {} |\n",
-        if report.verification.is_valid {
+        if verification.is_valid {
             "✅ VALID"
         } else {
             "❌ INVALID"
@@ -564,7 +608,7 @@ fn format_as_markdown(report: &ComplianceReport) -> String {
     ));
     output.push_str(&format!(
         "| Structure | {} |\n",
-        if report.verification.structure_valid {
+        if verification.structure_valid {
             "✅"
         } else {
             "❌"
@@ -572,7 +616,7 @@ fn format_as_markdown(report: &ComplianceReport) -> String {
     ));
     output.push_str(&format!(
         "| Integrity | {} |\n",
-        if report.verification.integrity_valid {
+        if verification.integrity_valid {
             "✅"
         } else {
             "❌"
@@ -580,7 +624,7 @@ fn format_as_markdown(report: &ComplianceReport) -> String {
     ));
     output.push_str(&format!(
         "| Hash Chain | {} |\n",
-        if report.verification.hash_chain_valid {
+        if verification.hash_chain_valid {
             "✅"
         } else {
             "❌"
@@ -588,36 +632,33 @@ fn format_as_markdown(report: &ComplianceReport) -> String {
     ));
     output.push_str(&format!(
         "| Signatures | {} |\n",
-        if report.verification.signatures_valid {
+        if verification.signatures_valid {
             "✅"
         } else {
             "❌"
         }
     ));
     output.push_str("\n---\n\n");
+}
 
-    // Version History
+fn md_push_version_history(output: &mut String, history: &[VersionSummary]) {
     output.push_str("## Version History\n\n");
     output.push_str("| Version | Author | Timestamp | Message |\n");
     output.push_str("|---------|--------|-----------|--------|\n");
-    for v in &report.version_history {
+    for v in history {
         output.push_str(&format!(
             "| {} | {} | {} | {} |\n",
             v.version, v.author_id, v.timestamp, v.message
         ));
     }
     output.push_str("\n---\n\n");
+}
 
-    // Framework Sections
-    for section in &report.framework_sections {
+fn md_push_framework_sections(output: &mut String, sections: &[ReportSection]) {
+    for section in sections {
         output.push_str(&format!("## {}\n\n", section.title));
         output.push_str(&format!("{}\n\n", section.content));
     }
-
-    output.push_str("---\n\n");
-    output.push_str("*Report generated by AION v2 Compliance Reporting*\n");
-
-    output
 }
 
 fn format_as_json(report: &ComplianceReport) -> Result<String> {

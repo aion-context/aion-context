@@ -125,31 +125,37 @@ pub struct InitResult {
 /// // println!("Created file {} with version {}", result.file_id.as_u64(), result.version.as_u64());
 /// ```
 pub fn init_file(path: &Path, initial_rules: &[u8], options: &InitOptions) -> Result<InitResult> {
-    // Step 1: Check if file already exists
     if path.exists() {
         return Err(AionError::FileExists {
             path: path.to_path_buf(),
         });
     }
-
-    // Step 2: Generate unique file ID
     let file_id = FileId::random();
-
-    // Step 3: Get timestamp
     let timestamp = options.timestamp.unwrap_or_else(current_timestamp_nanos);
-
-    // Step 4: Hash the initial rules
     let rules_hash = hash(initial_rules);
-
-    // Step 5: Encrypt the rules
     let (encrypted_rules, _) = encrypt_rules(initial_rules, file_id, VersionNumber::GENESIS)?;
 
-    // Step 6: Build string table with commit message
+    let aion_file = build_genesis_file(file_id, timestamp, rules_hash, encrypted_rules, options)?;
+    write_serialized_file(&aion_file, path)?;
+
+    Ok(InitResult {
+        file_id,
+        version: VersionNumber::GENESIS,
+        rules_hash,
+    })
+}
+
+#[allow(clippy::cast_possible_truncation)]
+fn build_genesis_file(
+    file_id: FileId,
+    timestamp: u64,
+    rules_hash: [u8; 32],
+    encrypted_rules: Vec<u8>,
+    options: &InitOptions,
+) -> Result<AionFile> {
     let (string_table, offsets) = AionSerializer::build_string_table(&[options.message]);
     let message_offset = offsets.first().copied().unwrap_or(0);
 
-    // Step 7: Create genesis version entry
-    #[allow(clippy::cast_possible_truncation)]
     let genesis_version = create_genesis_version(
         rules_hash,
         options.author_id,
@@ -157,11 +163,7 @@ pub fn init_file(path: &Path, initial_rules: &[u8], options: &InitOptions) -> Re
         message_offset,
         options.message.len() as u32,
     );
-
-    // Step 8: Sign the genesis version
     let signature = sign_version(&genesis_version, options.signing_key);
-
-    // Step 9: Create audit entry
     let audit_entry = AuditEntry::new(
         timestamp,
         options.author_id,
@@ -171,11 +173,10 @@ pub fn init_file(path: &Path, initial_rules: &[u8], options: &InitOptions) -> Re
         [0u8; 32],
     );
 
-    // Step 10: Build the file structure
-    let aion_file = AionFile::builder()
+    AionFile::builder()
         .file_id(file_id)
         .current_version(VersionNumber::GENESIS)
-        .flags(0x0001) // Encrypted flag
+        .flags(0x0001)
         .root_hash(rules_hash)
         .current_hash(rules_hash)
         .created_at(timestamp)
@@ -185,19 +186,14 @@ pub fn init_file(path: &Path, initial_rules: &[u8], options: &InitOptions) -> Re
         .add_signature(signature)
         .add_audit_entry(audit_entry)
         .string_table(string_table)
-        .build()?;
+        .build()
+}
 
-    // Step 11: Serialize and write to disk
-    let file_bytes = AionSerializer::serialize(&aion_file)?;
+fn write_serialized_file(file: &AionFile, path: &Path) -> Result<()> {
+    let file_bytes = AionSerializer::serialize(file)?;
     std::fs::write(path, &file_bytes).map_err(|e| AionError::FileWriteError {
         path: path.to_path_buf(),
         source: e,
-    })?;
-
-    Ok(InitResult {
-        file_id,
-        version: VersionNumber::GENESIS,
-        rules_hash,
     })
 }
 
@@ -287,52 +283,31 @@ pub fn commit_version(
     new_rules: &[u8],
     options: &CommitOptions<'_>,
 ) -> Result<CommitResult> {
-    // Step 1: Load existing file
     let file_bytes = std::fs::read(path).map_err(|e| AionError::FileReadError {
         path: path.to_path_buf(),
         source: e,
     })?;
-
     let parser = AionParser::new(&file_bytes)?;
     let header = parser.header();
 
-    // Step 2: Verify existing signature chain
     verify_existing_signatures(&parser)?;
 
-    // Step 3: Increment version with overflow check
-    let current_version = VersionNumber(header.current_version);
-    let new_version = current_version.next()?;
-
-    // Step 4: Get timestamp
+    let new_version = VersionNumber(header.current_version).next()?;
     let timestamp = options.timestamp.unwrap_or_else(current_timestamp_nanos);
-
-    // Step 5: Encrypt new rules
     let file_id = FileId::new(header.file_id);
     let (encrypted_rules, rules_hash) = encrypt_rules(new_rules, file_id, new_version)?;
-
-    // Step 6: Get parent hash from last version
-    let parent_version_entry = get_last_version_entry(&parser)?;
-    let parent_hash = compute_version_hash(&parent_version_entry);
-
-    // Step 7: Build string table with commit message
+    let parent_hash = compute_version_hash(&get_last_version_entry(&parser)?);
     let (string_table, message_offset) = build_string_table_with_message(options.message, &parser)?;
 
-    // Step 8: Create new version entry
-    #[allow(clippy::cast_possible_truncation)]
-    let new_version_entry = VersionEntry::new(
+    let (new_version_entry, signature_entry) = build_new_version_and_signature(
         new_version,
         parent_hash,
         rules_hash,
-        options.author_id,
         timestamp,
         message_offset,
-        options.message.len() as u32,
+        options,
     );
 
-    // Step 9: Sign the new version
-    let signature_entry = sign_version(&new_version_entry, options.signing_key);
-
-    // Step 10: Build updated file with all versions and signatures
     let updated_file = build_updated_file(
         &parser,
         header,
@@ -345,17 +320,35 @@ pub fn commit_version(
         timestamp,
         options.author_id,
     )?;
-
-    // Step 11: Atomic write
     AionSerializer::write_atomic(&updated_file, path)?;
-
-    let version_hash = compute_version_hash(&new_version_entry);
 
     Ok(CommitResult {
         version: new_version,
-        version_hash,
+        version_hash: compute_version_hash(&new_version_entry),
         rules_hash,
     })
+}
+
+#[allow(clippy::cast_possible_truncation)]
+fn build_new_version_and_signature(
+    new_version: VersionNumber,
+    parent_hash: [u8; 32],
+    rules_hash: [u8; 32],
+    timestamp: u64,
+    message_offset: u64,
+    options: &CommitOptions<'_>,
+) -> (VersionEntry, SignatureEntry) {
+    let new_version_entry = VersionEntry::new(
+        new_version,
+        parent_hash,
+        rules_hash,
+        options.author_id,
+        timestamp,
+        message_offset,
+        options.message.len() as u32,
+    );
+    let signature_entry = sign_version(&new_version_entry, options.signing_key);
+    (new_version_entry, signature_entry)
 }
 
 /// Verify all existing signatures in the file
@@ -813,23 +806,16 @@ fn check_temporal_ordering(versions: &[VersionEntry]) -> Vec<TemporalWarning> {
 /// # Ok::<(), aion_context::AionError>(())
 /// ```
 pub fn verify_file(path: &Path) -> Result<VerificationReport> {
-    // Step 1: Load and parse the file (structure validation)
     let file_bytes = std::fs::read(path).map_err(|e| AionError::FileReadError {
         path: path.to_path_buf(),
         source: e,
     })?;
     let parser = AionParser::new(&file_bytes)?;
-
     let header = parser.header();
-    let file_id = FileId(header.file_id);
-    let version_count = header.version_chain_count;
 
-    let mut report = VerificationReport::new(file_id, version_count);
-
-    // Structure is valid if we got this far
+    let mut report = VerificationReport::new(FileId(header.file_id), header.version_chain_count);
     report.structure_valid = true;
 
-    // Step 2: Verify file integrity hash
     match parser.verify_integrity() {
         Ok(()) => report.integrity_hash_valid = true,
         Err(e) => report
@@ -837,23 +823,11 @@ pub fn verify_file(path: &Path) -> Result<VerificationReport> {
             .push(format!("File integrity hash mismatch: {e}")),
     }
 
-    // Step 3: Collect all version entries
-    #[allow(clippy::cast_possible_truncation)] // version_count is header field, won't exceed usize
-    let mut versions = Vec::with_capacity(version_count as usize);
-    #[allow(clippy::cast_possible_truncation)]
-    for i in 0..version_count as usize {
-        match parser.get_version_entry(i) {
-            Ok(entry) => versions.push(entry),
-            Err(e) => {
-                report
-                    .errors
-                    .push(format!("Failed to read version entry {i}: {e}"));
-                return Ok(report); // Can't continue without version data
-            }
-        }
-    }
+    let versions = match collect_versions_into_report(&parser, &mut report)? {
+        Some(v) => v,
+        None => return Ok(report),
+    };
 
-    // Step 4: Verify hash chain
     match verify_hash_chain(&versions) {
         Ok(()) => report.hash_chain_valid = true,
         Err(e) => report
@@ -861,24 +835,11 @@ pub fn verify_file(path: &Path) -> Result<VerificationReport> {
             .push(format!("Hash chain verification failed: {e}")),
     }
 
-    // Step 5: Collect all signature entries
-    #[allow(clippy::cast_possible_truncation)]
-    // signatures_count is header field, won't exceed usize
-    let mut signatures = Vec::with_capacity(header.signatures_count as usize);
-    #[allow(clippy::cast_possible_truncation)]
-    for i in 0..header.signatures_count as usize {
-        match parser.get_signature_entry(i) {
-            Ok(entry) => signatures.push(entry),
-            Err(e) => {
-                report
-                    .errors
-                    .push(format!("Failed to read signature entry {i}: {e}"));
-                return Ok(report); // Can't continue without signature data
-            }
-        }
-    }
+    let signatures = match collect_signatures_into_report(&parser, &mut report)? {
+        Some(s) => s,
+        None => return Ok(report),
+    };
 
-    // Step 6: Verify all signatures
     match verify_signatures_batch(&versions, &signatures) {
         Ok(()) => report.signatures_valid = true,
         Err(e) => report
@@ -886,17 +847,54 @@ pub fn verify_file(path: &Path) -> Result<VerificationReport> {
             .push(format!("Signature verification failed: {e}")),
     }
 
-    // Step 7: Check temporal ordering (warnings only, does not affect validity)
     report.temporal_warnings = check_temporal_ordering(&versions);
-
-    // Step 8: Determine overall validity
-    // Note: temporal_warnings do NOT affect is_valid - they are informational only
     report.is_valid = report.structure_valid
         && report.integrity_hash_valid
         && report.hash_chain_valid
         && report.signatures_valid;
-
     Ok(report)
+}
+
+#[allow(clippy::cast_possible_truncation)]
+fn collect_versions_into_report(
+    parser: &AionParser<'_>,
+    report: &mut VerificationReport,
+) -> Result<Option<Vec<VersionEntry>>> {
+    let count = parser.header().version_chain_count as usize;
+    let mut versions = Vec::with_capacity(count);
+    for i in 0..count {
+        match parser.get_version_entry(i) {
+            Ok(entry) => versions.push(entry),
+            Err(e) => {
+                report
+                    .errors
+                    .push(format!("Failed to read version entry {i}: {e}"));
+                return Ok(None);
+            }
+        }
+    }
+    Ok(Some(versions))
+}
+
+#[allow(clippy::cast_possible_truncation)]
+fn collect_signatures_into_report(
+    parser: &AionParser<'_>,
+    report: &mut VerificationReport,
+) -> Result<Option<Vec<SignatureEntry>>> {
+    let count = parser.header().signatures_count as usize;
+    let mut signatures = Vec::with_capacity(count);
+    for i in 0..count {
+        match parser.get_signature_entry(i) {
+            Ok(entry) => signatures.push(entry),
+            Err(e) => {
+                report
+                    .errors
+                    .push(format!("Failed to read signature entry {i}: {e}"));
+                return Ok(None);
+            }
+        }
+    }
+    Ok(Some(signatures))
 }
 
 // ============================================================================
@@ -1290,45 +1288,11 @@ fn build_updated_file(
     timestamp: u64,
     author_id: AuthorId,
 ) -> Result<AionFile> {
-    // Collect existing versions
-    let version_count = header.version_chain_count as usize;
-    let mut versions = Vec::with_capacity(version_count + 1);
-    for i in 0..version_count {
-        versions.push(parser.get_version_entry(i)?);
-    }
-    versions.push(new_version_entry);
+    let versions = collect_existing_plus(parser, header.version_chain_count, new_version_entry)?;
+    let signatures =
+        collect_existing_plus_signatures(parser, header.signatures_count, new_signature)?;
+    let audit_entries = collect_existing_audit_plus_commit(parser, header, timestamp, author_id)?;
 
-    // Collect existing signatures
-    let signature_count = header.signatures_count as usize;
-    let mut signatures = Vec::with_capacity(signature_count + 1);
-    for i in 0..signature_count {
-        signatures.push(parser.get_signature_entry(i)?);
-    }
-    signatures.push(new_signature);
-
-    // Collect existing audit entries and add new one
-    let audit_count = header.audit_trail_count as usize;
-    let mut audit_entries = Vec::with_capacity(audit_count + 1);
-    for i in 0..audit_count {
-        audit_entries.push(parser.get_audit_entry(i)?);
-    }
-
-    // Create new audit entry for the commit
-    let previous_hash = audit_entries
-        .last()
-        .map_or([0u8; 32], AuditEntry::compute_hash);
-
-    let new_audit_entry = AuditEntry::new(
-        timestamp,
-        author_id,
-        ActionCode::CommitVersion,
-        0, // details_offset (no additional details)
-        0, // details_length
-        previous_hash,
-    );
-    audit_entries.push(new_audit_entry);
-
-    // Build the updated file
     AionFile::builder()
         .file_id(FileId::new(header.file_id))
         .current_version(new_version)
@@ -1343,6 +1307,65 @@ fn build_updated_file(
         .audit_entries(audit_entries)
         .string_table(string_table)
         .build()
+}
+
+#[allow(clippy::cast_possible_truncation)]
+#[allow(clippy::arithmetic_side_effects)]
+fn collect_existing_plus(
+    parser: &AionParser<'_>,
+    count: u64,
+    new_entry: VersionEntry,
+) -> Result<Vec<VersionEntry>> {
+    let n = count as usize;
+    let mut versions = Vec::with_capacity(n + 1);
+    for i in 0..n {
+        versions.push(parser.get_version_entry(i)?);
+    }
+    versions.push(new_entry);
+    Ok(versions)
+}
+
+#[allow(clippy::cast_possible_truncation)]
+#[allow(clippy::arithmetic_side_effects)]
+fn collect_existing_plus_signatures(
+    parser: &AionParser<'_>,
+    count: u64,
+    new_entry: SignatureEntry,
+) -> Result<Vec<SignatureEntry>> {
+    let n = count as usize;
+    let mut signatures = Vec::with_capacity(n + 1);
+    for i in 0..n {
+        signatures.push(parser.get_signature_entry(i)?);
+    }
+    signatures.push(new_entry);
+    Ok(signatures)
+}
+
+#[allow(clippy::cast_possible_truncation)]
+#[allow(clippy::arithmetic_side_effects)]
+fn collect_existing_audit_plus_commit(
+    parser: &AionParser<'_>,
+    header: &crate::parser::FileHeader,
+    timestamp: u64,
+    author_id: AuthorId,
+) -> Result<Vec<AuditEntry>> {
+    let n = header.audit_trail_count as usize;
+    let mut audit_entries = Vec::with_capacity(n + 1);
+    for i in 0..n {
+        audit_entries.push(parser.get_audit_entry(i)?);
+    }
+    let previous_hash = audit_entries
+        .last()
+        .map_or([0u8; 32], AuditEntry::compute_hash);
+    audit_entries.push(AuditEntry::new(
+        timestamp,
+        author_id,
+        ActionCode::CommitVersion,
+        0,
+        0,
+        previous_hash,
+    ));
+    Ok(audit_entries)
 }
 
 #[cfg(test)]

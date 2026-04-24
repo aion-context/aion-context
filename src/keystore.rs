@@ -415,71 +415,18 @@ impl KeyStore {
     /// - File format is invalid (wrong magic, unsupported version)
     /// - Decryption fails (wrong password, corrupted data)
     /// - Key storage fails
-    #[allow(clippy::indexing_slicing)] // Bounds checked above
     pub fn import_encrypted(
         &self,
         author_id: AuthorId,
         password: &str,
         encrypted_data: &[u8],
     ) -> Result<SigningKey> {
-        // Minimum size: MAGIC(4) + VERSION(1) + SALT(16) + NONCE(12) + KEY(32) + TAG(16) = 81
-        const MIN_SIZE: usize = 4 + 1 + SALT_SIZE + 12 + 32 + 16;
-        if encrypted_data.len() < MIN_SIZE {
-            return Err(AionError::InvalidFormat {
-                reason: format!(
-                    "encrypted key file too small: {} bytes (minimum: {MIN_SIZE})",
-                    encrypted_data.len()
-                ),
-            });
-        }
-
-        if &encrypted_data[0..4] != EXPORT_MAGIC {
-            return Err(AionError::InvalidFormat {
-                reason: "invalid key file magic".to_string(),
-            });
-        }
-
-        let version = encrypted_data[4];
-        if version != EXPORT_VERSION {
-            return Err(AionError::InvalidFormat {
-                reason: format!(
-                    "unsupported key file version: {version} (expected: {EXPORT_VERSION})"
-                ),
-            });
-        }
-
-        // Extract salt (16 bytes starting at offset 5)
-        let salt: [u8; SALT_SIZE] =
-            encrypted_data[5..5 + SALT_SIZE]
-                .try_into()
-                .map_err(|_| AionError::InvalidFormat {
-                    reason: "invalid salt".to_string(),
-                })?;
-
-        // Extract nonce (12 bytes starting at offset 5 + SALT_SIZE)
-        let nonce_start = 5 + SALT_SIZE;
-        let nonce: [u8; 12] = encrypted_data[nonce_start..nonce_start + 12]
-            .try_into()
-            .map_err(|_| AionError::InvalidFormat {
-                reason: "invalid nonce".to_string(),
-            })?;
-
-        // Ciphertext is everything after the nonce
-        let ciphertext = &encrypted_data[nonce_start + 12..];
-
-        // Derive decryption key using Argon2id with stored salt
-        let encryption_key = derive_key_from_password(password, &salt)?;
-
-        // Decrypt and authenticate
+        let parsed = parse_encrypted_key_blob(encrypted_data)?;
+        let encryption_key = derive_key_from_password(password, &parsed.salt)?;
         let aad = author_id.as_u64().to_le_bytes();
-        let key_bytes = decrypt(&encryption_key, &nonce, ciphertext, &aad)?;
-
-        // Create and verify the key is valid
+        let key_bytes = decrypt(&encryption_key, &parsed.nonce, parsed.ciphertext, &aad)?;
         let signing_key = SigningKey::from_bytes(&key_bytes)?;
-
-        // Store in keyring
         self.store_signing_key(author_id, &signing_key)?;
-
         Ok(signing_key)
     }
 
@@ -492,6 +439,65 @@ impl KeyStore {
             reason: e.to_string(),
         })
     }
+}
+
+/// Parsed encrypted-key blob layout: magic(4) + version(1) + salt(16) + nonce(12) + ciphertext.
+struct ParsedEncryptedKey<'a> {
+    salt: [u8; SALT_SIZE],
+    nonce: [u8; 12],
+    ciphertext: &'a [u8],
+}
+
+fn parse_encrypted_key_blob(encrypted_data: &[u8]) -> Result<ParsedEncryptedKey<'_>> {
+    const MIN_SIZE: usize = 4 + 1 + SALT_SIZE + 12 + 32 + 16;
+    if encrypted_data.len() < MIN_SIZE {
+        return Err(AionError::InvalidFormat {
+            reason: format!(
+                "encrypted key file too small: {} bytes (minimum: {MIN_SIZE})",
+                encrypted_data.len()
+            ),
+        });
+    }
+    let magic = encrypted_data.get(0..4).ok_or(AionError::InvalidFormat {
+        reason: "missing magic".to_string(),
+    })?;
+    if magic != EXPORT_MAGIC {
+        return Err(AionError::InvalidFormat {
+            reason: "invalid key file magic".to_string(),
+        });
+    }
+    let version = *encrypted_data.get(4).ok_or(AionError::InvalidFormat {
+        reason: "missing version byte".to_string(),
+    })?;
+    if version != EXPORT_VERSION {
+        return Err(AionError::InvalidFormat {
+            reason: format!("unsupported key file version: {version} (expected: {EXPORT_VERSION})"),
+        });
+    }
+    let salt_end = 5_usize.saturating_add(SALT_SIZE);
+    let salt: [u8; SALT_SIZE] = encrypted_data
+        .get(5..salt_end)
+        .and_then(|s| s.try_into().ok())
+        .ok_or(AionError::InvalidFormat {
+            reason: "invalid salt".to_string(),
+        })?;
+    let nonce_end = salt_end.saturating_add(12);
+    let nonce: [u8; 12] = encrypted_data
+        .get(salt_end..nonce_end)
+        .and_then(|s| s.try_into().ok())
+        .ok_or(AionError::InvalidFormat {
+            reason: "invalid nonce".to_string(),
+        })?;
+    let ciphertext = encrypted_data
+        .get(nonce_end..)
+        .ok_or(AionError::InvalidFormat {
+            reason: "missing ciphertext".to_string(),
+        })?;
+    Ok(ParsedEncryptedKey {
+        salt,
+        nonce,
+        ciphertext,
+    })
 }
 
 /// Generate a random salt for Argon2 key derivation

@@ -327,6 +327,37 @@ fn main() -> Result<()> {
 }
 
 fn cmd_init(args: &InitArgs) -> Result<()> {
+    print_init_banner(args);
+    if args.path.exists() && !args.force {
+        anyhow::bail!(
+            "File already exists: {}\nUse --force to overwrite",
+            args.path.display()
+        );
+    }
+    let rules = load_rules_content(args.rules.as_ref())?;
+    println!("   Rules size: {} bytes", rules.len());
+
+    let signing_key = load_signing_key_for_init(args)?;
+    let options = InitOptions {
+        author_id: AuthorId::new(args.author),
+        signing_key: &signing_key,
+        message: &args.message,
+        timestamp: None,
+    };
+    if args.force && args.path.exists() {
+        std::fs::remove_file(&args.path)
+            .with_context(|| format!("Failed to remove existing file: {}", args.path.display()))?;
+    }
+    let result = init_file(&args.path, &rules, &options)
+        .with_context(|| format!("Failed to create AION file: {}", args.path.display()))?;
+    println!("\n✅ File created successfully!");
+    println!("   File ID: 0x{:016x}", result.file_id.as_u64());
+    println!("   Version: {}", result.version.as_u64());
+    println!("   Path: {}", args.path.display());
+    Ok(())
+}
+
+fn print_init_banner(args: &InitArgs) {
     println!("🚀 Initializing AION file: {}", args.path.display());
     println!("   Author: {}", args.author);
     println!("   Message: {}", args.message);
@@ -338,55 +369,18 @@ fn cmd_init(args: &InitArgs) -> Result<()> {
             "enabled"
         }
     );
+}
 
-    // Check if file exists and --force not provided
-    if args.path.exists() && !args.force {
-        anyhow::bail!(
-            "File already exists: {}\nUse --force to overwrite",
-            args.path.display()
-        );
-    }
-
-    // Load rules from file or stdin
-    let rules = load_rules_content(args.rules.as_ref())?;
-    println!("   Rules size: {} bytes", rules.len());
-
-    // Load signing key from keystore
+fn load_signing_key_for_init(args: &InitArgs) -> Result<aion_context::crypto::SigningKey> {
     let keystore = KeyStore::new();
     let key_author_id = parse_key_id(&args.key)?;
-
-    let signing_key = keystore.load_signing_key(key_author_id).with_context(|| {
+    keystore.load_signing_key(key_author_id).with_context(|| {
         format!(
             "Failed to load key '{}' from keystore.\n\
             Hint: Generate a key first with: aion key generate --id {}",
             args.key, args.key
         )
-    })?;
-
-    // Create init options
-    let options = InitOptions {
-        author_id: AuthorId::new(args.author),
-        signing_key: &signing_key,
-        message: &args.message,
-        timestamp: None, // Use current time
-    };
-
-    // If --force and file exists, remove it first
-    if args.force && args.path.exists() {
-        std::fs::remove_file(&args.path)
-            .with_context(|| format!("Failed to remove existing file: {}", args.path.display()))?;
-    }
-
-    // Create the file
-    let result = init_file(&args.path, &rules, &options)
-        .with_context(|| format!("Failed to create AION file: {}", args.path.display()))?;
-
-    println!("\n✅ File created successfully!");
-    println!("   File ID: 0x{:016x}", result.file_id.as_u64());
-    println!("   Version: {}", result.version.as_u64());
-    println!("   Path: {}", args.path.display());
-
-    Ok(())
+    })
 }
 
 fn cmd_commit(args: &CommitArgs) -> Result<()> {
@@ -437,85 +431,76 @@ fn cmd_commit(args: &CommitArgs) -> Result<()> {
 
 fn cmd_verify(args: &VerifyArgs) -> Result<()> {
     println!("🔍 Verifying AION file: {}", args.path.display());
-
-    // Check if file exists
     if !args.path.exists() {
         anyhow::bail!("File not found: {}", args.path.display());
     }
-
-    // Verify the file
     let report = verify_file(&args.path)
         .with_context(|| format!("Failed to verify file: {}", args.path.display()))?;
 
-    // Display results based on format
     match args.format {
-        OutputFormat::Json => {
-            let json = serde_json::to_string_pretty(&report)?;
-            println!("{json}");
-        }
-        OutputFormat::Yaml => {
-            let yaml = serde_yaml::to_string(&report)?;
-            println!("{yaml}");
-        }
-        OutputFormat::Text => {
-            println!("\nVerification Results:");
-            println!("====================");
-            println!(
-                "Overall: {}",
-                if report.is_valid {
-                    "✅ VALID"
-                } else {
-                    "❌ INVALID"
-                }
-            );
-            println!();
-            println!(
-                "Structure:     {}",
-                if report.structure_valid { "✅" } else { "❌" }
-            );
-            println!(
-                "Integrity:     {}",
-                if report.integrity_hash_valid {
-                    "✅"
-                } else {
-                    "❌"
-                }
-            );
-            println!(
-                "Hash Chain:    {}",
-                if report.hash_chain_valid {
-                    "✅"
-                } else {
-                    "❌"
-                }
-            );
-            println!(
-                "Signatures:    {}",
-                if report.signatures_valid {
-                    "✅"
-                } else {
-                    "❌"
-                }
-            );
-
-            if !report.errors.is_empty() {
-                println!("\nErrors:");
-                for error in &report.errors {
-                    println!("  • {error}");
-                }
-            }
-
-            if args.verbose {
-                println!("\nFile Path: {}", args.path.display());
-            }
-        }
+        OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&report)?),
+        OutputFormat::Yaml => println!("{}", serde_yaml::to_string(&report)?),
+        OutputFormat::Text => print_verify_text_report(args, &report),
     }
 
     if !report.is_valid {
         std::process::exit(1);
     }
-
     Ok(())
+}
+
+fn print_verify_text_report(
+    args: &VerifyArgs,
+    report: &aion_context::operations::VerificationReport,
+) {
+    println!("\nVerification Results:");
+    println!("====================");
+    println!(
+        "Overall: {}",
+        if report.is_valid {
+            "✅ VALID"
+        } else {
+            "❌ INVALID"
+        }
+    );
+    println!();
+    println!(
+        "Structure:     {}",
+        if report.structure_valid { "✅" } else { "❌" }
+    );
+    println!(
+        "Integrity:     {}",
+        if report.integrity_hash_valid {
+            "✅"
+        } else {
+            "❌"
+        }
+    );
+    println!(
+        "Hash Chain:    {}",
+        if report.hash_chain_valid {
+            "✅"
+        } else {
+            "❌"
+        }
+    );
+    println!(
+        "Signatures:    {}",
+        if report.signatures_valid {
+            "✅"
+        } else {
+            "❌"
+        }
+    );
+    if !report.errors.is_empty() {
+        println!("\nErrors:");
+        for error in &report.errors {
+            println!("  • {error}");
+        }
+    }
+    if args.verbose {
+        println!("\nFile Path: {}", args.path.display());
+    }
 }
 
 fn cmd_show(args: &ShowArgs) -> Result<()> {

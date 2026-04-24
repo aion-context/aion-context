@@ -119,60 +119,61 @@ impl std::fmt::Display for MergeStrategy {
 ///
 /// Conflict report with detected type and suggested strategy
 pub fn detect_conflict(local: &FileInfo, remote: &FileInfo) -> ConflictReport {
-    // Check if file IDs match
     if local.file_id != remote.file_id {
-        return ConflictReport {
-            conflict_type: ConflictType::ContentMismatch {
-                version: 0,
-                local_hash: format!("{:016x}", local.file_id),
-                remote_hash: format!("{:016x}", remote.file_id),
-            },
-            local_version_count: local.version_count,
-            remote_version_count: remote.version_count,
-            suggested_strategy: MergeStrategy::Manual,
-        };
+        return file_id_mismatch_report(local, remote);
     }
-
-    // Check for identical files
     if local.version_count == remote.version_count {
-        // Check if latest versions match
-        if versions_match(local, remote) {
-            return ConflictReport {
-                conflict_type: ConflictType::None,
-                local_version_count: local.version_count,
-                remote_version_count: remote.version_count,
-                suggested_strategy: MergeStrategy::KeepLocal,
-            };
-        }
+        return same_length_report(local, remote);
+    }
+    differing_length_report(local, remote)
+}
 
-        // Same version count but different content
+fn file_id_mismatch_report(local: &FileInfo, remote: &FileInfo) -> ConflictReport {
+    ConflictReport {
+        conflict_type: ConflictType::ContentMismatch {
+            version: 0,
+            local_hash: format!("{:016x}", local.file_id),
+            remote_hash: format!("{:016x}", remote.file_id),
+        },
+        local_version_count: local.version_count,
+        remote_version_count: remote.version_count,
+        suggested_strategy: MergeStrategy::Manual,
+    }
+}
+
+fn same_length_report(local: &FileInfo, remote: &FileInfo) -> ConflictReport {
+    if versions_match(local, remote) {
         return ConflictReport {
-            conflict_type: ConflictType::ContentMismatch {
-                version: local.current_version,
-                local_hash: format_version_hash(local),
-                remote_hash: format_version_hash(remote),
-            },
+            conflict_type: ConflictType::None,
             local_version_count: local.version_count,
             remote_version_count: remote.version_count,
-            suggested_strategy: MergeStrategy::Manual,
+            suggested_strategy: MergeStrategy::KeepLocal,
         };
     }
+    ConflictReport {
+        conflict_type: ConflictType::ContentMismatch {
+            version: local.current_version,
+            local_hash: format_version_hash(local),
+            remote_hash: format_version_hash(remote),
+        },
+        local_version_count: local.version_count,
+        remote_version_count: remote.version_count,
+        suggested_strategy: MergeStrategy::Manual,
+    }
+}
 
-    // One has more versions - check if linear extension
+fn differing_length_report(local: &FileInfo, remote: &FileInfo) -> ConflictReport {
     let (shorter, longer) = if local.version_count < remote.version_count {
         (local, remote)
     } else {
         (remote, local)
     };
-
-    // Check if shorter is a prefix of longer (linear history)
     if is_linear_extension(shorter, longer) {
         let strategy = if local.version_count < remote.version_count {
-            MergeStrategy::KeepRemote // Remote has more, just update to remote
+            MergeStrategy::KeepRemote
         } else {
-            MergeStrategy::KeepLocal // Local has more, keep local
+            MergeStrategy::KeepLocal
         };
-
         return ConflictReport {
             conflict_type: ConflictType::None,
             local_version_count: local.version_count,
@@ -180,13 +181,9 @@ pub fn detect_conflict(local: &FileInfo, remote: &FileInfo) -> ConflictReport {
             suggested_strategy: strategy,
         };
     }
-
-    // Divergent histories
-    let common_ancestor = find_common_ancestor(local, remote);
-
     ConflictReport {
         conflict_type: ConflictType::Divergent {
-            common_ancestor,
+            common_ancestor: find_common_ancestor(local, remote),
             local_version: local.current_version,
             remote_version: remote.current_version,
         },
