@@ -570,6 +570,8 @@ fn test_cli_verify_verbose_output() {
 fn test_cli_verify_corrupted_file_fails() {
     let (temp_dir, key_id) = setup_test_env();
     let file_path = temp_dir.path().join("corrupted.aion");
+    let registry_path = temp_dir.path().join("registry.json");
+    pin_author(&registry_path, "4003", &key_id);
 
     // Create file
     run_cli_with_stdin(
@@ -591,21 +593,90 @@ fn test_cli_verify_corrupted_file_fails() {
         fs::write(&file_path, data).expect("Write failed");
     }
 
-    // Verify should fail or report invalid
-    let output = run_cli(&["verify", file_path.to_str().unwrap()]);
+    // Verify must exit non-zero on a tampered file (issue #23).
+    let output = run_cli(&[
+        "verify",
+        file_path.to_str().unwrap(),
+        "--registry",
+        registry_path.to_str().unwrap(),
+    ]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    let combined = format!("{stdout}{stderr}");
 
-    // Either non-zero exit or indicates invalid
     assert!(
-        !output.status.success()
-            || combined.to_lowercase().contains("invalid")
-            || combined.to_lowercase().contains("fail")
-            || combined.to_lowercase().contains("error"),
-        "Should indicate corruption: exit={}, output={}",
+        !output.status.success(),
+        "Tampered file must exit non-zero. exit={} stdout={} stderr={}",
         output.status,
-        combined
+        stdout,
+        stderr
+    );
+    assert!(
+        stdout.to_lowercase().contains("invalid"),
+        "stdout should report INVALID verdict, got: {stdout}"
+    );
+
+    cleanup_key(&key_id);
+}
+
+/// Exit-code contract (issue #23):
+/// valid file → exit 0, tampered file → exit 1. No reliance on
+/// piped $? or stderr substring matching.
+#[test]
+fn test_cli_verify_exit_code_matches_verdict() {
+    let (temp_dir, key_id) = setup_test_env();
+    let file_path = temp_dir.path().join("exit_code_contract.aion");
+    let registry_path = temp_dir.path().join("registry.json");
+    pin_author(&registry_path, "4099", &key_id);
+
+    run_cli_with_stdin(
+        &[
+            "init",
+            file_path.to_str().unwrap(),
+            "--author",
+            "4099",
+            "--key",
+            &key_id,
+        ],
+        b"contract rules",
+    );
+
+    // Valid file: exit code MUST be 0.
+    let valid = run_cli(&[
+        "verify",
+        file_path.to_str().unwrap(),
+        "--registry",
+        registry_path.to_str().unwrap(),
+    ]);
+    assert!(
+        valid.status.success(),
+        "Valid file must exit 0, got {}",
+        valid.status
+    );
+    assert_eq!(valid.status.code(), Some(0));
+
+    // Tamper deep in the payload so integrity-hash catches it.
+    let mut data = fs::read(&file_path).expect("Read failed");
+    let mid = data.len() / 2;
+    data[mid] ^= 0xFF;
+    fs::write(&file_path, data).expect("Write failed");
+
+    // Tampered file: exit code MUST be non-zero, specifically 1.
+    let tampered = run_cli(&[
+        "verify",
+        file_path.to_str().unwrap(),
+        "--registry",
+        registry_path.to_str().unwrap(),
+    ]);
+    assert!(
+        !tampered.status.success(),
+        "Tampered file must exit non-zero, got {}",
+        tampered.status
+    );
+    assert_eq!(
+        tampered.status.code(),
+        Some(1),
+        "Tampered file must exit 1, got {:?}",
+        tampered.status.code()
     );
 
     cleanup_key(&key_id);
