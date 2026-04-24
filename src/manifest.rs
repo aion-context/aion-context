@@ -229,6 +229,81 @@ impl ArtifactManifest {
         canonical_manifest_bytes(&self.entries, &self.name_table)
     }
 
+    /// Parse a manifest from its canonical form. Inverse of
+    /// [`Self::canonical_bytes`].
+    ///
+    /// Layout: `MANIFEST_DOMAIN (19 B) || entry_count_le (8 B) ||
+    /// entries (N × 128 B) || name_table (rest)`.
+    ///
+    /// The resulting `manifest_id` is the BLAKE3 of the same
+    /// canonical bytes, so `from_canonical_bytes(bytes).manifest_id()`
+    /// matches `m.manifest_id()` for any `bytes = m.canonical_bytes()`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AionError::InvalidFormat` if the magic prefix is
+    /// wrong, the entry count exceeds the remaining bytes, or any
+    /// entry slice is not exactly [`ARTIFACT_ENTRY_SIZE`] bytes.
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self> {
+        let manifest_id = crate::crypto::hash(bytes);
+        let body = bytes
+            .strip_prefix(MANIFEST_DOMAIN)
+            .ok_or_else(|| AionError::InvalidFormat {
+                reason: "manifest canonical bytes missing domain prefix".to_string(),
+            })?;
+        if body.len() < 8 {
+            return Err(AionError::InvalidFormat {
+                reason: "manifest canonical bytes truncated before entry count".to_string(),
+            });
+        }
+        let (count_bytes, rest) = body.split_at(8);
+        let mut count_arr = [0u8; 8];
+        count_arr.copy_from_slice(count_bytes);
+        let entry_count = u64::from_le_bytes(count_arr) as usize;
+
+        let entries_len = entry_count
+            .checked_mul(ARTIFACT_ENTRY_SIZE)
+            .ok_or_else(|| AionError::InvalidFormat {
+                reason: "manifest entry count overflows usize".to_string(),
+            })?;
+        if rest.len() < entries_len {
+            return Err(AionError::InvalidFormat {
+                reason: format!(
+                    "manifest entries truncated: need {} bytes, have {}",
+                    entries_len,
+                    rest.len()
+                ),
+            });
+        }
+        let (entries_slice, name_table_slice) = rest.split_at(entries_len);
+        let mut entries = Vec::with_capacity(entry_count);
+        for i in 0..entry_count {
+            let start =
+                i.checked_mul(ARTIFACT_ENTRY_SIZE)
+                    .ok_or_else(|| AionError::InvalidFormat {
+                        reason: "entry index overflow".to_string(),
+                    })?;
+            let end =
+                start
+                    .checked_add(ARTIFACT_ENTRY_SIZE)
+                    .ok_or_else(|| AionError::InvalidFormat {
+                        reason: "entry end overflow".to_string(),
+                    })?;
+            let slice = entries_slice
+                .get(start..end)
+                .ok_or_else(|| AionError::InvalidFormat {
+                    reason: "entry slice out of bounds".to_string(),
+                })?;
+            entries.push(parse_artifact_entry(slice)?);
+        }
+
+        Ok(Self {
+            manifest_id,
+            entries,
+            name_table: name_table_slice.to_vec(),
+        })
+    }
+
     /// Look up the name string for an entry.
     ///
     /// # Errors
@@ -294,6 +369,67 @@ fn slice_name(table: &[u8], offset: u64, length: u32) -> Result<&str> {
         })?;
     std::str::from_utf8(slice).map_err(|e| AionError::InvalidFormat {
         reason: format!("manifest name is not valid UTF-8: {e}"),
+    })
+}
+
+/// Parse one 128-byte canonical `ArtifactEntry` slice back into a
+/// struct. Inverse of `entry.as_bytes()`; preserves the on-disk
+/// `hash_algorithm` and reserved fields.
+fn parse_artifact_entry(slice: &[u8]) -> Result<ArtifactEntry> {
+    if slice.len() != ARTIFACT_ENTRY_SIZE {
+        return Err(AionError::InvalidFormat {
+            reason: format!(
+                "artifact entry slice must be {ARTIFACT_ENTRY_SIZE} bytes, got {}",
+                slice.len()
+            ),
+        });
+    }
+    let read_u64 = |from: usize| -> Result<u64> {
+        let end = from
+            .checked_add(8)
+            .ok_or_else(|| AionError::InvalidFormat {
+                reason: "u64 offset overflow".to_string(),
+            })?;
+        let bytes = slice
+            .get(from..end)
+            .ok_or_else(|| AionError::InvalidFormat {
+                reason: "u64 read out of bounds".to_string(),
+            })?;
+        let mut a = [0u8; 8];
+        a.copy_from_slice(bytes);
+        Ok(u64::from_le_bytes(a))
+    };
+    let name_offset = read_u64(0)?;
+    let size = read_u64(16)?;
+    let name_length = {
+        let bytes = slice.get(8..12).ok_or_else(|| AionError::InvalidFormat {
+            reason: "name_length out of bounds".to_string(),
+        })?;
+        let mut a = [0u8; 4];
+        a.copy_from_slice(bytes);
+        u32::from_le_bytes(a)
+    };
+    let hash_algorithm = {
+        let bytes = slice.get(12..14).ok_or_else(|| AionError::InvalidFormat {
+            reason: "hash_algorithm out of bounds".to_string(),
+        })?;
+        let mut a = [0u8; 2];
+        a.copy_from_slice(bytes);
+        u16::from_le_bytes(a)
+    };
+    let mut hash = [0u8; 32];
+    let hash_bytes = slice.get(24..56).ok_or_else(|| AionError::InvalidFormat {
+        reason: "hash bytes out of bounds".to_string(),
+    })?;
+    hash.copy_from_slice(hash_bytes);
+    Ok(ArtifactEntry {
+        name_offset,
+        name_length,
+        hash_algorithm,
+        reserved1: [0u8; 2],
+        size,
+        hash,
+        reserved2: [0u8; 72],
     })
 }
 
