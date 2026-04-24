@@ -377,6 +377,45 @@ pub fn verify_manifest_signature(
     verifying_key.verify(&message, &signature.signature)
 }
 
+/// Registry-aware manifest-signature verification — RFC-0034 Phase C.
+///
+/// Cross-checks `signature.public_key` against the active epoch for
+/// `(signature.author_id, at_version)` in `registry` before delegating
+/// to [`verify_manifest_signature`]. Rejects signatures made by keys
+/// that have been rotated out or revoked as of `at_version`.
+///
+/// Prefer this over [`verify_manifest_signature`] when you maintain
+/// a pinned registry of active keys per [`AuthorId`]; the raw-key
+/// form trusts the caller's out-of-band pinning.
+///
+/// # Errors
+///
+/// Returns `AionError::SignatureVerificationFailed { version: at_version, author }`
+/// if the registry has no active epoch for the signer at `at_version`,
+/// if the signature's embedded public key does not match that epoch,
+/// or if the underlying Ed25519 verification fails.
+pub fn verify_manifest_signature_with_registry(
+    manifest: &ArtifactManifest,
+    signature: &SignatureEntry,
+    registry: &crate::key_registry::KeyRegistry,
+    at_version: u64,
+) -> Result<()> {
+    let signer = AuthorId::new(signature.author_id);
+    let epoch = registry.active_epoch_at(signer, at_version).ok_or(
+        crate::AionError::SignatureVerificationFailed {
+            version: at_version,
+            author: signer,
+        },
+    )?;
+    if signature.public_key != epoch.public_key {
+        return Err(crate::AionError::SignatureVerificationFailed {
+            version: at_version,
+            author: signer,
+        });
+    }
+    verify_manifest_signature(manifest, signature)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -579,6 +618,76 @@ mod tests {
             let raw_signature = key.sign(m.manifest_id());
             let entry = SignatureEntry::new(signer, key.verifying_key().to_bytes(), raw_signature);
             assert!(verify_manifest_signature(&m, &entry).is_err());
+        }
+
+        #[hegel::test]
+        fn prop_manifest_registry_verify_accepts_active_epoch(tc: hegel::TestCase) {
+            use crate::key_registry::{sign_rotation_record, KeyRegistry};
+            let pairs = draw_artifacts(&tc);
+            let m = build_manifest(&pairs);
+            let signer =
+                AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1).max_value(1 << 32)));
+            let master = SigningKey::generate();
+            let op = SigningKey::generate();
+            let mut reg = KeyRegistry::new();
+            reg.register_author(signer, master.verifying_key(), op.verifying_key(), 0)
+                .unwrap_or_else(|_| std::process::abort());
+            let sig = sign_manifest(&m, signer, &op);
+            let at = tc.draw(gs::integers::<u64>().min_value(1).max_value(1 << 20));
+            assert!(verify_manifest_signature_with_registry(&m, &sig, &reg, at).is_ok());
+            let _ = sign_rotation_record; // keep import live in all test configs
+        }
+
+        #[hegel::test]
+        fn prop_manifest_registry_verify_rejects_rotated_out_key(tc: hegel::TestCase) {
+            use crate::key_registry::{sign_rotation_record, KeyRegistry};
+            let pairs = draw_artifacts(&tc);
+            let m = build_manifest(&pairs);
+            let signer =
+                AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1).max_value(1 << 32)));
+            let master = SigningKey::generate();
+            let op0 = SigningKey::generate();
+            let op1 = SigningKey::generate();
+            let mut reg = KeyRegistry::new();
+            reg.register_author(signer, master.verifying_key(), op0.verifying_key(), 0)
+                .unwrap_or_else(|_| std::process::abort());
+            let effective = tc.draw(gs::integers::<u64>().min_value(1).max_value(1 << 20));
+            let rotation = sign_rotation_record(
+                signer,
+                0,
+                1,
+                op1.verifying_key().to_bytes(),
+                effective,
+                &master,
+            );
+            reg.apply_rotation(&rotation)
+                .unwrap_or_else(|_| std::process::abort());
+            // Sign the manifest with the rotated-OUT op0 key.
+            let sig = sign_manifest(&m, signer, &op0);
+            let v_after = effective.saturating_add(1);
+            assert!(verify_manifest_signature_with_registry(&m, &sig, &reg, v_after).is_err());
+        }
+
+        #[hegel::test]
+        fn prop_manifest_registry_verify_rejects_pubkey_substitution(tc: hegel::TestCase) {
+            use crate::key_registry::KeyRegistry;
+            let pairs = draw_artifacts(&tc);
+            let m = build_manifest(&pairs);
+            let signer =
+                AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1).max_value(1 << 32)));
+            let master = SigningKey::generate();
+            let op = SigningKey::generate();
+            let mut reg = KeyRegistry::new();
+            reg.register_author(signer, master.verifying_key(), op.verifying_key(), 0)
+                .unwrap_or_else(|_| std::process::abort());
+            // Attacker mints a valid-shaped key and signs under the target AuthorId.
+            let attacker = SigningKey::generate();
+            let sig = sign_manifest(&m, signer, &attacker);
+            let at = tc.draw(gs::integers::<u64>().min_value(1).max_value(1 << 20));
+            // Raw-key verify would PASS (attacker's sig is bit-valid under attacker's pubkey)
+            // but registry-aware verify must REJECT.
+            assert!(verify_manifest_signature(&m, &sig).is_ok());
+            assert!(verify_manifest_signature_with_registry(&m, &sig, &reg, at).is_err());
         }
     }
 }

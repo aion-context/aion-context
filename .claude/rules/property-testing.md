@@ -174,6 +174,16 @@ blocks on a drop.
 | `src/release.rs`                | OCI referrer subjects link to primary digest                   |
 | `src/release.rs`                | AIBOM model hash matches the manifest's primary entry hash     |
 | `src/release.rs`                | log has exactly three entries with expected kinds in order     |
+| `src/manifest.rs`               | RFC-0034 registry verify accepts signature under active epoch  |
+| `src/manifest.rs`               | RFC-0034 registry verify rejects signature from rotated-out key |
+| `src/manifest.rs`               | RFC-0034 registry verify rejects `public_key` substitution     |
+| `src/dsse.rs`                   | RFC-0034 envelope registry verify accepts pinned signer        |
+| `src/dsse.rs`                   | RFC-0034 envelope registry verify rejects unregistered signer  |
+| `src/dsse.rs`                   | RFC-0034 envelope registry verify rejects revoked signer       |
+| `src/hw_attestation.rs`         | RFC-0034 registry verify accepts freshly-bound key             |
+| `src/hw_attestation.rs`         | RFC-0034 registry verify rejects binding signed by wrong master |
+| `src/release.rs`                | RFC-0034 `verify_with_registry` accepts a pinned release       |
+| `src/release.rs`                | RFC-0034 `verify_with_registry` rejects rotated-out signer     |
 
 ## Tier 3 (model / stateful — required once the audit chain is stable)
 

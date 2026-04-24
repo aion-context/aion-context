@@ -236,6 +236,37 @@ where
     Ok(verified)
 }
 
+/// Registry-aware DSSE envelope verification — RFC-0034 Phase C.
+///
+/// For each distinct keyid in `envelope`, this resolves the signer
+/// via [`author_from_keyid`] and looks up the active epoch at
+/// `at_version` in `registry`. A signer whose keyid does not parse
+/// as a well-formed aion keyid, or who has no active epoch at
+/// `at_version`, causes the whole envelope to fail. The verifying
+/// key used for each signature is the one pinned in the registry —
+/// **not** a raw key passed in by the caller.
+///
+/// Returns the distinct keyids of verified signatures in envelope
+/// order (same dedup semantics as [`verify_envelope`]).
+///
+/// # Errors
+///
+/// Returns `Err` if the envelope has zero signatures, if any keyid
+/// parses as a non-aion form, if any pinned signer has no active
+/// epoch at `at_version`, or if any signature fails Ed25519
+/// verification under the pinned key.
+pub fn verify_envelope_with_registry(
+    envelope: &DsseEnvelope,
+    registry: &crate::key_registry::KeyRegistry,
+    at_version: u64,
+) -> Result<Vec<String>> {
+    verify_envelope(envelope, |keyid| {
+        let author = author_from_keyid(keyid).ok()?;
+        let epoch = registry.active_epoch_at(author, at_version)?;
+        VerifyingKey::from_bytes(&epoch.public_key).ok()
+    })
+}
+
 impl DsseEnvelope {
     /// Serialise to canonical DSSE JSON.
     ///
@@ -596,6 +627,68 @@ mod tests {
             body_a.push(0);
             body_b.push(1);
             assert_ne!(pae(&ptype, &body_a), pae(&ptype, &body_b));
+        }
+
+        #[hegel::test]
+        fn prop_dsse_registry_verify_accepts_pinned_signer(tc: hegel::TestCase) {
+            use crate::key_registry::KeyRegistry;
+            let payload = tc.draw(gs::binary().max_size(512));
+            let ptype = tc.draw(gs::text().min_size(1).max_size(32));
+            let signer =
+                AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1).max_value(1 << 32)));
+            let master = SigningKey::generate();
+            let op = SigningKey::generate();
+            let mut reg = KeyRegistry::new();
+            reg.register_author(signer, master.verifying_key(), op.verifying_key(), 0)
+                .unwrap_or_else(|_| std::process::abort());
+            let env = sign_envelope(&payload, &ptype, signer, &op);
+            let at = tc.draw(gs::integers::<u64>().min_value(1).max_value(1 << 20));
+            let verified = verify_envelope_with_registry(&env, &reg, at)
+                .unwrap_or_else(|_| std::process::abort());
+            assert_eq!(verified.len(), 1);
+            assert_eq!(verified[0], keyid_for(signer));
+        }
+
+        #[hegel::test]
+        fn prop_dsse_registry_verify_rejects_unknown_signer(tc: hegel::TestCase) {
+            use crate::key_registry::KeyRegistry;
+            let payload = tc.draw(gs::binary().max_size(256));
+            let ptype = tc.draw(gs::text().min_size(1).max_size(32));
+            let signer =
+                AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1).max_value(1 << 32)));
+            let op = SigningKey::generate();
+            // Registry is empty — `signer` is not registered.
+            let reg = KeyRegistry::new();
+            let env = sign_envelope(&payload, &ptype, signer, &op);
+            let at = tc.draw(gs::integers::<u64>().min_value(1).max_value(1 << 20));
+            assert!(verify_envelope_with_registry(&env, &reg, at).is_err());
+        }
+
+        #[hegel::test]
+        fn prop_dsse_registry_verify_rejects_revoked_signer(tc: hegel::TestCase) {
+            use crate::key_registry::{sign_revocation_record, KeyRegistry, RevocationReason};
+            let payload = tc.draw(gs::binary().max_size(256));
+            let ptype = tc.draw(gs::text().min_size(1).max_size(32));
+            let signer =
+                AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1).max_value(1 << 32)));
+            let master = SigningKey::generate();
+            let op = SigningKey::generate();
+            let mut reg = KeyRegistry::new();
+            reg.register_author(signer, master.verifying_key(), op.verifying_key(), 0)
+                .unwrap_or_else(|_| std::process::abort());
+            let effective = tc.draw(gs::integers::<u64>().min_value(1).max_value(1 << 20));
+            let revocation = sign_revocation_record(
+                signer,
+                0,
+                RevocationReason::Compromised,
+                effective,
+                &master,
+            );
+            reg.apply_revocation(&revocation)
+                .unwrap_or_else(|_| std::process::abort());
+            let env = sign_envelope(&payload, &ptype, signer, &op);
+            let v_after = effective.saturating_add(1);
+            assert!(verify_envelope_with_registry(&env, &reg, v_after).is_err());
         }
     }
 }
