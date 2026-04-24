@@ -23,6 +23,7 @@
 //! ```
 //! use aion_context::manifest::{ArtifactManifestBuilder, sign_manifest, verify_manifest_signature};
 //! use aion_context::crypto::SigningKey;
+//! use aion_context::key_registry::KeyRegistry;
 //! use aion_context::types::AuthorId;
 //!
 //! let mut builder = ArtifactManifestBuilder::new();
@@ -33,9 +34,13 @@
 //! manifest.verify_artifact("model.bin", &weights).unwrap();
 //!
 //! let signer = AuthorId::new(1001);
+//! let master = SigningKey::generate();
 //! let key = SigningKey::generate();
+//! let mut registry = KeyRegistry::new();
+//! registry.register_author(signer, master.verifying_key(), key.verifying_key(), 0).unwrap();
+//!
 //! let sig = sign_manifest(&manifest, signer, &key);
-//! assert!(verify_manifest_signature(&manifest, &sig).is_ok());
+//! assert!(verify_manifest_signature(&manifest, &sig, &registry, 1).is_ok());
 //! ```
 
 use zerocopy::AsBytes;

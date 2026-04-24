@@ -15,17 +15,20 @@
 //! ```
 //! use aion_context::dsse::{sign_envelope, verify_envelope, AION_ATTESTATION_TYPE};
 //! use aion_context::crypto::SigningKey;
+//! use aion_context::key_registry::KeyRegistry;
 //! use aion_context::types::AuthorId;
 //!
 //! let payload = br#"{"_type":"https://aion-context.dev/attestation/v1"}"#;
 //! let signer = AuthorId::new(50001);
+//! let master = SigningKey::generate();
 //! let key = SigningKey::generate();
-//! let verifying = key.verifying_key();
+//! let mut registry = KeyRegistry::new();
+//! registry
+//!     .register_author(signer, master.verifying_key(), key.verifying_key(), 0)
+//!     .unwrap();
 //!
 //! let envelope = sign_envelope(payload, AION_ATTESTATION_TYPE, signer, &key);
-//! let verified = verify_envelope(&envelope, |keyid| {
-//!     if keyid == "aion:author:50001" { Some(verifying.clone()) } else { None }
-//! }).unwrap();
+//! let verified = verify_envelope(&envelope, &registry, 1).unwrap();
 //! assert_eq!(verified, vec!["aion:author:50001".to_string()]);
 //! ```
 
@@ -184,10 +187,12 @@ pub fn add_signature(envelope: &mut DsseEnvelope, signer: AuthorId, key: &Signin
     });
 }
 
-/// Verify every signature in `envelope` against the pinned
+/// Verify every envelope signature against the pinned registry — RFC-0023 / RFC-0034.
+///
+/// Each signature is checked against its signer's active epoch in
 /// [`KeyRegistry`](crate::key_registry::KeyRegistry) at
-/// `at_version`, returning the distinct keyids of verified
-/// signatures in envelope order — RFC-0023 / RFC-0034.
+/// `at_version`. Returns the distinct keyids of verified signatures
+/// in envelope order.
 ///
 /// For each distinct keyid the signer is resolved via
 /// [`author_from_keyid`] and cross-checked against the active

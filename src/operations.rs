@@ -795,9 +795,11 @@ fn check_temporal_ordering(versions: &[VersionEntry]) -> Vec<TemporalWarning> {
 ///
 /// ```no_run
 /// use aion_context::operations::verify_file;
+/// use aion_context::key_registry::KeyRegistry;
 /// use std::path::Path;
 ///
-/// let report = verify_file(Path::new("rules.aion"))?;
+/// let registry = KeyRegistry::new(); // pin authors before production use
+/// let report = verify_file(Path::new("rules.aion"), &registry)?;
 ///
 /// if report.is_valid {
 ///     println!("✅ File verified successfully");
@@ -1136,9 +1138,11 @@ pub fn show_version_history(path: &Path) -> Result<Vec<VersionInfo>> {
 ///
 /// ```no_run
 /// use aion_context::operations::show_signatures;
+/// use aion_context::key_registry::KeyRegistry;
 /// use std::path::Path;
 ///
-/// let signatures = show_signatures(Path::new("rules.aion"))?;
+/// let registry = KeyRegistry::new();
+/// let signatures = show_signatures(Path::new("rules.aion"), &registry)?;
 /// for sig in signatures {
 ///     let status = if sig.verified { "✓" } else { "✗" };
 ///     println!("{} Version {} signed by author {}",
@@ -1227,9 +1231,11 @@ pub fn show_signatures(
 ///
 /// ```no_run
 /// use aion_context::operations::show_file_info;
+/// use aion_context::key_registry::KeyRegistry;
 /// use std::path::Path;
 ///
-/// let info = show_file_info(Path::new("rules.aion"))?;
+/// let registry = KeyRegistry::new();
+/// let info = show_file_info(Path::new("rules.aion"), &registry)?;
 /// println!("File ID: 0x{:016x}", info.file_id);
 /// println!("Current version: {}/{}", info.current_version, info.version_count);
 /// # Ok::<(), Box<dyn std::error::Error>>(())
@@ -1399,7 +1405,7 @@ mod tests {
     use tempfile::TempDir;
 
     /// Build a registry pinning `author_id` at epoch 0 with `signing_key`.
-    /// Used by every test that calls verify_file / commit_version / show_signatures.
+    /// Used by every test that calls `verify_file` / `commit_version` / `show_signatures`.
     fn test_reg(author_id: AuthorId, signing_key: &SigningKey) -> KeyRegistry {
         let mut reg = KeyRegistry::new();
         let master = SigningKey::generate();
@@ -2422,7 +2428,7 @@ mod tests {
             .unwrap();
 
             // Show file info
-            let info = show_file_info(&file_path, &KeyRegistry::new()).unwrap();
+            let info = show_file_info(&file_path, &test_reg(author_id, &signing_key)).unwrap();
 
             assert_eq!(info.version_count, 2);
             assert_eq!(info.current_version, 2);
@@ -2542,7 +2548,7 @@ mod tests {
             init_file(&file_path, rules, &options).unwrap();
 
             // Verify file structure
-            let info = show_file_info(&file_path, &KeyRegistry::new()).unwrap();
+            let info = show_file_info(&file_path, &test_reg(author_id, &signing_key)).unwrap();
             assert_eq!(info.version_count, 1);
             assert_eq!(info.current_version, 1);
             assert_eq!(info.versions.len(), 1);

@@ -11,6 +11,7 @@
 #![allow(clippy::uninlined_format_args)]
 
 use aion_context::crypto::SigningKey;
+use aion_context::key_registry::KeyRegistry;
 use aion_context::operations::{
     commit_version, init_file, verify_file, CommitOptions, InitOptions,
 };
@@ -32,6 +33,22 @@ fn create_test_key() -> SigningKey {
 
 fn create_test_rules(size: usize) -> Vec<u8> {
     vec![0x42u8; size]
+}
+
+fn bench_registry(author_ids: &[u64], signing_key: &SigningKey) -> KeyRegistry {
+    let master = SigningKey::generate();
+    let mut registry = KeyRegistry::new();
+    for &id in author_ids {
+        registry
+            .register_author(
+                AuthorId::new(id),
+                master.verifying_key(),
+                signing_key.verifying_key(),
+                0,
+            )
+            .unwrap();
+    }
+    registry
 }
 
 // ============================================================================
@@ -81,6 +98,7 @@ fn bench_commit_version(c: &mut Criterion) {
     let mut group = c.benchmark_group("commit_version");
     let temp_dir = create_temp_dir();
     let signing_key = create_test_key();
+    let registry = bench_registry(&[1002], &signing_key);
 
     for size in [1024, 10_240, 102_400, 1_048_576].iter() {
         let initial_rules = create_test_rules(1024);
@@ -113,6 +131,7 @@ fn bench_commit_version(c: &mut Criterion) {
                         black_box(&file_path),
                         black_box(&new_rules),
                         black_box(&commit_options),
+                        black_box(&registry),
                     )
                     .unwrap();
 
@@ -136,6 +155,7 @@ fn bench_verify_file(c: &mut Criterion) {
     let mut group = c.benchmark_group("verify_file");
     let temp_dir = create_temp_dir();
     let signing_key = create_test_key();
+    let registry = bench_registry(&[1003], &signing_key);
 
     // Benchmark verification for files with different version counts
     for version_count in [1, 10, 100, 1000].iter() {
@@ -161,7 +181,7 @@ fn bench_verify_file(c: &mut Criterion) {
                 message: &format!("Version {}", i),
                 timestamp: None,
             };
-            commit_version(&file_path, &rules, &commit_options).unwrap();
+            commit_version(&file_path, &rules, &commit_options, &registry).unwrap();
         }
 
         group.bench_with_input(
@@ -169,7 +189,7 @@ fn bench_verify_file(c: &mut Criterion) {
             version_count,
             |b, _| {
                 b.iter(|| {
-                    let result = verify_file(black_box(&file_path)).unwrap();
+                    let result = verify_file(black_box(&file_path), black_box(&registry)).unwrap();
                     black_box(result);
                 });
             },
@@ -189,6 +209,7 @@ fn bench_verify_file(c: &mut Criterion) {
 fn bench_full_workflow(c: &mut Criterion) {
     let temp_dir = create_temp_dir();
     let signing_key = create_test_key();
+    let registry = bench_registry(&[1004], &signing_key);
     let rules = create_test_rules(10_240); // 10KB rules
 
     c.bench_function("full_workflow_init_commit_verify", |b| {
@@ -211,10 +232,10 @@ fn bench_full_workflow(c: &mut Criterion) {
                 message: "Update",
                 timestamp: None,
             };
-            commit_version(&file_path, &rules, &commit_options).unwrap();
+            commit_version(&file_path, &rules, &commit_options, &registry).unwrap();
 
             // Verify
-            let result = verify_file(&file_path).unwrap();
+            let result = verify_file(&file_path, &registry).unwrap();
             black_box(result);
 
             // Clean up
@@ -231,6 +252,7 @@ fn bench_sequential_commits(c: &mut Criterion) {
     let mut group = c.benchmark_group("sequential_commits");
     let temp_dir = create_temp_dir();
     let signing_key = create_test_key();
+    let registry = bench_registry(&[1005], &signing_key);
     let rules = create_test_rules(1024);
 
     for commit_count in [5, 10, 20, 50].iter() {
@@ -262,7 +284,7 @@ fn bench_sequential_commits(c: &mut Criterion) {
                                 message: &format!("Commit {}", i),
                                 timestamp: None,
                             };
-                            commit_version(&file_path, &rules, &commit_options).unwrap();
+                            commit_version(&file_path, &rules, &commit_options, &registry).unwrap();
                         }
 
                         // Clean up
