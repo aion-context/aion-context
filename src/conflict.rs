@@ -376,7 +376,8 @@ mod tests {
 
         assert!(has_conflict_markers(&merged));
 
-        let (parsed_local, parsed_remote) = parse_conflict_markers(&merged).unwrap();
+        let (parsed_local, parsed_remote) =
+            parse_conflict_markers(&merged).unwrap_or_else(|| std::process::abort());
         assert_eq!(parsed_local, local.to_vec());
         assert_eq!(parsed_remote, remote.to_vec());
     }

@@ -54,6 +54,9 @@ pub const LOG_NODE_DOMAIN: &[u8] = b"AION_V2_LOG_NODE_V1\0";
 /// Domain separator for signed tree heads.
 pub const LOG_STH_DOMAIN: &[u8] = b"AION_V2_LOG_STH_V1\0";
 
+/// Domain separator for the empty-tree sentinel root.
+pub const LOG_EMPTY_DOMAIN: &[u8] = b"AION_V2_LOG_EMPTY_V1\0";
+
 /// What kind of object is recorded in a log leaf.
 #[repr(u16)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -190,7 +193,7 @@ fn node_hash(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
 
 fn empty_root() -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
-    hasher.update(LOG_LEAF_DOMAIN);
+    hasher.update(LOG_EMPTY_DOMAIN);
     *hasher.finalize().as_bytes()
 }
 
