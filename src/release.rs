@@ -52,11 +52,9 @@ use crate::aibom::{
 use crate::crypto::{SigningKey, VerifyingKey};
 use crate::dsse::{self, DsseEnvelope, AION_MANIFEST_TYPE};
 use crate::key_registry::KeyRegistry;
-#[allow(deprecated)]
-// RFC-0034 Phase D: SignedRelease::verify wraps raw-key verify_manifest_signature
 use crate::manifest::{
-    sign_manifest, verify_manifest_signature, verify_manifest_signature_with_registry,
-    ArtifactEntry, ArtifactManifest, ArtifactManifestBuilder,
+    sign_manifest, verify_manifest_signature, ArtifactEntry, ArtifactManifest,
+    ArtifactManifestBuilder,
 };
 use crate::oci::{
     build_aion_manifest, build_attestation_manifest, AionConfig, OciArtifactManifest,
@@ -540,82 +538,22 @@ impl SignedRelease {
     ///
     /// Returns `Err` if any signature fails to verify, any OCI
     /// digest is inconsistent, or the AIBOM / SLSA linkages to the
-    /// manifest are broken.
-    ///
-    /// # Migration (RFC-0034)
-    ///
-    /// Prefer [`Self::verify_with_registry`] when you maintain a
-    /// pinned [`KeyRegistry`]. The raw-key form here trusts the
-    /// caller's out-of-band pinning.
-    #[deprecated(
-        since = "0.2.0",
-        note = "use SignedRelease::verify_with_registry; RFC-0034 — raw-key verify trusts the caller's out-of-band pinning"
-    )]
-    #[allow(deprecated)] // wraps raw-key verify_manifest_signature + verify_envelope
-    pub fn verify(&self, verifying_key: &VerifyingKey) -> Result<()> {
-        verify_manifest_signature(&self.manifest, &self.manifest_signature)?;
-        self.verify_dsse_envelopes(verifying_key)?;
-        self.verify_aibom_manifest_linkage()?;
-        verify_slsa_subjects_against_manifest(&self.slsa_statement, &self.manifest)?;
-        self.verify_oci_linkage()?;
-        self.verify_log_entry_kinds()?;
-        Ok(())
-    }
-
-    /// Registry-aware release verification — RFC-0034 Phase C.
-    ///
-    /// Resolves every signing key from `registry` at `at_version`
-    /// instead of trusting a raw `VerifyingKey`. Specifically:
-    ///
-    /// - The manifest signature is checked via
-    ///   [`verify_manifest_signature_with_registry`].
-    /// - Every DSSE envelope (manifest / AIBOM / SLSA) has its
-    ///   signer keyids resolved through the registry via
-    ///   [`crate::dsse::verify_envelope_with_registry`].
-    /// - AIBOM / SLSA / OCI linkage checks are byte-equality and
-    ///   unchanged from [`Self::verify`].
-    ///
-    /// # Errors
-    ///
-    /// Returns `Err` on the same conditions as [`Self::verify`],
-    /// plus `AionError::SignatureVerificationFailed` if the
-    /// registry has no active epoch for the release's signer at
-    /// `at_version`, or if any DSSE signer's pinned key does not
-    /// match the signature's embedded public key.
-    pub fn verify_with_registry(&self, registry: &KeyRegistry, at_version: u64) -> Result<()> {
-        verify_manifest_signature_with_registry(
+    /// manifest are broken. Resolves every signing key from
+    /// `registry` at `at_version`.
+    pub fn verify(&self, registry: &KeyRegistry, at_version: u64) -> Result<()> {
+        verify_manifest_signature(
             &self.manifest,
             &self.manifest_signature,
             registry,
             at_version,
         )?;
-        let _ = dsse::verify_envelope_with_registry(&self.manifest_dsse, registry, at_version)?;
-        let _ = dsse::verify_envelope_with_registry(&self.aibom_dsse, registry, at_version)?;
-        let _ = dsse::verify_envelope_with_registry(&self.slsa_dsse, registry, at_version)?;
+        let _ = dsse::verify_envelope(&self.manifest_dsse, registry, at_version)?;
+        let _ = dsse::verify_envelope(&self.aibom_dsse, registry, at_version)?;
+        let _ = dsse::verify_envelope(&self.slsa_dsse, registry, at_version)?;
         self.verify_aibom_manifest_linkage()?;
         verify_slsa_subjects_against_manifest(&self.slsa_statement, &self.manifest)?;
         self.verify_oci_linkage()?;
         self.verify_log_entry_kinds()?;
-        Ok(())
-    }
-
-    /// Verify every DSSE envelope under the signer's pinned key.
-    /// Any envelope carrying a keyid other than
-    /// `dsse::keyid_for(self.signer)` is rejected before the
-    /// Ed25519 verify runs.
-    #[allow(deprecated)] // wraps raw-key dsse::verify_envelope; only called from deprecated SignedRelease::verify
-    fn verify_dsse_envelopes(&self, verifying_key: &VerifyingKey) -> Result<()> {
-        let expected_keyid = dsse::keyid_for(self.signer);
-        let lookup = |keyid: &str| -> Option<VerifyingKey> {
-            if keyid == expected_keyid {
-                Some(*verifying_key)
-            } else {
-                None
-            }
-        };
-        let _ = dsse::verify_envelope(&self.manifest_dsse, lookup)?;
-        let _ = dsse::verify_envelope(&self.aibom_dsse, lookup)?;
-        let _ = dsse::verify_envelope(&self.slsa_dsse, lookup)?;
         Ok(())
     }
 

@@ -184,36 +184,32 @@ pub fn add_signature(envelope: &mut DsseEnvelope, signer: AuthorId, key: &Signin
     });
 }
 
-/// Verify every signature in `envelope`, returning the distinct
-/// keyids of verified signatures in envelope order.
+/// Verify every signature in `envelope` against the pinned
+/// [`KeyRegistry`](crate::key_registry::KeyRegistry) at
+/// `at_version`, returning the distinct keyids of verified
+/// signatures in envelope order — RFC-0023 / RFC-0034.
+///
+/// For each distinct keyid the signer is resolved via
+/// [`author_from_keyid`] and cross-checked against the active
+/// epoch in `registry`. A signer whose keyid does not parse as a
+/// well-formed aion keyid, or who has no active epoch at
+/// `at_version`, causes the whole envelope to fail.
 ///
 /// A given `keyid` contributes to the returned vector **at most
 /// once** even if the envelope carries multiple signature entries
-/// under the same keyid (RFC-0033 C6): callers counting
-/// `verified.len()` for quorum cannot be tricked into double-
-/// counting by a repeated signer. The second and subsequent
-/// entries for the same keyid are silently skipped.
+/// under the same keyid (RFC-0033 C6).
 ///
 /// # Errors
 ///
-/// Returns `Err` if the envelope carries zero signatures, if any
-/// signature lacks a pinned key under `key_for`, or if any signature
-/// fails to verify.
-///
-/// # Migration (RFC-0034)
-///
-/// Prefer [`verify_envelope_with_registry`] when you maintain a
-/// pinned [`crate::key_registry::KeyRegistry`]. The registry-aware
-/// path resolves every keyid through the registry instead of
-/// accepting caller-supplied bytes.
-#[deprecated(
-    since = "0.2.0",
-    note = "use verify_envelope_with_registry; RFC-0034 — the key_for closure trusts the caller's out-of-band pinning"
-)]
-pub fn verify_envelope<F>(envelope: &DsseEnvelope, key_for: F) -> Result<Vec<String>>
-where
-    F: Fn(&str) -> Option<VerifyingKey>,
-{
+/// Returns `Err` if the envelope has zero signatures, if any keyid
+/// parses as a non-aion form, if any signer has no active epoch
+/// at `at_version`, or if any signature fails Ed25519 verification
+/// under the pinned key.
+pub fn verify_envelope(
+    envelope: &DsseEnvelope,
+    registry: &crate::key_registry::KeyRegistry,
+    at_version: u64,
+) -> Result<Vec<String>> {
     if envelope.signatures.is_empty() {
         return Err(AionError::InvalidFormat {
             reason: "DSSE envelope has zero signatures".to_string(),
@@ -226,9 +222,18 @@ where
         if !seen.insert(sig_entry.keyid.as_str()) {
             continue;
         }
-        let verifying_key = key_for(&sig_entry.keyid).ok_or_else(|| AionError::InvalidFormat {
-            reason: format!("no pinned key for keyid: {}", sig_entry.keyid),
+        let author = author_from_keyid(&sig_entry.keyid).map_err(|_| AionError::InvalidFormat {
+            reason: format!("non-aion keyid cannot be resolved: {}", sig_entry.keyid),
         })?;
+        let epoch = registry
+            .active_epoch_at(author, at_version)
+            .ok_or_else(|| AionError::InvalidFormat {
+                reason: format!(
+                    "no active epoch at version {at_version} for keyid: {}",
+                    sig_entry.keyid
+                ),
+            })?;
+        let verifying_key = VerifyingKey::from_bytes(&epoch.public_key)?;
         let sig_bytes =
             sig_entry
                 .sig
@@ -245,38 +250,6 @@ where
         verified.push(sig_entry.keyid.clone());
     }
     Ok(verified)
-}
-
-/// Registry-aware DSSE envelope verification — RFC-0034 Phase C.
-///
-/// For each distinct keyid in `envelope`, this resolves the signer
-/// via [`author_from_keyid`] and looks up the active epoch at
-/// `at_version` in `registry`. A signer whose keyid does not parse
-/// as a well-formed aion keyid, or who has no active epoch at
-/// `at_version`, causes the whole envelope to fail. The verifying
-/// key used for each signature is the one pinned in the registry —
-/// **not** a raw key passed in by the caller.
-///
-/// Returns the distinct keyids of verified signatures in envelope
-/// order (same dedup semantics as [`verify_envelope`]).
-///
-/// # Errors
-///
-/// Returns `Err` if the envelope has zero signatures, if any keyid
-/// parses as a non-aion form, if any pinned signer has no active
-/// epoch at `at_version`, or if any signature fails Ed25519
-/// verification under the pinned key.
-#[allow(deprecated)] // delegates to raw-key verify_envelope as the final step of the 4-step algorithm
-pub fn verify_envelope_with_registry(
-    envelope: &DsseEnvelope,
-    registry: &crate::key_registry::KeyRegistry,
-    at_version: u64,
-) -> Result<Vec<String>> {
-    verify_envelope(envelope, |keyid| {
-        let author = author_from_keyid(keyid).ok()?;
-        let epoch = registry.active_epoch_at(author, at_version)?;
-        VerifyingKey::from_bytes(&epoch.public_key).ok()
-    })
 }
 
 impl DsseEnvelope {
@@ -656,8 +629,8 @@ mod tests {
                 .unwrap_or_else(|_| std::process::abort());
             let env = sign_envelope(&payload, &ptype, signer, &op);
             let at = tc.draw(gs::integers::<u64>().min_value(1).max_value(1 << 20));
-            let verified = verify_envelope_with_registry(&env, &reg, at)
-                .unwrap_or_else(|_| std::process::abort());
+            let verified =
+                verify_envelope(&env, &reg, at).unwrap_or_else(|_| std::process::abort());
             assert_eq!(verified.len(), 1);
             assert_eq!(verified[0], keyid_for(signer));
         }
@@ -674,7 +647,7 @@ mod tests {
             let reg = KeyRegistry::new();
             let env = sign_envelope(&payload, &ptype, signer, &op);
             let at = tc.draw(gs::integers::<u64>().min_value(1).max_value(1 << 20));
-            assert!(verify_envelope_with_registry(&env, &reg, at).is_err());
+            assert!(verify_envelope(&env, &reg, at).is_err());
         }
 
         #[hegel::test]
@@ -701,7 +674,7 @@ mod tests {
                 .unwrap_or_else(|_| std::process::abort());
             let env = sign_envelope(&payload, &ptype, signer, &op);
             let v_after = effective.saturating_add(1);
-            assert!(verify_envelope_with_registry(&env, &reg, v_after).is_err());
+            assert!(verify_envelope(&env, &reg, v_after).is_err());
         }
     }
 }

@@ -277,38 +277,12 @@ impl EvidenceVerifier for PubkeyPrefixEvidenceVerifier {
     }
 }
 
-/// Full verification: master signature **and** platform evidence.
+/// Registry-aware binding verification — RFC-0026 / RFC-0034.
 ///
-/// # Errors
-///
-/// Returns `Err` if the master signature fails or if the platform
-/// verifier rejects.
-///
-/// # Migration (RFC-0034)
-///
-/// Prefer [`verify_binding_with_registry`] when you maintain a
-/// pinned [`crate::key_registry::KeyRegistry`]. The registry-aware
-/// path also cross-checks the binding's `epoch` and `public_key`
-/// against the active epoch.
-#[deprecated(
-    since = "0.2.0",
-    note = "use verify_binding_with_registry; RFC-0034 — raw-key verify trusts the caller's master key"
-)]
-pub fn verify_binding<V: EvidenceVerifier>(
-    binding: &KeyAttestationBinding,
-    master_verifying_key: &VerifyingKey,
-    verifier: &V,
-) -> Result<()> {
-    verify_binding_signature(binding, master_verifying_key)?;
-    verifier.verify(&binding.evidence, &binding.public_key)
-}
-
-/// Registry-aware binding verification — RFC-0034 Phase C.
-///
-/// Uses the registered master key for `binding.author_id` to check
-/// the master signature and cross-checks `binding.public_key` /
-/// `binding.epoch` against the active epoch for the author at
-/// `at_version`. Then runs the caller-supplied platform evidence
+/// Uses the registered master key for `binding.author_id` to
+/// check the master signature, cross-checks `binding.public_key`
+/// / `binding.epoch` against the active epoch for the author at
+/// `at_version`, then runs the caller-supplied platform evidence
 /// verifier.
 ///
 /// # Errors
@@ -319,8 +293,7 @@ pub fn verify_binding<V: EvidenceVerifier>(
 /// epoch do not match that active epoch. Returns the underlying
 /// error shape if the master signature fails, or if the platform
 /// verifier rejects.
-#[allow(deprecated)] // delegates to raw-key verify_binding as the final step of the 4-step algorithm
-pub fn verify_binding_with_registry<V: EvidenceVerifier>(
+pub fn verify_binding<V: EvidenceVerifier>(
     binding: &KeyAttestationBinding,
     registry: &crate::key_registry::KeyRegistry,
     at_version: u64,
@@ -345,7 +318,8 @@ pub fn verify_binding_with_registry<V: EvidenceVerifier>(
             author: signer,
         });
     }
-    verify_binding(binding, master, verifier)
+    verify_binding_signature(binding, master)?;
+    verifier.verify(&binding.evidence, &binding.public_key)
 }
 
 #[cfg(test)]
@@ -711,7 +685,7 @@ mod tests {
             };
             let binding = sign_binding(author, 0, op.verifying_key().to_bytes(), evidence, &master);
             let at = tc.draw(gs::integers::<u64>().min_value(1).max_value(1 << 20));
-            verify_binding_with_registry(&binding, &reg, at, &AcceptAllEvidenceVerifier)
+            verify_binding(&binding, &reg, at, &AcceptAllEvidenceVerifier)
                 .unwrap_or_else(|_| std::process::abort());
         }
 
@@ -742,10 +716,7 @@ mod tests {
                 &imposter_master,
             );
             let at = tc.draw(gs::integers::<u64>().min_value(1).max_value(1 << 20));
-            assert!(
-                verify_binding_with_registry(&binding, &reg, at, &AcceptAllEvidenceVerifier)
-                    .is_err()
-            );
+            assert!(verify_binding(&binding, &reg, at, &AcceptAllEvidenceVerifier).is_err());
         }
     }
 }

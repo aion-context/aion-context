@@ -352,10 +352,12 @@ fn build_new_version_and_signature(
     (new_version_entry, signature_entry)
 }
 
-/// Verify all existing signatures in the file
+/// Verify all existing signatures in the file against a pinned registry.
 #[allow(clippy::cast_possible_truncation)] // File counts fit in usize
-#[allow(deprecated)] // RFC-0034 Phase D: wraps raw-key verify_signature; Phase E adds a _with_registry variant
-fn verify_existing_signatures(parser: &AionParser<'_>) -> Result<()> {
+fn verify_existing_signatures(
+    parser: &AionParser<'_>,
+    registry: &crate::key_registry::KeyRegistry,
+) -> Result<()> {
     let header = parser.header();
     let version_count = header.version_chain_count as usize;
     let signature_count = header.signatures_count as usize;
@@ -373,7 +375,7 @@ fn verify_existing_signatures(parser: &AionParser<'_>) -> Result<()> {
     for i in 0..version_count {
         let version = parser.get_version_entry(i)?;
         let signature = parser.get_signature_entry(i)?;
-        verify_signature(&version, &signature)?;
+        verify_signature(&version, &signature, registry)?;
     }
 
     Ok(())
@@ -807,33 +809,9 @@ fn check_temporal_ordering(versions: &[VersionEntry]) -> Vec<TemporalWarning> {
 /// }
 /// # Ok::<(), aion_context::AionError>(())
 /// ```
-pub fn verify_file(path: &Path) -> Result<VerificationReport> {
-    verify_file_inner(path, None)
-}
-
-/// Registry-aware file verification — Issue #17 / RFC-0034 Phase C.
-///
-/// Same shape as [`verify_file`], but every (version, signature)
-/// pair must also resolve through `registry` at its signed
-/// version number. Rejects signatures whose embedded `public_key`
-/// does not match the active epoch for the signer, and signatures
-/// signed under rotated-out or revoked keys.
-///
-/// # Errors
-///
-/// Same as [`verify_file`]: structural / I/O errors surface as
-/// `Err(_)`; verification failures are captured in the returned
-/// [`VerificationReport`].
-pub fn verify_file_with_registry(
+pub fn verify_file(
     path: &Path,
     registry: &crate::key_registry::KeyRegistry,
-) -> Result<VerificationReport> {
-    verify_file_inner(path, Some(registry))
-}
-
-fn verify_file_inner(
-    path: &Path,
-    registry: Option<&crate::key_registry::KeyRegistry>,
 ) -> Result<VerificationReport> {
     let file_bytes = std::fs::read(path).map_err(|e| AionError::FileReadError {
         path: path.to_path_buf(),
@@ -867,17 +845,7 @@ fn verify_file_inner(
         return Ok(report);
     };
 
-    let sig_result = registry.map_or_else(
-        || verify_signatures_batch(&versions, &signatures),
-        |reg| {
-            crate::signature_chain::verify_signatures_batch_with_registry(
-                &versions,
-                &signatures,
-                reg,
-            )
-        },
-    );
-    match sig_result {
+    match verify_signatures_batch(&versions, &signatures, registry) {
         Ok(()) => report.signatures_valid = true,
         Err(e) => report
             .errors

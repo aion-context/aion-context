@@ -464,7 +464,7 @@ fn cmd_verify(args: &VerifyArgs) -> Result<()> {
                         .as_ref()
                         .map_or("<unset>", |p| p.to_str().unwrap_or("<invalid path>"))
                 );
-                aion_context::operations::verify_file_with_registry(&args.path, reg)
+                aion_context::operations::verify_file(&args.path, reg)
             },
         )
         .with_context(|| format!("Failed to verify file: {}", args.path.display()))?;
@@ -602,7 +602,7 @@ fn show_signatures_subcommand(args: &ShowArgs) -> Result<()> {
     let signatures = match args.registry.as_deref() {
         Some(path) => {
             let registry = load_registry_from_path(path)?;
-            aion_context::operations::show_signatures_with_registry(&args.path, &registry)?
+            aion_context::operations::show_signatures(&args.path, &registry)?
         }
         None => show_signatures(&args.path)?,
     };
