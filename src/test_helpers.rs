@@ -38,8 +38,8 @@
 //! #[test]
 //! fn test_reproducible_behavior() {
 //!     // Same seed produces same results
-//!     let key1 = TestKeyPair::from_seed(12345);
-//!     let key2 = TestKeyPair::from_seed(12345);
+//!     let key1 = TestKeyPair::from_seed(12345)?;
+//!     let key2 = TestKeyPair::from_seed(12345)?;
 //!     
 //!     let data1 = test_data(12345, 1024);
 //!     let data2 = test_data(12345, 1024);
@@ -106,21 +106,26 @@ impl TestKeyPair {
         Self { signing, verifying }
     }
 
-    /// Generate a deterministic keypair from a seed
+    /// Generate a deterministic keypair from a seed.
     ///
     /// Useful for reproducible tests.
-    #[must_use]
-    pub fn from_seed(seed: u64) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `SigningKey::from_bytes` rejects the
+    /// derived 32 bytes. Ed25519 accepts any 32-byte input as a
+    /// seed, so in normal operation this branch is unreachable;
+    /// the fallible signature exists so downstream callers
+    /// compiling with `feature = "test-helpers"` do not inherit
+    /// a library-level panic (RFC-0033 C1).
+    pub fn from_seed(seed: u64) -> crate::Result<Self> {
         let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
         let mut key_bytes = [0u8; 32];
         rand::RngCore::fill_bytes(&mut rng, &mut key_bytes);
 
-        // Note: This panic is acceptable in test code
-        #[allow(clippy::panic)]
-        let signing = SigningKey::from_bytes(&key_bytes)
-            .unwrap_or_else(|_| panic!("Failed to create key from seed {seed}"));
+        let signing = SigningKey::from_bytes(&key_bytes)?;
         let verifying = signing.verifying_key();
-        Self { signing, verifying }
+        Ok(Self { signing, verifying })
     }
 
     /// Sign a message with this keypair
@@ -305,8 +310,8 @@ mod tests {
 
         #[test]
         fn should_generate_deterministic_keypair_from_seed() {
-            let kp1 = TestKeyPair::from_seed(12345);
-            let kp2 = TestKeyPair::from_seed(12345);
+            let kp1 = TestKeyPair::from_seed(12345).unwrap_or_else(|_| std::process::abort());
+            let kp2 = TestKeyPair::from_seed(12345).unwrap_or_else(|_| std::process::abort());
 
             // Same seed should produce same keypair
             assert_eq!(kp1.signing.to_bytes(), kp2.signing.to_bytes());
