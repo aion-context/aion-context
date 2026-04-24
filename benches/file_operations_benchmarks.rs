@@ -299,6 +299,60 @@ fn bench_sequential_commits(c: &mut Criterion) {
     group.finish();
 }
 
+/// Issue #35 — chain build scaling.
+///
+/// Pre-#35 the per-op cost grew linearly with the chain length
+/// (because `commit_version` re-verified every prior signature),
+/// yielding O(n²) total build cost: N=1000 took ~15.5 s.
+///
+/// Post-#35 with head-only verify, the per-op cost is dominated by
+/// file I/O (each commit reads + writes the whole file), so it
+/// still grows mildly with N — but the crypto sweep is gone.
+/// Reading the curve below: per-op time should be nearly flat
+/// across these N values; if it grows linearly with N, the O(n²)
+/// regression has returned.
+fn bench_chain_build_scaling(c: &mut Criterion) {
+    let mut group = c.benchmark_group("chain_build_scaling");
+    let temp_dir = create_temp_dir();
+    let signing_key = create_test_key();
+    let registry = bench_registry(&[1006], &signing_key);
+    let rules = create_test_rules(1024);
+
+    for chain_len in [100u64, 500, 1000].iter() {
+        group.bench_with_input(BenchmarkId::from_parameter(chain_len), chain_len, |b, _| {
+            b.iter_batched(
+                || {
+                    let file_path = temp_dir
+                        .path()
+                        .join(format!("chain_scale_{}.aion", chain_len));
+                    let init_options = InitOptions {
+                        author_id: AuthorId::new(1006),
+                        signing_key: &signing_key,
+                        message: "v1",
+                        timestamp: None,
+                    };
+                    init_file(&file_path, &rules, &init_options).unwrap();
+                    file_path
+                },
+                |file_path| {
+                    for _ in 2..=*chain_len {
+                        let commit_options = CommitOptions {
+                            author_id: AuthorId::new(1006),
+                            signing_key: &signing_key,
+                            message: "amend",
+                            timestamp: None,
+                        };
+                        commit_version(&file_path, &rules, &commit_options, &registry).unwrap();
+                    }
+                    std::fs::remove_file(&file_path).unwrap();
+                },
+                criterion::BatchSize::SmallInput,
+            );
+        });
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_init_file,
@@ -306,6 +360,7 @@ criterion_group!(
     bench_verify_file,
     bench_full_workflow,
     bench_sequential_commits,
+    bench_chain_build_scaling,
 );
 
 criterion_main!(benches);
