@@ -179,7 +179,7 @@ fn build_report(
     };
 
     Ok(ComplianceReport {
-        title: format!("{} Compliance Report", framework),
+        title: format!("{framework} Compliance Report"),
         framework: framework.to_string(),
         generated_at,
         file_path: path.display().to_string(),
@@ -697,10 +697,7 @@ fn format_unix_timestamp(secs: u64) -> String {
     // Days since 1970-01-01
     let (year, month, day) = days_to_ymd(days);
 
-    format!(
-        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
-        year, month, day, hours, minutes, seconds
-    )
+    format!("{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}Z")
 }
 
 /// Convert nanoseconds timestamp to ISO 8601
@@ -743,7 +740,7 @@ fn days_to_ymd(days: u64) -> (u64, u64, u64) {
     (year, month, day)
 }
 
-fn is_leap_year(year: u64) -> bool {
+const fn is_leap_year(year: u64) -> bool {
     (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
 }
 

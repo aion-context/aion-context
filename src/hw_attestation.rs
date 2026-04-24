@@ -559,7 +559,7 @@ mod tests {
             assert!(verify_binding_signature(&b1, &master.verifying_key()).is_err());
 
             // Tamper epoch.
-            let mut b2 = binding.clone();
+            let mut b2 = binding;
             b2.epoch = epoch.saturating_add(1);
             assert!(verify_binding_signature(&b2, &master.verifying_key()).is_err());
         }

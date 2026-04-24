@@ -458,17 +458,21 @@ fn parse_encrypted_key_blob(encrypted_data: &[u8]) -> Result<ParsedEncryptedKey<
             ),
         });
     }
-    let magic = encrypted_data.get(0..4).ok_or(AionError::InvalidFormat {
-        reason: "missing magic".to_string(),
-    })?;
+    let magic = encrypted_data
+        .get(0..4)
+        .ok_or_else(|| AionError::InvalidFormat {
+            reason: "missing magic".to_string(),
+        })?;
     if magic != EXPORT_MAGIC {
         return Err(AionError::InvalidFormat {
             reason: "invalid key file magic".to_string(),
         });
     }
-    let version = *encrypted_data.get(4).ok_or(AionError::InvalidFormat {
-        reason: "missing version byte".to_string(),
-    })?;
+    let version = *encrypted_data
+        .get(4)
+        .ok_or_else(|| AionError::InvalidFormat {
+            reason: "missing version byte".to_string(),
+        })?;
     if version != EXPORT_VERSION {
         return Err(AionError::InvalidFormat {
             reason: format!("unsupported key file version: {version} (expected: {EXPORT_VERSION})"),
@@ -478,19 +482,19 @@ fn parse_encrypted_key_blob(encrypted_data: &[u8]) -> Result<ParsedEncryptedKey<
     let salt: [u8; SALT_SIZE] = encrypted_data
         .get(5..salt_end)
         .and_then(|s| s.try_into().ok())
-        .ok_or(AionError::InvalidFormat {
+        .ok_or_else(|| AionError::InvalidFormat {
             reason: "invalid salt".to_string(),
         })?;
     let nonce_end = salt_end.saturating_add(12);
     let nonce: [u8; 12] = encrypted_data
         .get(salt_end..nonce_end)
         .and_then(|s| s.try_into().ok())
-        .ok_or(AionError::InvalidFormat {
+        .ok_or_else(|| AionError::InvalidFormat {
             reason: "invalid nonce".to_string(),
         })?;
     let ciphertext = encrypted_data
         .get(nonce_end..)
-        .ok_or(AionError::InvalidFormat {
+        .ok_or_else(|| AionError::InvalidFormat {
             reason: "missing ciphertext".to_string(),
         })?;
     Ok(ParsedEncryptedKey {

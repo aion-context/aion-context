@@ -641,9 +641,11 @@ pub fn create_child_version(
 /// assert!(verify_hash_chain(&versions).is_ok());
 /// ```
 pub fn verify_hash_chain(versions: &[VersionEntry]) -> Result<()> {
-    let genesis = versions.first().ok_or(crate::AionError::InvalidFormat {
-        reason: "Version chain is empty".to_string(),
-    })?;
+    let genesis = versions
+        .first()
+        .ok_or_else(|| crate::AionError::InvalidFormat {
+            reason: "Version chain is empty".to_string(),
+        })?;
     verify_genesis_version(genesis)?;
     verify_chain_links(versions)
 }
@@ -668,10 +670,7 @@ fn verify_genesis_version(genesis: &VersionEntry) -> Result<()> {
 
 fn verify_chain_links(versions: &[VersionEntry]) -> Result<()> {
     for pair in versions.windows(2) {
-        let (parent, current) = match pair {
-            [p, c] => (p, c),
-            _ => continue,
-        };
+        let [parent, current] = pair else { continue };
         let expected_version =
             parent
                 .version_number

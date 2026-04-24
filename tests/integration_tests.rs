@@ -535,8 +535,8 @@ fn test_rapid_sequential_commits() {
 
     // Rapid sequential commits
     for i in 2..=10 {
-        let msg = format!("v{}", i);
-        let rules = format!("rules version {}", i).into_bytes();
+        let msg = format!("v{i}");
+        let rules = format!("rules version {i}").into_bytes();
         let commit_options = create_commit_options(9008, &signing_key, &msg);
         commit_version(&file_path, &rules, &commit_options).expect("Commit failed");
     }
@@ -562,9 +562,9 @@ fn test_many_authors_sequential() {
 
     // Each author commits in sequence
     for i in 1..5 {
-        let msg = format!("Author {} commit", i);
+        let msg = format!("Author {i} commit");
         let commit_options = create_commit_options(author_ids[i], &keys[i], &msg);
-        let rules = format!("rules from author {}", i).into_bytes();
+        let rules = format!("rules from author {i}").into_bytes();
         commit_version(&file_path, &rules, &commit_options).expect("Commit failed");
     }
 

@@ -8,7 +8,7 @@
 //! `application/vnd.aion.aibom.v1+json`.
 //!
 //! Phase A: aion-native schema. Phase B: bi-directional
-//! translation to/from SPDX 3.0 AI profile and CycloneDX 1.6 ML.
+//! translation to/from SPDX 3.0 AI profile and `CycloneDX` 1.6 ML.
 //!
 //! # Example
 //!
@@ -197,7 +197,7 @@ impl AiBom {
     /// Start building a new AIBOM for `model` at
     /// `created_at_version`.
     #[must_use]
-    pub fn builder(model: ModelRef, created_at_version: u64) -> AiBomBuilder {
+    pub const fn builder(model: ModelRef, created_at_version: u64) -> AiBomBuilder {
         AiBomBuilder {
             model,
             frameworks: Vec::new(),
@@ -511,7 +511,7 @@ mod tests {
         let verifying = key.verifying_key();
         let env = wrap_aibom_dsse(&aibom, signer, &key).unwrap();
         assert_eq!(env.payload_type, AIBOM_PAYLOAD_TYPE);
-        let verified = verify_envelope(&env, |_| Some(verifying.clone())).unwrap();
+        let verified = verify_envelope(&env, |_| Some(verifying)).unwrap();
         assert_eq!(verified.len(), 1);
         let back = unwrap_aibom_dsse(&env).unwrap();
         assert_eq!(back, aibom);
@@ -611,7 +611,7 @@ mod tests {
             let verifying = key.verifying_key();
             let env =
                 wrap_aibom_dsse(&aibom, signer, &key).unwrap_or_else(|_| std::process::abort());
-            let verified = verify_envelope(&env, |_| Some(verifying.clone()))
+            let verified = verify_envelope(&env, |_| Some(verifying))
                 .unwrap_or_else(|_| std::process::abort());
             assert_eq!(verified.len(), 1);
             let back = unwrap_aibom_dsse(&env).unwrap_or_else(|_| std::process::abort());
@@ -631,7 +631,7 @@ mod tests {
             if let Some(b) = env.payload.get_mut(idx) {
                 *b ^= 0x01;
             }
-            let result = verify_envelope(&env, |_| Some(verifying.clone()));
+            let result = verify_envelope(&env, |_| Some(verifying));
             assert!(result.is_err());
         }
 
@@ -655,7 +655,7 @@ mod tests {
                 [(dsse::keyid_for(s1.0), k1), (dsse::keyid_for(s2.0), k2)]
                     .into_iter()
                     .collect();
-            let verified = verify_envelope(&env, |keyid| lookup.get(keyid).cloned())
+            let verified = verify_envelope(&env, |keyid| lookup.get(keyid).copied())
                 .unwrap_or_else(|_| std::process::abort());
             assert_eq!(verified.len(), 2);
         }

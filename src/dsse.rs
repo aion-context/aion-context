@@ -117,7 +117,7 @@ pub struct DsseEnvelope {
     /// Raw payload bytes; JSON encodes/decodes as base64.
     #[serde(with = "base64_bytes")]
     pub payload: Vec<u8>,
-    /// All signatures bound to the (payload_type, payload) tuple.
+    /// All signatures bound to the (`payload_type`, payload) tuple.
     pub signatures: Vec<DsseSignature>,
 }
 
@@ -382,8 +382,8 @@ mod tests {
         let signer = AuthorId::new(7);
         let envelope = sign_envelope(b"hello world", "text/plain", signer, &key);
         let verified = verify_envelope(&envelope, |keyid| {
-            if keyid == &keyid_for(signer) {
-                Some(verifying.clone())
+            if keyid == keyid_for(signer) {
+                Some(verifying)
             } else {
                 None
             }
@@ -399,7 +399,7 @@ mod tests {
         let signer = AuthorId::new(7);
         let mut envelope = sign_envelope(b"hello", "text/plain", signer, &key);
         envelope.payload[0] ^= 0x01;
-        let result = verify_envelope(&envelope, |_| Some(verifying.clone()));
+        let result = verify_envelope(&envelope, |_| Some(verifying));
         assert!(result.is_err());
     }
 
@@ -412,10 +412,10 @@ mod tests {
         let mut env = sign_envelope(b"payload", "text/plain", s1.0, &s1.1);
         add_signature(&mut env, s2.0, &s2.1);
         let verified = verify_envelope(&env, |keyid| {
-            if keyid == &keyid_for(s1.0) {
-                Some(k1.clone())
-            } else if keyid == &keyid_for(s2.0) {
-                Some(k2.clone())
+            if keyid == keyid_for(s1.0) {
+                Some(k1)
+            } else if keyid == keyid_for(s2.0) {
+                Some(k2)
             } else {
                 None
             }
@@ -467,8 +467,8 @@ mod tests {
             let verifying = key.verifying_key();
             let env = sign_envelope(&payload, &ptype, signer, &key);
             let verified = verify_envelope(&env, |keyid| {
-                if keyid == &keyid_for(signer) {
-                    Some(verifying.clone())
+                if keyid == keyid_for(signer) {
+                    Some(verifying)
                 } else {
                     None
                 }
@@ -490,7 +490,7 @@ mod tests {
             if let Some(byte) = env.payload.get_mut(idx) {
                 *byte ^= 0x01;
             }
-            let result = verify_envelope(&env, |_| Some(verifying.clone()));
+            let result = verify_envelope(&env, |_| Some(verifying));
             assert!(result.is_err());
         }
 
@@ -503,7 +503,7 @@ mod tests {
             let verifying = key.verifying_key();
             let mut env = sign_envelope(&payload, &ptype, signer, &key);
             env.payload_type.push('!');
-            let result = verify_envelope(&env, |_| Some(verifying.clone()));
+            let result = verify_envelope(&env, |_| Some(verifying));
             assert!(result.is_err());
         }
 
@@ -551,7 +551,7 @@ mod tests {
                 .iter()
                 .map(|(who, key)| (keyid_for(*who), key.verifying_key()))
                 .collect();
-            let verified = verify_envelope(&env, |keyid| lookup.get(keyid).cloned())
+            let verified = verify_envelope(&env, |keyid| lookup.get(keyid).copied())
                 .unwrap_or_else(|_| std::process::abort());
             assert_eq!(verified.len(), n as usize);
         }
@@ -572,7 +572,7 @@ mod tests {
             }
             let verified = verify_envelope(&env, |keyid| {
                 if keyid == keyid_for(signer) {
-                    Some(verifying.clone())
+                    Some(verifying)
                 } else {
                     None
                 }

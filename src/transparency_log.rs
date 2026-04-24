@@ -199,7 +199,7 @@ fn empty_root() -> [u8; 32] {
 
 /// Largest power of two strictly less than `n` (RFC 6962 split
 /// point). Panics would be on `n < 2`; guarded by caller.
-fn split_point(n: usize) -> usize {
+const fn split_point(n: usize) -> usize {
     let mut k = 1usize;
     while k.saturating_mul(2) < n {
         k = k.saturating_mul(2);
@@ -211,7 +211,7 @@ fn split_point(n: usize) -> usize {
 fn mth(leaves: &[[u8; 32]]) -> [u8; 32] {
     match leaves.len() {
         0 => empty_root(),
-        1 => leaves.first().copied().unwrap_or_else(|| [0u8; 32]),
+        1 => leaves.first().copied().unwrap_or([0u8; 32]),
         n => {
             let k = split_point(n);
             let left_slice = leaves.get(..k).unwrap_or(&[]);
@@ -229,15 +229,13 @@ fn audit_path(leaves: &[[u8; 32]], m: usize) -> Vec<[u8; 32]> {
         0 | 1 => Vec::new(),
         n => {
             let k = split_point(n);
+            let left_slice = leaves.get(..k).unwrap_or(&[]);
+            let right_slice = leaves.get(k..).unwrap_or(&[]);
             if m < k {
-                let left_slice = leaves.get(..k).unwrap_or(&[]);
-                let right_slice = leaves.get(k..).unwrap_or(&[]);
                 let mut path = audit_path(left_slice, m);
                 path.push(mth(right_slice));
                 path
             } else {
-                let left_slice = leaves.get(..k).unwrap_or(&[]);
-                let right_slice = leaves.get(k..).unwrap_or(&[]);
                 let rel = m.saturating_sub(k);
                 let mut path = audit_path(right_slice, rel);
                 path.push(mth(left_slice));
@@ -692,7 +690,7 @@ mod tests {
                 .get(idx)
                 .unwrap_or_else(|| std::process::abort())
                 .clone();
-            let mut tampered = original.clone();
+            let mut tampered = original;
             tampered.push(0xFF);
             let proof = log
                 .inclusion_proof(idx as u64)

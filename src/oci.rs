@@ -499,7 +499,7 @@ mod tests {
             let m = build_aion_manifest(&aion_bytes, "rules.aion", &config)
                 .unwrap_or_else(|_| std::process::abort());
             let original_digest = m.digest().unwrap_or_else(|_| std::process::abort());
-            let mut tampered = m.clone();
+            let mut tampered = m;
             tampered
                 .annotations
                 .insert("dev.aion.mutation".to_string(), "yes".to_string());
