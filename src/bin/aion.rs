@@ -117,6 +117,14 @@ struct VerifyArgs {
     /// Verbose output showing all checks
     #[arg(short, long)]
     verbose: bool,
+
+    /// Path to a JSON registry file pinning the master and operational keys
+    /// for each expected author (RFC-0034). When set, every signature in the
+    /// file is cross-checked against the active epoch for its signer at the
+    /// signed version number. Without this flag, verification trusts the
+    /// public keys embedded in each signature.
+    #[arg(long, value_name = "REGISTRY_FILE")]
+    registry: Option<PathBuf>,
 }
 
 #[derive(Args, Debug)]
@@ -132,6 +140,12 @@ struct ShowArgs {
     /// Output format
     #[arg(short, long, value_name = "FORMAT", default_value = "text")]
     format: OutputFormat,
+
+    /// Path to a JSON registry file (RFC-0034). Currently consulted by the
+    /// `signatures` subcommand for registry-aware verification of each
+    /// embedded signature; ignored by subcommands that do not verify.
+    #[arg(long, value_name = "REGISTRY_FILE")]
+    registry: Option<PathBuf>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -434,7 +448,25 @@ fn cmd_verify(args: &VerifyArgs) -> Result<()> {
     if !args.path.exists() {
         anyhow::bail!("File not found: {}", args.path.display());
     }
-    let report = verify_file(&args.path)
+    let registry = args
+        .registry
+        .as_deref()
+        .map(load_registry_from_path)
+        .transpose()?;
+    let report = registry
+        .as_ref()
+        .map_or_else(
+            || verify_file(&args.path),
+            |reg| {
+                println!(
+                    "   Registry: {} (registry-aware verify)",
+                    args.registry
+                        .as_ref()
+                        .map_or("<unset>", |p| p.to_str().unwrap_or("<invalid path>"))
+                );
+                aion_context::operations::verify_file_with_registry(&args.path, reg)
+            },
+        )
         .with_context(|| format!("Failed to verify file: {}", args.path.display()))?;
 
     match args.format {
@@ -447,6 +479,15 @@ fn cmd_verify(args: &VerifyArgs) -> Result<()> {
         std::process::exit(1);
     }
     Ok(())
+}
+
+fn load_registry_from_path(
+    path: &std::path::Path,
+) -> Result<aion_context::key_registry::KeyRegistry> {
+    let bytes = std::fs::read_to_string(path)
+        .with_context(|| format!("Failed to read registry file: {}", path.display()))?;
+    aion_context::key_registry::KeyRegistry::from_trusted_json(&bytes)
+        .with_context(|| format!("Failed to parse registry file: {}", path.display()))
 }
 
 fn print_verify_text_report(
@@ -558,7 +599,13 @@ fn show_history_subcommand(args: &ShowArgs) -> Result<()> {
 }
 
 fn show_signatures_subcommand(args: &ShowArgs) -> Result<()> {
-    let signatures = show_signatures(&args.path)?;
+    let signatures = match args.registry.as_deref() {
+        Some(path) => {
+            let registry = load_registry_from_path(path)?;
+            aion_context::operations::show_signatures_with_registry(&args.path, &registry)?
+        }
+        None => show_signatures(&args.path)?,
+    };
     match args.format {
         OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&signatures)?),
         OutputFormat::Yaml => println!("{}", serde_yaml::to_string(&signatures)?),
