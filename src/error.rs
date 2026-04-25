@@ -63,7 +63,14 @@ use crate::types::AuthorId;
 ///
 /// All errors provide contextual information to aid debugging and suggest
 /// solutions to users. Errors are organized by category for clarity.
+///
+/// `#[non_exhaustive]` because the crate is under active development —
+/// new error categories will land for crypto rotations, hardware
+/// attestation, transparency-log proofs, and additional compliance
+/// frameworks. Adding a variant should not force every downstream
+/// consumer's exhaustive `match` to update on a minor release.
 #[derive(Error, Debug)]
+#[non_exhaustive]
 pub enum AionError {
     // ============================================================================
     // I/O Errors
