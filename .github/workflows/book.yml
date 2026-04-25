@@ -1,0 +1,48 @@
+name: Deploy book
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "book/**"
+      - ".github/workflows/book.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Allow only one concurrent deployment, skipping runs queued between
+# the run in-progress and the latest queued. We do not cancel in-progress
+# runs because we want production deployments to complete cleanly.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  MDBOOK_VERSION: 0.5.2
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install mdbook
+        run: |
+          set -euo pipefail
+          curl -sSL "https://github.com/rust-lang/mdBook/releases/download/v${MDBOOK_VERSION}/mdbook-v${MDBOOK_VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
+            | tar -xz
+          chmod +x mdbook
+          ./mdbook --version
+      - name: Build
+        run: ./mdbook build book
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: book/book
+      - id: deploy
+        uses: actions/deploy-pages@v4
