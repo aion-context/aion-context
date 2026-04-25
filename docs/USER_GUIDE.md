@@ -43,7 +43,7 @@ AION v2 is a versioned truth infrastructure for AI systems. It provides cryptogr
 
 ```bash
 # Clone the repository
-git clone https://github.com/copyleftdev/aion-context.git
+git clone https://github.com/aion-context/aion-context.git
 cd aion-context/aion-context
 
 # Build release binary
@@ -615,7 +615,7 @@ aion show large_file.aion history | tail -20
 ## Getting Help
 
 - **Documentation**: `aion --help`, `aion <command> --help`
-- **Issues**: https://github.com/copyleftdev/aion-context/issues
+- **Issues**: https://github.com/aion-context/aion-context/issues
 - **RFCs**: See `rfcs/` directory for technical specifications
 
 ---

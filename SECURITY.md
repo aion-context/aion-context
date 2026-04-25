@@ -14,7 +14,7 @@ the private channels below.
 
 Open a private advisory directly from the repository:
 
-> https://github.com/copyleftdev/aion-context/security/advisories/new
+> https://github.com/aion-context/aion-context/security/advisories/new
 
 (or, after the org transfer, the equivalent path under the new org)
 

@@ -10,6 +10,8 @@
 -->
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
+**Live demo:** [demo.aion-context.dev](https://demo.aion-context.dev/) — running `.aion` policies in a real agent loop.
+
 ## What it is
 
 `aion-context` is a Rust library and CLI for a binary file format
@@ -71,7 +73,7 @@ configuration needed.
 Until [#73] (crates.io publication) lands, install from source:
 
 ```bash
-git clone https://github.com/copyleftdev/aion-context
+git clone https://github.com/aion-context/aion-context
 cd aion-context
 cargo install --path . --bin aion
 aion --help
@@ -80,7 +82,7 @@ aion --help
 After #73 the install line will be `cargo install aion-context` /
 `cargo add aion-context`.
 
-[#73]: https://github.com/copyleftdev/aion-context/issues/73
+[#73]: https://github.com/aion-context/aion-context/issues/73
 
 ## What's in the box
 
@@ -181,9 +183,9 @@ at your option.
 
 ## Community
 
-- Bug reports → [GitHub Issues](https://github.com/copyleftdev/aion-context/issues/new/choose)
+- Bug reports → [GitHub Issues](https://github.com/aion-context/aion-context/issues/new/choose)
 - Security reports → see [SECURITY.md](SECURITY.md) (private flow only)
-- Open-ended questions / design discussions → [Discussions](https://github.com/copyleftdev/aion-context/discussions) (enabled with the announcement, [#74])
+- Open-ended questions / design discussions → [Discussions](https://github.com/aion-context/aion-context/discussions) (enabled with the announcement, [#74])
 - Contribution rules → [CONTRIBUTING.md](CONTRIBUTING.md), [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
 
-[#74]: https://github.com/copyleftdev/aion-context/issues/74
+[#74]: https://github.com/aion-context/aion-context/issues/74

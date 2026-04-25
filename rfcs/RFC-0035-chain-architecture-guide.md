@@ -412,5 +412,5 @@ supersede the recommendations here.
 
 [RFC-0028]: ./RFC-0028-key-rotation-revocation.md
 [RFC-0034]: ./RFC-0034-registry-aware-verify-rollout.md
-[issue #48]: https://github.com/copyleftdev/aion-context/issues/48
-[issue #49]: https://github.com/copyleftdev/aion-context/issues/49
+[issue #48]: https://github.com/aion-context/aion-context/issues/48
+[issue #49]: https://github.com/aion-context/aion-context/issues/49

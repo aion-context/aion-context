@@ -55,7 +55,7 @@ clippy lints.
 
 ## Quick links
 
-- Source: [github.com/copyleftdev/aion-context](https://github.com/copyleftdev/aion-context)
+- Source: [github.com/aion-context/aion-context](https://github.com/aion-context/aion-context)
 - The `rfcs/` directory in the repo is authoritative for protocol decisions.
 - `examples/` directory has runnable Rust examples; this book documents what they're showing.
 - `.claude/rules/` documents the discipline that governs PR review.

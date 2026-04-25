@@ -70,7 +70,7 @@ read on demand.
 ## See also
 
 - The full RFCs live at
-  [github.com/copyleftdev/aion-context/tree/main/rfcs](https://github.com/copyleftdev/aion-context/tree/main/rfcs)
+  [github.com/aion-context/aion-context/tree/main/rfcs](https://github.com/aion-context/aion-context/tree/main/rfcs)
 - New RFCs go through the process documented in
   `.claude/rules/rfc-discipline.md`
 - The `rfc-writer` agent in `.claude/agents/` scaffolds new

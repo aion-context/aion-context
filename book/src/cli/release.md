@@ -4,9 +4,9 @@ A sealed release is one operation that produces:
 
 - An [`ArtifactManifest`](../architecture/file-format.md) over the primary artifact (and any auxiliaries)
 - A signature over that manifest
-- An [AIBOM](https://github.com/copyleftdev/aion-context/blob/main/rfcs/RFC-0029-aibom.md) record (frameworks, datasets, licenses, safety attestations, export controls)
+- An [AIBOM](https://github.com/aion-context/aion-context/blob/main/rfcs/RFC-0029-aibom.md) record (frameworks, datasets, licenses, safety attestations, export controls)
 - A SLSA v1.1 in-toto Statement
-- Three [DSSE](https://github.com/copyleftdev/aion-context/blob/main/rfcs/RFC-0023-dsse-envelopes.md) envelopes (manifest, AIBOM, SLSA)
+- Three [DSSE](https://github.com/aion-context/aion-context/blob/main/rfcs/RFC-0023-dsse-envelopes.md) envelopes (manifest, AIBOM, SLSA)
 - An OCI primary manifest + two OCI attestation referrers
 - Three transparency-log entries
 

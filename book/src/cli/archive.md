@@ -105,4 +105,4 @@ falls at v1. That's the architectural choice documented in
 will surface those failures as a structural finding, not a
 bug.
 
-[issue #48]: https://github.com/copyleftdev/aion-context/issues/48
+[issue #48]: https://github.com/aion-context/aion-context/issues/48
