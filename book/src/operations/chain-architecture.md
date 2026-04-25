@@ -135,4 +135,4 @@ because the registry handles epoch resolution per version.
 - The CLI's [`archive verify`](../cli/archive.md) page —
   auditor-side dashboard
 
-[RFC-0035]: https://github.com/copyleftdev/aion-context/blob/main/rfcs/RFC-0035-chain-architecture-guide.md
+[RFC-0035]: https://github.com/aion-context/aion-context/blob/main/rfcs/RFC-0035-chain-architecture-guide.md

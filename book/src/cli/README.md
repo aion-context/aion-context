@@ -61,4 +61,4 @@ AION_LOG_FORMAT=json AION_LOG=info aion verify rules.aion
 See [Observability](../architecture/observability.md) for the
 full event catalog, field lexicon, and bounded `reason` codes.
 
-[issue #23]: https://github.com/copyleftdev/aion-context/issues/23
+[issue #23]: https://github.com/aion-context/aion-context/issues/23

@@ -109,7 +109,7 @@ single pure function, the only producer of the verify-path
 exit code. See [issue #23] and the `cmd_verify` page in the
 CLI reference.
 
-[issue #23]: https://github.com/copyleftdev/aion-context/issues/23
+[issue #23]: https://github.com/aion-context/aion-context/issues/23
 
 ## Provenance, not archival
 

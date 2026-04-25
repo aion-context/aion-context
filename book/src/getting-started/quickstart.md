@@ -5,7 +5,7 @@ Five minutes from cold install to a verified `.aion` file.
 ## Install
 
 ```bash
-git clone https://github.com/copyleftdev/aion-context
+git clone https://github.com/aion-context/aion-context
 cd aion-context
 cargo install --path . --bin aion
 ```
@@ -118,4 +118,4 @@ is type-level enforced (see [RFC-0023 / issue #23] for details).
   is for production deployment: how to choose an archive layout,
   rotate keys without tears, and run audits.
 
-[RFC-0023 / issue #23]: https://github.com/copyleftdev/aion-context/issues/23
+[RFC-0023 / issue #23]: https://github.com/aion-context/aion-context/issues/23

@@ -5,7 +5,7 @@ Thank you for your interest in contributing.
 ## Quick Start
 
 ```bash
-git clone https://github.com/copyleftdev/aion-context.git
+git clone https://github.com/aion-context/aion-context.git
 cd aion-context
 
 cargo build

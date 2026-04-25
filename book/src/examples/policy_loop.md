@@ -116,7 +116,7 @@ one of five stable reason codes:
 These map to the four `bool` fields of [`VerificationReport`]
 (plus a couple of pre-verdict cases). They are deliberately a
 small, fixed vocabulary — bounded reason codes are how the
-[observability rule](https://github.com/copyleftdev/aion-context/blob/main/.claude/rules/observability.md)
+[observability rule](https://github.com/aion-context/aion-context/blob/main/.claude/rules/observability.md)
 keeps log cardinality tractable.
 
 [`VerificationReport`]: ../architecture/file-format.md

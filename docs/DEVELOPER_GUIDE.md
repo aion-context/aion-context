@@ -276,7 +276,7 @@ fn example() -> Result<()> {
 ### Clone and Build
 
 ```bash
-git clone https://github.com/copyleftdev/aion-context.git
+git clone https://github.com/aion-context/aion-context.git
 cd aion-context/aion-context
 
 # Build
@@ -520,7 +520,7 @@ cargo bench
 - **API Docs**: `cargo doc --open`
 - **User Guide**: [docs/USER_GUIDE.md](USER_GUIDE.md)
 - **Security**: [docs/SECURITY_AUDIT_GUIDE.md](SECURITY_AUDIT_GUIDE.md)
-- **Issues**: https://github.com/copyleftdev/aion-context/issues
+- **Issues**: https://github.com/aion-context/aion-context/issues
 
 ---
 

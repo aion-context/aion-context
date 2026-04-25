@@ -563,7 +563,7 @@ We request the security audit to produce:
 ## Contact Information
 
 **Project**: AION v2  
-**Repository**: https://github.com/copyleftdev/aion-context  
+**Repository**: https://github.com/aion-context/aion-context  
 **Documentation**: `docs/` directory  
 **RFCs**: `rfcs/` directory  
 
