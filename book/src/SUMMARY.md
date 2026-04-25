@@ -36,6 +36,7 @@
 
 - [Aegis Consortium — multisig + PQC + rotation](./examples/aegis.md)
 - [Federation — cross-domain HW attestation](./examples/federation.md)
+- [Policy Loop — agent over a signed policy](./examples/policy_loop.md)
 
 # Reference
 
