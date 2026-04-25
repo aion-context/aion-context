@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Conflict Resolution Module
 //!
 //! Handles divergent version histories when files are modified concurrently

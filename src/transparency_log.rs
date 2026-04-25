@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Aion-native transparency log — RFC-0025.
 //!
 //! Append-only Merkle log over BLAKE3, RFC-6962-compatible in

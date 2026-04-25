@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Key management with OS keyring integration and file-based fallback
 //!
 //! This module provides secure key storage using the operating system's

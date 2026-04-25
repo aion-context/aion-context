@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Federated Model Exchange — cross-organization aion deployments
 //! with hardware-attestation-bound signing keys (RFC-0026), each
 //! maintaining its own `KeyRegistry`, cross-verifying joint

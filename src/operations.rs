@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Core operations for AION v2 files
 //!
 //! This module implements the high-level operations for working with AION files:

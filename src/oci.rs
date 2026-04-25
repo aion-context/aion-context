@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! OCI artifact packaging — RFC-0030.
 //!
 //! Emits OCI Image Manifest v1.1 JSON so `.aion` files and their

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! AION v2 CLI - Versioned Truth Infrastructure for AI Systems
 //!
 //! Command-line interface for managing AION files with cryptographic verification.

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Post-quantum hybrid signatures — RFC-0027.
 //!
 //! A hybrid signature pairs an Ed25519 signature with an ML-DSA-65

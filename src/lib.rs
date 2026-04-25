@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! AION v2: Versioned Truth Infrastructure for AI Systems
 //!
 //! AION v2 provides cryptographically-signed, versioned business context that AI systems

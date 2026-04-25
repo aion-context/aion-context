@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! CLI Integration Tests for AION v2
 //!
 //! These tests verify the command-line interface by executing the aion binary

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Audit trail structures for AION v2
 //!
 //! This module implements the embedded audit trail as specified in RFC-0002 and RFC-0019.

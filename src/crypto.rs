@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Cryptographic primitives for AION v2
 //!
 //! This module provides safe, ergonomic wrappers around battle-tested cryptographic

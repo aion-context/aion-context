@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! policy_loop — a tight-loop AI agent over a signed `.aion` policy file.
 //!
 //! Most agent frameworks ship policies as unsigned YAML/JSON. Anyone with

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Zero-copy parser for AION v2 file format
 //!
 //! This module provides efficient, allocation-free parsing of AION v2 binary files

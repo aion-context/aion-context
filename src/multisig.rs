@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Multi-Signature Support Module
 //!
 //! Provides M-of-N threshold signature verification for scenarios

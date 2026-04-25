@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! DSSE envelope support — RFC-0023.
 //!
 //! DSSE (Dead Simple Signing Envelope) is the universal envelope format

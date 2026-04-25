@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Hardware attestation binding — RFC-0026.
 //!
 //! Ties an aion operational-key epoch to a TEE attestation quote
