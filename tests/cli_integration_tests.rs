@@ -1519,6 +1519,231 @@ fn test_cli_release_inspect_prints_summary() {
 }
 
 // ============================================================================
+// Archive verify (issue #48)
+// ============================================================================
+
+#[test]
+fn test_cli_archive_verify_finds_planted_anomalies() {
+    let (temp_dir, op_key) = setup_test_env();
+    let other_key = format!("{}", rand::random::<u32>() % 900000 + 920000);
+    run_cli(&["key", "generate", "--id", &other_key]);
+
+    let archive = temp_dir.path().join("archive");
+    fs::create_dir_all(&archive).unwrap();
+    let registry_path = temp_dir.path().join("registry.json");
+    pin_author(&registry_path, "9001", &op_key);
+
+    // Five clean files signed by author 9001.
+    for i in 1..=5u32 {
+        let p = archive.join(format!("week-{i:02}.aion"));
+        run_cli_with_stdin(
+            &[
+                "init",
+                p.to_str().unwrap(),
+                "--author",
+                "9001",
+                "--key",
+                &op_key,
+            ],
+            format!("rules week {i}").as_bytes(),
+        );
+    }
+
+    // Tamper week-3 by flipping a byte deep in the file.
+    let week3 = archive.join("week-03.aion");
+    let mut data = fs::read(&week3).unwrap();
+    let target = (data.len() - 32) * 6 / 10;
+    data[target] ^= 0x5A;
+    fs::write(&week3, data).unwrap();
+
+    // Drop in a sixth file signed by an UNREGISTERED author.
+    let other_path = archive.join("week-06-rogue.aion");
+    run_cli_with_stdin(
+        &[
+            "init",
+            other_path.to_str().unwrap(),
+            "--author",
+            "9999",
+            "--key",
+            &other_key,
+        ],
+        b"rogue rules",
+    );
+
+    let output = run_cli(&[
+        "archive",
+        "verify",
+        archive.to_str().unwrap(),
+        "--registry",
+        registry_path.to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
+    assert!(
+        !output.status.success(),
+        "archive verify must exit non-zero when any file is invalid"
+    );
+    assert_eq!(output.status.code(), Some(1));
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("\"file_count\": 6"),
+        "expected 6 files counted, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("\"valid_count\": 4"),
+        "expected 4 valid (5 clean - 1 tampered + 0 rogue), got: {stdout}"
+    );
+    assert!(
+        stdout.contains("\"invalid_count\": 2"),
+        "expected 2 invalid (week-03 tamper + week-06-rogue), got: {stdout}"
+    );
+    // The tampered file must surface as integrity-hash mismatch.
+    assert!(
+        stdout.contains("week-03.aion") && stdout.contains("integrity"),
+        "expected integrity error on week-03, got: {stdout}"
+    );
+    // The rogue file must surface as a registry signature failure.
+    assert!(
+        stdout.contains("week-06-rogue.aion"),
+        "expected rogue file flagged, got: {stdout}"
+    );
+
+    cleanup_key(&op_key);
+    cleanup_key(&other_key);
+}
+
+#[test]
+fn test_cli_archive_verify_clean_archive_exits_zero() {
+    let (temp_dir, op_key) = setup_test_env();
+    let archive = temp_dir.path().join("archive");
+    fs::create_dir_all(&archive).unwrap();
+    let registry_path = temp_dir.path().join("registry.json");
+    pin_author(&registry_path, "9002", &op_key);
+
+    for i in 1..=3u32 {
+        let p = archive.join(format!("file-{i}.aion"));
+        run_cli_with_stdin(
+            &[
+                "init",
+                p.to_str().unwrap(),
+                "--author",
+                "9002",
+                "--key",
+                &op_key,
+            ],
+            format!("rules {i}").as_bytes(),
+        );
+    }
+
+    let output = run_cli(&[
+        "archive",
+        "verify",
+        archive.to_str().unwrap(),
+        "--registry",
+        registry_path.to_str().unwrap(),
+    ]);
+    assert!(
+        output.status.success(),
+        "clean archive must exit 0, got {}",
+        output.status
+    );
+    assert_eq!(output.status.code(), Some(0));
+
+    cleanup_key(&op_key);
+}
+
+#[test]
+fn test_cli_archive_verify_detects_rotation() {
+    let (temp_dir, op_key) = setup_test_env();
+    let master_key = format!("{}", rand::random::<u32>() % 900000 + 930000);
+    let new_op_key = format!("{}", rand::random::<u32>() % 900000 + 940000);
+    run_cli(&["key", "generate", "--id", &master_key]);
+    run_cli(&["key", "generate", "--id", &new_op_key]);
+
+    let archive = temp_dir.path().join("archive");
+    fs::create_dir_all(&archive).unwrap();
+    let registry_path = temp_dir.path().join("registry.json");
+    pin_with_distinct_master(&registry_path, "9003", &op_key, &master_key);
+
+    // Two files with old key.
+    for i in 1..=2u32 {
+        let p = archive.join(format!("pre-{i}.aion"));
+        run_cli_with_stdin(
+            &[
+                "init",
+                p.to_str().unwrap(),
+                "--author",
+                "9003",
+                "--key",
+                &op_key,
+            ],
+            format!("pre {i}").as_bytes(),
+        );
+    }
+
+    // Rotate at version 2 — leaves prior v1 sigs valid under epoch 0.
+    run_cli(&[
+        "registry",
+        "rotate",
+        "--author",
+        "9003",
+        "--from-epoch",
+        "0",
+        "--to-epoch",
+        "1",
+        "--new-key",
+        &new_op_key,
+        "--master-key",
+        &master_key,
+        "--effective-from-version",
+        "2",
+        "--registry",
+        registry_path.to_str().unwrap(),
+    ]);
+
+    // One file with new key (this will fail v1 verify under post-rotation
+    // registry — that's expected behaviour and matches issue #50). What we
+    // care about for THIS test is that the breakdown surfaces 2 distinct
+    // pubkeys for author 9003.
+    let post = archive.join("post-1.aion");
+    run_cli_with_stdin(
+        &[
+            "init",
+            post.to_str().unwrap(),
+            "--author",
+            "9003",
+            "--key",
+            &new_op_key,
+        ],
+        b"post",
+    );
+
+    let output = run_cli(&[
+        "archive",
+        "verify",
+        archive.to_str().unwrap(),
+        "--registry",
+        registry_path.to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("\"rotated\": true"),
+        "rotation must be reported, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("\"author\": 9003"),
+        "author 9003 must appear in breakdown, got: {stdout}"
+    );
+
+    cleanup_key(&op_key);
+    cleanup_key(&master_key);
+    cleanup_key(&new_op_key);
+}
+
+// ============================================================================
 // Error Case CLI Tests
 // ============================================================================
 

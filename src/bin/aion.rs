@@ -55,6 +55,9 @@ enum Commands {
 
     /// Seal, verify, and inspect signed model releases (RFC-0032)
     Release(ReleaseArgs),
+
+    /// Bulk-verify a directory of `.aion` files (issue #48)
+    Archive(ArchiveArgs),
 }
 
 #[derive(Args, Debug)]
@@ -587,6 +590,36 @@ enum ReleaseSubcommand {
     },
 }
 
+#[derive(Args, Debug)]
+struct ArchiveArgs {
+    #[command(subcommand)]
+    subcommand: ArchiveSubcommand,
+}
+
+#[derive(Subcommand, Debug)]
+enum ArchiveSubcommand {
+    /// Bulk-verify every `.aion` file in a directory (issue #48).
+    ///
+    /// Walks the directory (top-level only by default), runs the
+    /// equivalent of `aion verify` on each file against the supplied
+    /// registry, then aggregates the verdicts into a per-file table,
+    /// signer breakdown (per-author distinct pubkeys), and findings
+    /// summary. Exit 0 iff every file VALID; exit 1 if any failed.
+    Verify {
+        /// Directory to scan for `.aion` files.
+        #[arg(value_name = "DIR")]
+        dir: PathBuf,
+
+        /// Trusted-registry JSON file (RFC-0028).
+        #[arg(long, value_name = "REGISTRY_FILE")]
+        registry: PathBuf,
+
+        /// Output format.
+        #[arg(short, long, value_enum, default_value = "text")]
+        format: OutputFormat,
+    },
+}
+
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
 enum ExportFormatType {
     /// JSON format (full metadata)
@@ -620,6 +653,7 @@ fn main() -> Result<ExitCode> {
         Commands::Export(args) => cmd_export(&args),
         Commands::Registry(args) => cmd_registry(&args),
         Commands::Release(args) => cmd_release(&args),
+        Commands::Archive(args) => cmd_archive(&args),
     }
 }
 
@@ -1809,4 +1843,274 @@ fn cmd_release_inspect(bundle_dir: &std::path::Path, format: OutputFormat) -> Re
         }
     }
     Ok(())
+}
+
+// ============================================================================
+// Archive subcommand (issue #48) — bulk verify
+// ============================================================================
+
+#[derive(serde::Serialize)]
+struct FileVerdict {
+    path: String,
+    valid: bool,
+    /// Author of the head (and only-required) signature, if the
+    /// file parsed far enough to read it. None for files that
+    /// fail at parse time.
+    author: Option<u64>,
+    /// First 16 hex chars of the head signer's public key. Used
+    /// to detect rotations across the archive.
+    public_key_prefix: Option<String>,
+    /// First reason from the verification report; absent for
+    /// files that VALID.
+    error: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct AuthorBreakdown {
+    author: u64,
+    /// Distinct pubkey prefixes observed for this author across
+    /// the archive, paired with the files that used each one.
+    keys: Vec<KeyUsage>,
+    /// True iff `keys.len() > 1` — more than one operational key
+    /// observed for the same author across the quarter is a clear
+    /// rotation signal.
+    rotated: bool,
+}
+
+#[derive(serde::Serialize)]
+struct KeyUsage {
+    pubkey_prefix: String,
+    files: Vec<String>,
+}
+
+#[derive(serde::Serialize)]
+struct ArchiveReport {
+    archive_dir: String,
+    file_count: usize,
+    valid_count: usize,
+    invalid_count: usize,
+    files: Vec<FileVerdict>,
+    authors: Vec<AuthorBreakdown>,
+}
+
+fn cmd_archive(args: &ArchiveArgs) -> Result<ExitCode> {
+    match &args.subcommand {
+        ArchiveSubcommand::Verify {
+            dir,
+            registry,
+            format,
+        } => cmd_archive_verify(dir, registry, *format),
+    }
+}
+
+fn cmd_archive_verify(
+    dir: &std::path::Path,
+    registry_path: &std::path::Path,
+    format: OutputFormat,
+) -> Result<ExitCode> {
+    if !dir.is_dir() {
+        anyhow::bail!("Not a directory: {}", dir.display());
+    }
+    let registry = load_registry_from_path(registry_path)?;
+
+    let aion_files = collect_aion_files(dir)?;
+    if aion_files.is_empty() {
+        anyhow::bail!("No `.aion` files found in {}", dir.display());
+    }
+
+    let report = build_archive_report(dir, &aion_files, &registry);
+
+    match format {
+        OutputFormat::Json => {
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        }
+        OutputFormat::Yaml => {
+            println!("{}", serde_yaml::to_string(&report)?);
+        }
+        OutputFormat::Text => render_archive_report_text(&report),
+    }
+
+    if report.invalid_count == 0 {
+        Ok(ExitCode::SUCCESS)
+    } else {
+        Ok(ExitCode::FAILURE)
+    }
+}
+
+fn collect_aion_files(dir: &std::path::Path) -> Result<Vec<PathBuf>> {
+    let mut paths: Vec<PathBuf> = Vec::new();
+    for entry in std::fs::read_dir(dir)
+        .with_context(|| format!("Failed to read directory: {}", dir.display()))?
+    {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        if path.extension().and_then(|s| s.to_str()) == Some("aion") {
+            paths.push(path);
+        }
+    }
+    paths.sort();
+    Ok(paths)
+}
+
+fn build_archive_report(
+    dir: &std::path::Path,
+    paths: &[PathBuf],
+    registry: &aion_context::key_registry::KeyRegistry,
+) -> ArchiveReport {
+    use std::collections::BTreeMap;
+
+    let mut files = Vec::with_capacity(paths.len());
+    let mut valid_count = 0usize;
+    let mut invalid_count = 0usize;
+    // Aggregate (author, pubkey_prefix) → file list as we go.
+    let mut grouping: BTreeMap<u64, BTreeMap<String, Vec<String>>> = BTreeMap::new();
+
+    for path in paths {
+        let display = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("?")
+            .to_string();
+
+        let report = match aion_context::operations::verify_file(path, registry) {
+            Ok(r) => r,
+            Err(e) => {
+                invalid_count = invalid_count.saturating_add(1);
+                files.push(FileVerdict {
+                    path: display.clone(),
+                    valid: false,
+                    author: None,
+                    public_key_prefix: None,
+                    error: Some(format!("verify_file failed: {e}")),
+                });
+                continue;
+            }
+        };
+
+        if report.is_valid {
+            valid_count = valid_count.saturating_add(1);
+        } else {
+            invalid_count = invalid_count.saturating_add(1);
+        }
+
+        // Pull the head signer info, if any.
+        let signatures =
+            aion_context::operations::show_signatures(path, registry).unwrap_or_default();
+        let (author, pk_prefix) = signatures.last().map_or((None, None), |head| {
+            let mut hex_buf = String::with_capacity(16);
+            for b in head.public_key.iter().take(8) {
+                use std::fmt::Write;
+                let _ = write!(&mut hex_buf, "{b:02x}");
+            }
+            (Some(head.author_id), Some(hex_buf))
+        });
+
+        if let (Some(a), Some(pk)) = (author, &pk_prefix) {
+            grouping
+                .entry(a)
+                .or_default()
+                .entry(pk.clone())
+                .or_default()
+                .push(display.clone());
+        }
+
+        files.push(FileVerdict {
+            path: display,
+            valid: report.is_valid,
+            author,
+            public_key_prefix: pk_prefix,
+            error: report.errors.first().cloned(),
+        });
+    }
+
+    let authors: Vec<AuthorBreakdown> = grouping
+        .into_iter()
+        .map(|(author, key_map)| {
+            let keys: Vec<KeyUsage> = key_map
+                .into_iter()
+                .map(|(pubkey_prefix, files)| KeyUsage {
+                    pubkey_prefix,
+                    files,
+                })
+                .collect();
+            let rotated = keys.len() > 1;
+            AuthorBreakdown {
+                author,
+                keys,
+                rotated,
+            }
+        })
+        .collect();
+
+    ArchiveReport {
+        archive_dir: dir.display().to_string(),
+        file_count: paths.len(),
+        valid_count,
+        invalid_count,
+        files,
+        authors,
+    }
+}
+
+fn render_archive_report_text(r: &ArchiveReport) {
+    println!();
+    println!("═══════════════════════════════════════════════════════════════════════");
+    println!(" Archive verification — {}", r.archive_dir);
+    println!("═══════════════════════════════════════════════════════════════════════");
+    println!();
+    println!("Pass 1 — Per-file verification");
+    println!("──────────────────────────────");
+    let header = ("FILE", "VERDICT", "DETAILS");
+    println!("  {:<28}  {:<10}  {}", header.0, header.1, header.2);
+    for f in &r.files {
+        let verdict = if f.valid { "✅ VALID" } else { "❌ INVALID" };
+        let details = f.error.as_deref().unwrap_or("");
+        println!("  {:<28}  {:<10}  {}", f.path, verdict, details);
+    }
+    println!();
+    println!(
+        "  Summary: {}/{} VALID, {} INVALID",
+        r.valid_count, r.file_count, r.invalid_count
+    );
+    println!();
+    println!("Pass 2 — Signer breakdown");
+    println!("─────────────────────────");
+    for author in &r.authors {
+        if author.rotated {
+            println!(
+                "  ⚙  Author {} — ROTATED ({} distinct keys observed)",
+                author.author,
+                author.keys.len()
+            );
+        } else {
+            println!("  ✓  Author {} — stable", author.author);
+        }
+        for k in &author.keys {
+            println!(
+                "       key {}…  files: {}",
+                k.pubkey_prefix,
+                k.files.join(", ")
+            );
+        }
+    }
+    println!();
+    println!("Findings");
+    println!("────────");
+    if r.invalid_count == 0 {
+        println!(
+            "  ✅ All {} files verified. Archive passes audit.",
+            r.file_count
+        );
+    } else {
+        println!(
+            "  ❗ {} of {} files failed verification.",
+            r.invalid_count, r.file_count
+        );
+        for f in r.files.iter().filter(|f| !f.valid) {
+            println!("     - {}", f.path);
+        }
+    }
 }
