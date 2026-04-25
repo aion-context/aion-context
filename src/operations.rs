@@ -2009,6 +2009,97 @@ mod tests {
             );
             assert!(result.is_err());
         }
+
+        /// Follow-up to issue #40 — same silent-zero pattern existed
+        /// in `get_version_entry` (52 reserved bytes) and
+        /// `get_signature_entry` (8 reserved bytes). Pre-fix, an
+        /// attacker could flip reserved bytes; `verify_file` would
+        /// flag the integrity-hash mismatch, but the next
+        /// `commit_version` would silently launder the tamper because
+        /// `get_version_entry` zeroed reserved on read. Post-fix,
+        /// the parser rejects non-zero reserved at parse time and
+        /// `commit_version` propagates the Err.
+        #[test]
+        fn should_reject_tampered_version_entry_reserved_bytes() {
+            let temp_dir = TempDir::new().unwrap();
+            let file_path = temp_dir.path().join("ver_tamper.aion");
+            let signing_key = SigningKey::generate();
+            let author_id = AuthorId::new(50_011);
+            let mut bytes = create_test_file(&signing_key, author_id);
+
+            let parser = AionParser::new(&bytes).unwrap();
+            // Flip a byte squarely inside VersionEntry.reserved
+            // (entry-relative offset 100..152 → pick 130).
+            let off = parser.header().version_chain_offset as usize + 130;
+            bytes[off] ^= 0x55;
+            std::fs::write(&file_path, &bytes).unwrap();
+
+            // Direct parser-level check.
+            let parser2 = AionParser::new(&bytes).unwrap();
+            assert!(
+                parser2.get_version_entry(0).is_err(),
+                "VersionEntry with non-zero reserved must be rejected at parse"
+            );
+
+            // Laundering path is also closed: commit_version fails
+            // because rebuild reads every existing version.
+            let options = CommitOptions {
+                author_id,
+                signing_key: &signing_key,
+                message: "should fail",
+                timestamp: None,
+            };
+            let result = commit_version(
+                &file_path,
+                b"new",
+                &options,
+                &test_reg(author_id, &signing_key),
+            );
+            assert!(
+                result.is_err(),
+                "commit_version must reject tampered reserved bytes (laundering closed)"
+            );
+        }
+
+        #[test]
+        fn should_reject_tampered_signature_entry_reserved_bytes() {
+            let temp_dir = TempDir::new().unwrap();
+            let file_path = temp_dir.path().join("sig_tamper.aion");
+            let signing_key = SigningKey::generate();
+            let author_id = AuthorId::new(50_012);
+            let mut bytes = create_test_file(&signing_key, author_id);
+
+            let parser = AionParser::new(&bytes).unwrap();
+            // SignatureEntry.reserved is bytes 104..112 of each
+            // 112-byte entry; pick offset 108 inside the first
+            // signature.
+            let off = parser.header().signatures_offset as usize + 108;
+            bytes[off] ^= 0x55;
+            std::fs::write(&file_path, &bytes).unwrap();
+
+            let parser2 = AionParser::new(&bytes).unwrap();
+            assert!(
+                parser2.get_signature_entry(0).is_err(),
+                "SignatureEntry with non-zero reserved must be rejected at parse"
+            );
+
+            let options = CommitOptions {
+                author_id,
+                signing_key: &signing_key,
+                message: "should fail",
+                timestamp: None,
+            };
+            let result = commit_version(
+                &file_path,
+                b"new",
+                &options,
+                &test_reg(author_id, &signing_key),
+            );
+            assert!(
+                result.is_err(),
+                "commit_version must reject tampered SignatureEntry reserved"
+            );
+        }
     }
 
     mod file_verification_tests {

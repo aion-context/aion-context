@@ -653,7 +653,20 @@ impl<'a> AionParser<'a> {
                     reason: "Invalid message length bytes".to_string(),
                 }
             })?),
-            reserved: [0; 52], // Reserved bytes are ignored
+            reserved: {
+                // Reserved fields must be zero (mirrors #40 for
+                // ArtifactEntry). Silently zeroing them on read would
+                // let `commit_version` "launder" a tampered file:
+                // verify_file flags the integrity-hash mismatch, but
+                // the next commit rebuilds the file with reserved
+                // zeroed and the laundered file then passes verify.
+                if entry_bytes[100..152].iter().any(|b| *b != 0) {
+                    return Err(AionError::InvalidFormat {
+                        reason: "VersionEntry reserved bytes must be all zero".to_string(),
+                    });
+                }
+                [0; 52]
+            },
         })
     }
 
@@ -696,7 +709,16 @@ impl<'a> AionParser<'a> {
                 .map_err(|_| AionError::InvalidFormat {
                     reason: "Invalid signature bytes".to_string(),
                 })?,
-            reserved: [0; 8], // Reserved bytes are ignored
+            reserved: {
+                // Reserved fields must be zero (mirrors #40). See
+                // VersionEntry for the laundering concern this guards.
+                if entry_bytes[104..112].iter().any(|b| *b != 0) {
+                    return Err(AionError::InvalidFormat {
+                        reason: "SignatureEntry reserved bytes must be all zero".to_string(),
+                    });
+                }
+                [0; 8]
+            },
         })
     }
 
