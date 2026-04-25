@@ -18,9 +18,17 @@ jobs:
     name: Scorecard analysis
     runs-on: ubuntu-latest
     permissions:
-      security-events: write   # to upload SARIF to Code Scanning
-      id-token: write          # to publish results to scorecard.dev
+      # Needed to upload SARIF to Code Scanning
+      security-events: write
+      # Needed to publish results to scorecard.dev (OIDC token)
+      id-token: write
+      # Needed by the action to read repo metadata
       contents: read
+      # Needed to read workflow runs / actions metadata for the
+      # Token-Permissions and Maintained checks. Without this the
+      # ListCommits GraphQL call returns "Resource not accessible
+      # by integration".
+      actions: read
 
     steps:
       - uses: actions/checkout@v4
