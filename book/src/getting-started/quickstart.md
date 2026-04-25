@@ -5,17 +5,25 @@ Five minutes from cold install to a verified `.aion` file.
 ## Install
 
 ```bash
+cargo install aion-context
+```
+
+`cargo install` fetches the latest published `aion-context` from
+crates.io and puts the `aion` binary on your `PATH`. To pin to a
+specific version: `cargo install aion-context --version 1.0.0`.
+
+To use the library from your own crate:
+
+```bash
+cargo add aion-context
+```
+
+Or build from source if you want to track `main`:
+
+```bash
 git clone https://github.com/aion-context/aion-context
 cd aion-context
 cargo install --path . --bin aion
-```
-
-`cargo install` puts the `aion` binary on your `PATH` from the
-crate's source. Alternatively, build in-place:
-
-```bash
-cargo build --release --bin aion
-# binary at ./target/release/aion
 ```
 
 ## Generate keys
