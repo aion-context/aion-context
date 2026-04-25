@@ -110,3 +110,45 @@ exit code. See [issue #23] and the `cmd_verify` page in the
 CLI reference.
 
 [issue #23]: https://github.com/copyleftdev/aion-context/issues/23
+
+## Provenance, not archival
+
+A growing-chain `.aion` file is an attestation of how a body of
+content evolved — not an archive of every historical version's
+bytes. The file stores:
+
+- **one** encrypted_rules section: the **latest** version's
+  payload bytes
+- the **full hash-chained version history**: every historical
+  `(parent_hash, rules_hash, signature)` triple is in the chain
+  and signed
+
+So the file proves that bytes hashing to `rules_hash` existed at
+version V (because V's `rules_hash` is in a signed chain link),
+but it cannot reproduce those bytes on its own.
+
+To reconstruct any past version's content, pair the `.aion` with
+an external content-addressed store keyed by `rules_hash`:
+
+| Where the bytes live | Where the proof of authenticity lives |
+|---|---|
+| S3 / IPFS / git-LFS / a transparency-log archive | the `.aion` file |
+| addressed by `rules_hash` | which signs every `rules_hash` |
+
+Why this shape: most consumers of an `.aion` care most about
+the **current** policy and the **provenance** of how it got
+that way. They don't want a 200 MB file just to prove a 5 MB
+current policy is authentic. The hash-chained signature history
+is small and bounded; the bytes can live wherever your archival
+infrastructure prefers.
+
+If your use case truly needs every historical body inside one
+artifact, the right shape is **per-file genesis** — one `.aion`
+per version, each at v1, kept together in a directory or tar.
+The [chain-architecture page](../operations/chain-architecture.md)
+walks through the per-file vs growing-chain trade-off.
+
+The [`corpus_to_aion`](../examples/corpus_to_aion.md) example
+documents this property concretely with metrics from a 63-version
+real-world replay (188 MB total payload across versions, 14 MB
+final file).

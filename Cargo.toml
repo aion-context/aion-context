@@ -76,6 +76,12 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 # the default build is unaffected. License: MIT/Apache-2.0.
 ureq = { version = "2.10", default-features = false, features = ["tls", "json"], optional = true }
 
+# Optional: tar + flate2 for the `corpus_to_aion` example (issue #61).
+# Gated by the `corpus-tool` feature so the default build is unaffected.
+# Both MIT/Apache-2.0.
+tar = { version = "0.4", optional = true }
+flate2 = { version = "1.0", optional = true }
+
 [dev-dependencies]
 # Property-based testing (see .claude/rules/property-testing.md).
 # Requires `uv` on PATH at test time to launch the hegel-core backend;
@@ -95,6 +101,10 @@ test-helpers = []
 # Pulls in `ureq` for the `llm_policy_agent` example (issue #59).
 # Off by default — no network client in the standard build.
 llm-agent-example = ["dep:ureq"]
+
+# Pulls in `tar` + `flate2` for the `corpus_to_aion` example (issue #61).
+# Off by default — no archive deps in the standard build.
+corpus-tool = ["dep:tar", "dep:flate2"]
 
 [profile.release]
 opt-level = 3
@@ -175,3 +185,7 @@ required-features = ["test-helpers"]
 [[example]]
 name = "llm_policy_agent"
 required-features = ["llm-agent-example"]
+
+[[example]]
+name = "corpus_to_aion"
+required-features = ["corpus-tool"]
