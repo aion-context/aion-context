@@ -131,10 +131,24 @@ pub struct SignedTreeHead {
 }
 
 /// Append-only Merkle log.
+///
+/// Maintains an internal subtree-roots cache keyed by `(level,
+/// index)` so [`Self::inclusion_proof`] runs in O(log n) instead of
+/// O(n) (issue #36). The cache is in-memory only — no on-disk
+/// format change.
+///
+/// `subtree_roots[level][j]` is the hash of the COMPLETE 2^level
+/// subtree covering leaves `[j*2^level, (j+1)*2^level)`. Only
+/// fully-populated subtrees are stored; partial right-edge subtrees
+/// are recomputed on demand from the cached children (still
+/// O(log n) total).
 #[derive(Debug, Default)]
 pub struct TransparencyLog {
     entries: Vec<LogEntry>,
     leaf_hashes: Vec<[u8; 32]>,
+    /// `subtree_roots[level][j]` covers leaves `[j*2^level, (j+1)*2^level)`.
+    /// `subtree_roots[0]` mirrors `leaf_hashes`.
+    subtree_roots: Vec<Vec<[u8; 32]>>,
     operator_master: Option<VerifyingKey>,
 }
 
@@ -200,44 +214,6 @@ const fn split_point(n: usize) -> usize {
         k = k.saturating_mul(2);
     }
     k
-}
-
-/// Merkle Tree Hash of the slice of already-hashed leaves.
-fn mth(leaves: &[[u8; 32]]) -> [u8; 32] {
-    match leaves.len() {
-        0 => empty_root(),
-        1 => leaves.first().copied().unwrap_or([0u8; 32]),
-        n => {
-            let k = split_point(n);
-            let left_slice = leaves.get(..k).unwrap_or(&[]);
-            let right_slice = leaves.get(k..).unwrap_or(&[]);
-            let left = mth(left_slice);
-            let right = mth(right_slice);
-            node_hash(&left, &right)
-        }
-    }
-}
-
-/// Compute the audit path for leaf index `m` in a tree of `leaves`.
-fn audit_path(leaves: &[[u8; 32]], m: usize) -> Vec<[u8; 32]> {
-    match leaves.len() {
-        0 | 1 => Vec::new(),
-        n => {
-            let k = split_point(n);
-            let left_slice = leaves.get(..k).unwrap_or(&[]);
-            let right_slice = leaves.get(k..).unwrap_or(&[]);
-            if m < k {
-                let mut path = audit_path(left_slice, m);
-                path.push(mth(right_slice));
-                path
-            } else {
-                let rel = m.saturating_sub(k);
-                let mut path = audit_path(right_slice, rel);
-                path.push(mth(left_slice));
-                path
-            }
-        }
-    }
 }
 
 /// Recompute a Merkle root from a leaf + audit path, mirroring the
@@ -342,13 +318,15 @@ impl TransparencyLog {
 
     /// Current Merkle root hash. Returns the empty-tree sentinel
     /// when the log has no entries.
+    ///
+    /// Uses the subtree-roots cache (issue #36): O(log n) for any
+    /// tree size, vs O(n) before the cache.
     #[must_use]
     pub fn root_hash(&self) -> [u8; 32] {
         if self.leaf_hashes.is_empty() {
-            empty_root()
-        } else {
-            mth(&self.leaf_hashes)
+            return empty_root();
         }
+        self.cached_subtree_root(0, self.leaf_hashes.len())
     }
 
     /// Look up the entry at `index`, if any.
@@ -404,7 +382,109 @@ impl TransparencyLog {
         };
         self.entries.push(entry);
         self.leaf_hashes.push(hash);
+        self.cascade_subtree_roots(hash);
         Ok(seq)
+    }
+
+    /// Issue #36 — incremental cache update.
+    ///
+    /// After pushing a new leaf hash, walk up the tree completing
+    /// every newly-finished `2^k` subtree. A subtree at level `k`
+    /// completes whenever `leaf_hashes.len()` becomes a multiple of
+    /// `2^k`. At each level, the new subtree root is
+    /// `node_hash(left_sibling, right_just_completed)` where the
+    /// right side is the entry we just pushed at level `k-1` and
+    /// the left sibling is the previous entry at the same level.
+    ///
+    /// Total work per append: O(log n) amortized — each leaf rises
+    /// at most log2(n) levels over the life of the log.
+    #[allow(clippy::arithmetic_side_effects)] // bounded by log2(usize::MAX) iterations
+    #[allow(clippy::indexing_slicing)] // indices are bounded by lower_len above
+    fn cascade_subtree_roots(&mut self, leaf: [u8; 32]) {
+        if self.subtree_roots.is_empty() {
+            self.subtree_roots.push(Vec::new());
+        }
+        self.subtree_roots[0].push(leaf);
+
+        let mut level: usize = 0;
+        loop {
+            let lower_len = self.subtree_roots[level].len();
+            // A pair just completed at `level` iff the lower vec's
+            // length is even — the rightmost two entries combine
+            // into a new entry one level up.
+            if lower_len % 2 != 0 {
+                break;
+            }
+            let right_idx = lower_len - 1;
+            let left_idx = lower_len - 2;
+            let combined = node_hash(
+                &self.subtree_roots[level][left_idx],
+                &self.subtree_roots[level][right_idx],
+            );
+            level += 1;
+            if self.subtree_roots.len() <= level {
+                self.subtree_roots.push(Vec::new());
+            }
+            self.subtree_roots[level].push(combined);
+        }
+    }
+
+    /// Compute the Merkle Tree Hash of `leaves[start..start+len]`
+    /// using the subtree cache where possible.
+    ///
+    /// Falls back to recursive combination of cached sub-peaks for
+    /// partial right-edge subtrees. Pure (does not mutate the
+    /// cache).
+    #[allow(clippy::arithmetic_side_effects)] // bounded by tree depth
+    #[allow(clippy::indexing_slicing)] // start < leaf_hashes.len() by debug_assert
+    fn cached_subtree_root(&self, start: usize, len: usize) -> [u8; 32] {
+        debug_assert!(start + len <= self.leaf_hashes.len());
+        if len == 0 {
+            return empty_root();
+        }
+        if len == 1 {
+            return self.leaf_hashes[start];
+        }
+        // If (start, len) is a complete cached subtree, return the
+        // cached hash directly.
+        if len.is_power_of_two() && start % len == 0 {
+            let level = len.trailing_zeros() as usize;
+            let j = start / len;
+            if let Some(level_vec) = self.subtree_roots.get(level) {
+                if let Some(h) = level_vec.get(j) {
+                    return *h;
+                }
+            }
+        }
+        // Fall back to RFC 6962 recursive split. The cached path
+        // gets short-circuited at the first complete sub-peak; the
+        // remainder (right-edge partial) recurses but each step
+        // halves at most O(log n) times.
+        let k = split_point(len);
+        let left = self.cached_subtree_root(start, k);
+        let right = self.cached_subtree_root(start + k, len - k);
+        node_hash(&left, &right)
+    }
+
+    /// Cache-aware audit-path construction. RFC 6962 split-and-recurse,
+    /// but every sibling subtree is resolved via [`Self::cached_subtree_root`].
+    #[allow(clippy::arithmetic_side_effects)] // bounded by tree depth
+    fn cached_audit_path(&self, m: usize, range_start: usize, range_len: usize) -> Vec<[u8; 32]> {
+        if range_len <= 1 {
+            return Vec::new();
+        }
+        let k = split_point(range_len);
+        if m < range_start + k {
+            let mut path = self.cached_audit_path(m, range_start, k);
+            let sib = self.cached_subtree_root(range_start + k, range_len - k);
+            path.push(sib);
+            path
+        } else {
+            let mut path = self.cached_audit_path(m, range_start + k, range_len - k);
+            let sib = self.cached_subtree_root(range_start, k);
+            path.push(sib);
+            path
+        }
     }
 
     /// Generate an inclusion proof for the leaf at `leaf_index`.
@@ -424,7 +504,7 @@ impl TransparencyLog {
                 ),
             });
         }
-        let path = audit_path(&self.leaf_hashes, idx);
+        let path = self.cached_audit_path(idx, 0, self.leaf_hashes.len());
         Ok(InclusionProof {
             leaf_index,
             tree_size: self.tree_size(),
@@ -849,6 +929,74 @@ mod tests {
             // Mutate one byte of the signed root after signing.
             sth.root_hash[0] ^= 0x01;
             assert!(log.verify_tree_head(&sth).is_err());
+        }
+
+        /// Issue #36 — the incremental subtree-roots cache must
+        /// agree with from-scratch RFC 6962 MTH for every prefix.
+        ///
+        /// Builds a log of N appends, then for each prefix [0..i]
+        /// computes the root via the cache (incremental) and via a
+        /// from-scratch recursion over the leaf slice. They must
+        /// agree at every i.
+        #[hegel::test]
+        fn prop_subtree_cache_matches_from_scratch(tc: hegel::TestCase) {
+            let payloads = draw_payloads(&tc);
+            // Build the log incrementally, snapshotting root_hash at every step.
+            let mut log = TransparencyLog::new();
+            let mut incremental_roots = Vec::with_capacity(payloads.len());
+            for (i, p) in payloads.iter().enumerate() {
+                log.append(LogEntryKind::DsseEnvelope, p, (i as u64) + 1)
+                    .unwrap_or_else(|_| std::process::abort());
+                incremental_roots.push(log.root_hash());
+            }
+            // From-scratch: recompute the MTH for every prefix using
+            // a fresh recursion over the leaf hashes.
+            let leaves: Vec<[u8; 32]> = (0..log.tree_size())
+                .map(|i| log.leaf_hash_at(i).unwrap_or_else(|| std::process::abort()))
+                .collect();
+            for (i, expected) in incremental_roots.iter().enumerate() {
+                let from_scratch = mth_from_scratch(&leaves[..=i]);
+                if from_scratch != *expected {
+                    std::process::abort();
+                }
+            }
+        }
+
+        /// From-scratch RFC 6962 MTH for cross-checking the cache.
+        /// Mirrors the recursion the cache replaced.
+        fn mth_from_scratch(leaves: &[[u8; 32]]) -> [u8; 32] {
+            match leaves.len() {
+                0 => empty_root_for_test(),
+                1 => leaves[0],
+                n => {
+                    let k = split_point_for_test(n);
+                    let left = mth_from_scratch(&leaves[..k]);
+                    let right = mth_from_scratch(&leaves[k..]);
+                    node_hash_for_test(&left, &right)
+                }
+            }
+        }
+
+        const fn split_point_for_test(n: usize) -> usize {
+            let mut k = 1usize;
+            while k.saturating_mul(2) < n {
+                k = k.saturating_mul(2);
+            }
+            k
+        }
+
+        fn empty_root_for_test() -> [u8; 32] {
+            let mut h = blake3::Hasher::new();
+            h.update(LOG_EMPTY_DOMAIN);
+            *h.finalize().as_bytes()
+        }
+
+        fn node_hash_for_test(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
+            let mut h = blake3::Hasher::new();
+            h.update(LOG_NODE_DOMAIN);
+            h.update(left);
+            h.update(right);
+            *h.finalize().as_bytes()
         }
 
         /// Issue #29: a verifier holding only the log + its root can
