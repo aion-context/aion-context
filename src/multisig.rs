@@ -178,6 +178,29 @@ pub fn verify_multisig(
     let valid_count = valid_signers.len() as u32;
     let threshold_met = valid_count >= policy.threshold;
 
+    if threshold_met && invalid_signers.is_empty() {
+        tracing::info!(
+            event = "multisig_threshold_met",
+            version = version.version_number,
+            valid = valid_count,
+            required = policy.threshold,
+        );
+    } else {
+        tracing::warn!(
+            event = "multisig_threshold_short",
+            version = version.version_number,
+            valid = valid_count,
+            required = policy.threshold,
+            invalid = invalid_signers.len() as u32,
+            missing = missing_signers.len() as u32,
+            reason = if invalid_signers.is_empty() {
+                "insufficient_signers"
+            } else {
+                "byzantine_signer"
+            },
+        );
+    }
+
     Ok(MultiSigVerification {
         threshold_met,
         valid_count,

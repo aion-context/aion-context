@@ -361,6 +361,11 @@ impl AuditEntry {
         // Check hash chain
         let expected_hash = previous_entry.compute_hash();
         if self.previous_hash != expected_hash {
+            tracing::warn!(
+                event = "audit_chain_broken",
+                timestamp = self.timestamp,
+                reason = "prev_hash_mismatch",
+            );
             return Err(AionError::BrokenAuditChain {
                 expected: expected_hash,
                 actual: self.previous_hash,
@@ -369,6 +374,11 @@ impl AuditEntry {
 
         // Check timestamp ordering (allow equal for concurrent operations)
         if self.timestamp < previous_entry.timestamp {
+            tracing::warn!(
+                event = "audit_chain_broken",
+                timestamp = self.timestamp,
+                reason = "timestamp_regression",
+            );
             return Err(AionError::InvalidTimestamp {
                 reason: format!(
                     "Entry timestamp {} is before previous entry {}",
@@ -379,6 +389,11 @@ impl AuditEntry {
 
         // Validate reserved fields are zero
         if self.reserved1 != [0; 6] || self.reserved2 != [0; 4] || self.reserved3 != [0; 8] {
+            tracing::warn!(
+                event = "audit_chain_broken",
+                timestamp = self.timestamp,
+                reason = "reserved_nonzero",
+            );
             return Err(AionError::InvalidFormat {
                 reason: "Reserved fields must be zero".to_string(),
             });

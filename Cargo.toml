@@ -63,6 +63,14 @@ rpassword = "7.4.0"
 dirs = "6.0.0"
 hostname = "0.4.0"
 
+# Structured observability (RFC-0007 / observability rule).
+# Library only depends on the `tracing` facade — no subscriber.
+# `tracing-subscriber` is pulled in by the `aion` CLI binary path
+# (the binary uses it to install a fmt+JSON subscriber driven by
+# `AION_LOG` / `AION_LOG_FORMAT`).
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
 [dev-dependencies]
 # Property-based testing (see .claude/rules/property-testing.md).
 # Requires `uv` on PATH at test time to launch the hegel-core backend;

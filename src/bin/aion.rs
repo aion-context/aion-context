@@ -647,7 +647,31 @@ impl From<ExportFormatType> for ExportFormat {
     }
 }
 
+/// Initialize the structured tracing subscriber for the `aion` CLI.
+///
+/// Per `.claude/rules/observability.md`, the **library** never installs
+/// a subscriber — only this binary does. Configuration is driven by
+/// two environment variables:
+///
+/// - `AION_LOG` — log level / `EnvFilter` directive. Default: `warn`.
+///   Examples: `AION_LOG=info`, `AION_LOG=aion_context=debug,warn`.
+/// - `AION_LOG_FORMAT` — `text` (default, human-readable) or `json`
+///   (one structured JSON line per event, suitable for log-store ingest).
+fn init_tracing() {
+    let env_filter = tracing_subscriber::EnvFilter::try_from_env("AION_LOG")
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn"));
+    let format = std::env::var("AION_LOG_FORMAT").unwrap_or_default();
+
+    let builder = tracing_subscriber::fmt().with_env_filter(env_filter);
+    if format.eq_ignore_ascii_case("json") {
+        let _ = builder.json().with_writer(std::io::stderr).try_init();
+    } else {
+        let _ = builder.with_writer(std::io::stderr).try_init();
+    }
+}
+
 fn main() -> Result<ExitCode> {
+    init_tracing();
     let cli = Cli::parse();
 
     match cli.command {
