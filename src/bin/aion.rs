@@ -1730,19 +1730,21 @@ fn bundle_to_signed_release(b: ReleaseBundle) -> Result<aion_context::release::S
     }
 
     Ok(aion_context::release::SignedRelease::from_components(
-        AuthorId::new(b.signer),
-        b.model_ref,
-        manifest,
-        manifest_signature,
-        b.manifest_dsse,
-        b.aibom,
-        b.aibom_dsse,
-        b.slsa_statement,
-        b.slsa_dsse,
-        b.oci_primary,
-        b.oci_aibom_referrer,
-        b.oci_slsa_referrer,
-        log_entries,
+        aion_context::release::SignedReleaseComponents {
+            signer: AuthorId::new(b.signer),
+            model_ref: b.model_ref,
+            manifest,
+            manifest_signature,
+            manifest_dsse: b.manifest_dsse,
+            aibom: b.aibom,
+            aibom_dsse: b.aibom_dsse,
+            slsa_statement: b.slsa_statement,
+            slsa_dsse: b.slsa_dsse,
+            oci_primary: b.oci_primary,
+            oci_aibom_referrer: b.oci_aibom_referrer,
+            oci_slsa_referrer: b.oci_slsa_referrer,
+            log_entries,
+        },
     ))
 }
 

@@ -539,6 +539,56 @@ pub struct SignedRelease {
     pub log_entries: Vec<LogSeq>,
 }
 
+/// Named-field input bag for [`SignedRelease::from_components`].
+///
+/// Replaces an earlier 13-positional-argument signature: 9 of those
+/// arguments were structurally-similar (3 × [`DsseEnvelope`], 3 ×
+/// [`OciArtifactManifest`]) and the compiler could not distinguish
+/// a transposition from intent. With this struct, every field is
+/// named at the call site and Rust catches missing or duplicated
+/// fields at compile time.
+///
+/// **Not** marked `#[non_exhaustive]` — the entire point of this
+/// struct is to be constructible via struct-literal from outside
+/// the crate. New fields added to [`SignedRelease`] must also land
+/// here, and external consumers must add them at every call site;
+/// that is the intended ergonomic.
+///
+/// Audit-pass WARN finding (2026-04-25); landed in the same
+/// 0.2.0 breaking window as the rest of the registry-aware
+/// rollout.
+#[derive(Debug, Clone)]
+pub struct SignedReleaseComponents {
+    /// Author that sealed the release.
+    pub signer: AuthorId,
+    /// AIBOM-flavoured reference to the primary artifact.
+    pub model_ref: ModelRef,
+    /// Artifact manifest (primary + auxiliaries).
+    pub manifest: ArtifactManifest,
+    /// RFC-0022 signature over `manifest`.
+    pub manifest_signature: SignatureEntry,
+    /// DSSE envelope wrapping the manifest signature.
+    pub manifest_dsse: DsseEnvelope,
+    /// AIBOM record.
+    pub aibom: AiBom,
+    /// DSSE envelope wrapping the AIBOM.
+    pub aibom_dsse: DsseEnvelope,
+    /// in-toto Statement carrying the SLSA v1.1 provenance.
+    pub slsa_statement: InTotoStatement,
+    /// DSSE envelope wrapping the SLSA statement.
+    pub slsa_dsse: DsseEnvelope,
+    /// OCI Image Manifest v1.1 for the primary artifact.
+    pub oci_primary: OciArtifactManifest,
+    /// OCI referrer manifest for the AIBOM DSSE envelope.
+    pub oci_aibom_referrer: OciArtifactManifest,
+    /// OCI referrer manifest for the SLSA DSSE envelope.
+    pub oci_slsa_referrer: OciArtifactManifest,
+    /// Transparency-log positions for the three appended entries,
+    /// in seal order: manifest signature, DSSE envelope, SLSA
+    /// statement.
+    pub log_entries: Vec<(LogEntryKind, u64)>,
+}
+
 impl SignedRelease {
     /// Reconstruct a [`SignedRelease`] from its component parts
     /// (issue #28). Complement to [`ReleaseBuilder::seal`] — the
@@ -546,45 +596,31 @@ impl SignedRelease {
     /// per-component artifacts from disk can reassemble the
     /// aggregate and call [`Self::verify`].
     ///
-    /// `log_entries` is a list of `(kind, seq)` pairs; internally
-    /// they become [`LogSeq`] records. The order must match what
-    /// [`ReleaseBuilder::seal`] produced: manifest signature,
-    /// DSSE envelope, SLSA statement — see
-    /// [`crate::transparency_log::LogEntryKind`].
+    /// Takes a [`SignedReleaseComponents`] struct so every input is
+    /// named at the call site; the compiler catches missing or
+    /// duplicated fields at compile time. See the
+    /// `SignedReleaseComponents` doc for the rationale and the
+    /// audit-pass WARN that motivated the change.
     #[must_use]
-    #[allow(clippy::too_many_arguments)]
-    pub fn from_components(
-        signer: AuthorId,
-        model_ref: ModelRef,
-        manifest: ArtifactManifest,
-        manifest_signature: SignatureEntry,
-        manifest_dsse: DsseEnvelope,
-        aibom: AiBom,
-        aibom_dsse: DsseEnvelope,
-        slsa_statement: InTotoStatement,
-        slsa_dsse: DsseEnvelope,
-        oci_primary: OciArtifactManifest,
-        oci_aibom_referrer: OciArtifactManifest,
-        oci_slsa_referrer: OciArtifactManifest,
-        log_entries: Vec<(LogEntryKind, u64)>,
-    ) -> Self {
-        let log_seqs = log_entries
+    pub fn from_components(parts: SignedReleaseComponents) -> Self {
+        let log_seqs = parts
+            .log_entries
             .into_iter()
             .map(|(kind, seq)| LogSeq { kind, seq })
             .collect();
         Self {
-            signer,
-            model_ref,
-            manifest,
-            manifest_signature,
-            manifest_dsse,
-            aibom,
-            aibom_dsse,
-            slsa_statement,
-            slsa_dsse,
-            oci_primary,
-            oci_aibom_referrer,
-            oci_slsa_referrer,
+            signer: parts.signer,
+            model_ref: parts.model_ref,
+            manifest: parts.manifest,
+            manifest_signature: parts.manifest_signature,
+            manifest_dsse: parts.manifest_dsse,
+            aibom: parts.aibom,
+            aibom_dsse: parts.aibom_dsse,
+            slsa_statement: parts.slsa_statement,
+            slsa_dsse: parts.slsa_dsse,
+            oci_primary: parts.oci_primary,
+            oci_aibom_referrer: parts.oci_aibom_referrer,
+            oci_slsa_referrer: parts.oci_slsa_referrer,
             log_entries: log_seqs,
         }
     }
