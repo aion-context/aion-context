@@ -680,10 +680,16 @@ fn serialize_author_entry(author: AuthorId, record: &AuthorRecord) -> TrustedAut
     let mut epochs = Vec::with_capacity(sorted_epochs.len());
     let mut revocations = Vec::new();
     for epoch in sorted_epochs {
+        let status = match epoch.status {
+            KeyStatus::Active => TrustedEpochStatus::Active,
+            KeyStatus::Rotated { .. } => TrustedEpochStatus::Rotated,
+            KeyStatus::Revoked { .. } => TrustedEpochStatus::Revoked,
+        };
         epochs.push(TrustedEpochEntry {
             epoch: epoch.epoch,
             public_key: engine.encode(epoch.public_key),
             active_from_version: epoch.created_at_version,
+            status: Some(status),
         });
         if let KeyStatus::Revoked {
             reason,
@@ -741,6 +747,29 @@ struct TrustedEpochEntry {
     epoch: u32,
     public_key: String,
     active_from_version: u64,
+    /// One of `active`, `rotated`, `revoked`. Optional on parse
+    /// for backward compatibility — older JSON without a status
+    /// field reconstructs the status from neighboring epochs and
+    /// the revocations array. Always emitted on serialize for
+    /// operator-readability: an auditor diffing two registry
+    /// files can see at a glance which epochs are still active.
+    /// Audit-pass HIGH finding (2026-04-25); the in-memory
+    /// status is still derived from the reconstruction, not
+    /// trusted from this field, so an inconsistent JSON cannot
+    /// elevate a rotated key back to active.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    status: Option<TrustedEpochStatus>,
+}
+
+/// Wire representation of [`KeyStatus`] for the trusted-JSON
+/// format. Exposed only for round-trip readability — the parser
+/// reconstructs the in-memory status independently.
+#[derive(serde::Deserialize, serde::Serialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum TrustedEpochStatus {
+    Active,
+    Rotated,
+    Revoked,
 }
 
 #[derive(serde::Deserialize, serde::Serialize)]
@@ -1244,6 +1273,103 @@ mod tests {
                 }}]}}"#
             );
             assert!(KeyRegistry::from_trusted_json(&json).is_err());
+        }
+
+        // ----------------------------------------------------------
+        // Audit-pass HIGH finding: the serialized JSON now carries
+        // an explicit `status` per epoch ("active" / "rotated" /
+        // "revoked") so an auditor diffing two registry files can
+        // see at a glance which keys are still in force. The
+        // in-memory status is still derived from reconstruction —
+        // these tests confirm the new field is informative AND the
+        // backward-compat path still works.
+        // ----------------------------------------------------------
+
+        fn build_two_epoch_rotated_registry() -> KeyRegistry {
+            let author = AuthorId::new(11);
+            let master = SigningKey::generate();
+            let op0 = SigningKey::generate();
+            let op1 = SigningKey::generate();
+            let mut reg = KeyRegistry::new();
+            reg.register_author(author, master.verifying_key(), op0.verifying_key(), 0)
+                .unwrap();
+            let rotation =
+                sign_rotation_record(author, 0, 1, op1.verifying_key().to_bytes(), 100, &master);
+            reg.apply_rotation(&rotation).unwrap();
+            reg
+        }
+
+        #[test]
+        fn serialized_json_marks_rotated_and_active_epochs() {
+            let reg = build_two_epoch_rotated_registry();
+            let out = reg.to_trusted_json().unwrap();
+            // Epoch 0 should be marked rotated; epoch 1 active.
+            assert!(
+                out.contains("\"status\": \"rotated\""),
+                "rotated epoch must be marked, got: {out}"
+            );
+            assert!(
+                out.contains("\"status\": \"active\""),
+                "active epoch must be marked, got: {out}"
+            );
+        }
+
+        #[test]
+        fn serialized_json_marks_revoked_epoch() {
+            let author = AuthorId::new(12);
+            let master = SigningKey::generate();
+            let op = SigningKey::generate();
+            let mut reg = KeyRegistry::new();
+            reg.register_author(author, master.verifying_key(), op.verifying_key(), 0)
+                .unwrap();
+            let revocation =
+                sign_revocation_record(author, 0, RevocationReason::Compromised, 50, &master);
+            reg.apply_revocation(&revocation).unwrap();
+
+            let out = reg.to_trusted_json().unwrap();
+            assert!(
+                out.contains("\"status\": \"revoked\""),
+                "revoked epoch must be marked, got: {out}"
+            );
+        }
+
+        #[test]
+        fn old_json_without_status_field_still_parses() {
+            // The JSON below predates the status field. It must
+            // still parse, with status reconstructed from epoch
+            // ordering and the revocations array.
+            let master = SigningKey::generate();
+            let op0 = SigningKey::generate();
+            let op1 = SigningKey::generate();
+            let json = format!(
+                r#"{{"version":1,"authors":[{{
+                    "author_id": 13,
+                    "master_key": "{}",
+                    "epochs": [
+                        {{"epoch":0,"public_key":"{}","active_from_version":0}},
+                        {{"epoch":1,"public_key":"{}","active_from_version":100}}
+                    ]
+                }}]}}"#,
+                b64(&master.verifying_key().to_bytes()),
+                b64(&op0.verifying_key().to_bytes()),
+                b64(&op1.verifying_key().to_bytes()),
+            );
+            let reg = KeyRegistry::from_trusted_json(&json).unwrap();
+            // Verify the in-memory reconstruction:
+            let author = AuthorId::new(13);
+            assert_eq!(reg.active_epoch_at(author, 50).unwrap().epoch, 0);
+            assert_eq!(reg.active_epoch_at(author, 200).unwrap().epoch, 1);
+        }
+
+        #[test]
+        fn round_trip_preserves_status() {
+            let original = build_two_epoch_rotated_registry();
+            let json = original.to_trusted_json().unwrap();
+            let reloaded = KeyRegistry::from_trusted_json(&json).unwrap();
+            // Re-serialize and compare. The status fields must
+            // survive the round-trip.
+            let json2 = reloaded.to_trusted_json().unwrap();
+            assert_eq!(json, json2, "round-trip JSON must be byte-identical");
         }
     }
 }
