@@ -185,7 +185,5 @@ at your option.
 
 - Bug reports → [GitHub Issues](https://github.com/aion-context/aion-context/issues/new/choose)
 - Security reports → see [SECURITY.md](SECURITY.md) (private flow only)
-- Open-ended questions / design discussions → [Discussions](https://github.com/aion-context/aion-context/discussions) (enabled with the announcement, [#74])
+- Open-ended questions / design discussions → [Discussions](https://github.com/aion-context/aion-context/discussions)
 - Contribution rules → [CONTRIBUTING.md](CONTRIBUTING.md), [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
-
-[#74]: https://github.com/aion-context/aion-context/issues/74
