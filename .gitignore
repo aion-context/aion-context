@@ -51,6 +51,12 @@ fuzz/corpus/
 fuzz/artifacts/
 fuzz/target/
 
+# Per-industry demo .aion fixtures are regenerated locally by
+# examples/regenerate_fixtures.sh — they are not source of truth
+# and must not be redistributed as authoritative artifacts (the
+# signing keys are ephemeral, stored in the operator's OS keyring).
+examples/*/*.aion
+
 # Hegel property-test server logs (per-process, not for git)
 .hegel/
 .claude/scheduled_tasks.lock
