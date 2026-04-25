@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/copyleftdev/aion-context/security/advisories/new
+    about: Please report security issues privately. Do NOT file public issues for security bugs — see SECURITY.md.
+  - name: Question or discussion
+    url: https://github.com/copyleftdev/aion-context/discussions
+    about: For open-ended questions, design discussion, or "how do I X". Bug? Use the bug template instead.

@@ -1,0 +1,78 @@
+name: Bug report
+description: Something doesn't work the way the docs / RFCs / API say it should.
+title: "bug: <one-line summary>"
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file. Bug reports with a minimal
+        reproducer get fixed faster than ones without.
+
+        **Security bugs:** please do NOT use this template — see
+        [SECURITY.md](../SECURITY.md) for the private-disclosure path.
+
+  - type: input
+    id: version
+    attributes:
+      label: aion-context version
+      description: Output of `aion --version`, or the crate version from your `Cargo.toml`.
+      placeholder: e.g. 0.2.0
+    validations:
+      required: true
+
+  - type: input
+    id: rust-version
+    attributes:
+      label: Rust toolchain version
+      description: Output of `rustc --version`.
+      placeholder: e.g. rustc 1.81.0 (eeb90cda1 2024-09-04)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Linux
+        - macOS
+        - Windows
+        - Other (please specify in description)
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you observe?
+      placeholder: e.g. `aion verify` returned VALID for a file with a flipped byte
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-expected
+    attributes:
+      label: What you expected
+      description: What did the docs / RFCs / your reading of the API tell you to expect?
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproduction
+      description: |
+        Shell commands, source code, or a small `.aion` file we can use to
+        reproduce. The smaller the better. If reproduction needs a private
+        file, please redact and describe the structure instead.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Additional context
+      description: Anything else — logs (with secrets redacted), suspected cause, related RFCs.

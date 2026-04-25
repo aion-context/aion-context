@@ -1,0 +1,65 @@
+name: Feature request
+description: Propose new functionality or a change to existing behaviour.
+title: "feat: <one-line summary>"
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for proposing! Big proposals (new file-format fields, new
+        crypto primitives, new compliance frameworks) usually warrant an
+        RFC under `rfcs/` rather than a feature issue — see
+        `.claude/rules/rfc-discipline.md` for the threshold.
+
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Motivation
+      description: |
+        What problem does this solve, and what fails today without it?
+        "Nice to have" alone is not enough — show the concrete situation
+        where the current API/CLI/format leaves you stuck.
+    validations:
+      required: true
+
+  - type: textarea
+    id: shape
+    attributes:
+      label: Proposed shape
+      description: |
+        What should the public surface look like? Sketch the API, the
+        CLI flags, or the file-format change. Code blocks welcome.
+      render: rust
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: |
+        At least two alternatives, including "do nothing." Why is the
+        proposed shape the right one?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Scope of change
+      description: Best guess — maintainers may revise.
+      options:
+        - Non-breaking (additive)
+        - Breaking (semver major)
+        - On-disk format change (requires an RFC)
+        - Crypto primitive change (requires an RFC)
+        - CLI flag / output change
+        - Documentation only
+    validations:
+      required: true
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Additional context
+      description: RFCs that touch this area, prior discussions, related issues.
