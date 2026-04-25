@@ -3,11 +3,8 @@
 > **Tamper-evident policy files. The gate your AI agent can't bypass —
 > and the audit trail your regulator wants to see.**
 
-<!-- TODO(#73): badge row activates when published to crates.io -->
-<!--
 [![crates.io](https://img.shields.io/crates/v/aion-context.svg)](https://crates.io/crates/aion-context)
 [![docs.rs](https://img.shields.io/docsrs/aion-context)](https://docs.rs/aion-context)
--->
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
 **Live demo:** [demo.aion-context.dev](https://demo.aion-context.dev/) — running `.aion` policies in a real agent loop.
@@ -70,7 +67,15 @@ configuration needed.
 
 ## Install
 
-Until [#73] (crates.io publication) lands, install from source:
+```bash
+# CLI:
+cargo install aion-context
+
+# Library:
+cargo add aion-context
+```
+
+Or from source:
 
 ```bash
 git clone https://github.com/aion-context/aion-context
@@ -78,11 +83,6 @@ cd aion-context
 cargo install --path . --bin aion
 aion --help
 ```
-
-After #73 the install line will be `cargo install aion-context` /
-`cargo add aion-context`.
-
-[#73]: https://github.com/aion-context/aion-context/issues/73
 
 ## What's in the box
 
