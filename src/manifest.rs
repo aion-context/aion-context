@@ -422,6 +422,29 @@ fn parse_artifact_entry(slice: &[u8]) -> Result<ArtifactEntry> {
         reason: "hash bytes out of bounds".to_string(),
     })?;
     hash.copy_from_slice(hash_bytes);
+
+    // Reserved fields must be zero — issue #40. Silently accepting
+    // non-zero reserved bits would let producers ship manifests
+    // whose canonical_bytes() round-trip changes manifest_id, since
+    // the parser would re-emit them as zero. Strict validation
+    // matches the format spec and keeps manifest_id stable.
+    let reserved1 = slice.get(14..16).ok_or_else(|| AionError::InvalidFormat {
+        reason: "reserved1 out of bounds".to_string(),
+    })?;
+    if reserved1.iter().any(|b| *b != 0) {
+        return Err(AionError::InvalidFormat {
+            reason: "ArtifactEntry reserved1 must be all zero".to_string(),
+        });
+    }
+    let reserved2 = slice.get(56..128).ok_or_else(|| AionError::InvalidFormat {
+        reason: "reserved2 out of bounds".to_string(),
+    })?;
+    if reserved2.iter().any(|b| *b != 0) {
+        return Err(AionError::InvalidFormat {
+            reason: "ArtifactEntry reserved2 must be all zero".to_string(),
+        });
+    }
+
     Ok(ArtifactEntry {
         name_offset,
         name_length,
@@ -630,6 +653,67 @@ mod tests {
         assert!(verify_manifest_signature(&m2, &sig, &reg, 1).is_err());
     }
 
+    /// Issue #40 — reserved fields must validate as zero. Catches
+    /// the round-trip identity gap surfaced by the fuzz harness in
+    /// PR #39: silently accepting non-zero reserved bits would let
+    /// `canonical_bytes() ↔ from_canonical_bytes()` produce drifting
+    /// `manifest_id` values for the same logical content.
+    mod reserved_validation {
+        use super::*;
+
+        /// Build a one-entry canonical manifest, return its bytes
+        /// alongside the entry's offset so the test can flip a
+        /// reserved bit at a known location.
+        fn one_entry_canonical_bytes() -> Vec<u8> {
+            let mut b = ArtifactManifestBuilder::new();
+            let _ = b.add("a", &[1, 2, 3]);
+            b.build().canonical_bytes()
+        }
+
+        /// Locate the start of the first `ArtifactEntry` in a canonical
+        /// manifest: 19 bytes domain prefix + 8 bytes count.
+        #[allow(clippy::arithmetic_side_effects)] // domain length + 8 is bounded
+        const fn first_entry_offset() -> usize {
+            MANIFEST_DOMAIN.len() + 8
+        }
+
+        #[test]
+        #[allow(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
+        fn rejects_nonzero_reserved1() {
+            let mut bytes = one_entry_canonical_bytes();
+            // reserved1 occupies entry-relative bytes 14..16.
+            let target = first_entry_offset() + 14;
+            bytes[target] = 0x01;
+            let result = ArtifactManifest::from_canonical_bytes(&bytes);
+            assert!(
+                result.is_err(),
+                "non-zero reserved1 must be rejected, got Ok"
+            );
+        }
+
+        #[test]
+        #[allow(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
+        fn rejects_nonzero_reserved2() {
+            let mut bytes = one_entry_canonical_bytes();
+            // reserved2 occupies entry-relative bytes 56..128. Pick
+            // offset 100 — squarely inside reserved2.
+            let target = first_entry_offset() + 100;
+            bytes[target] = 0x42;
+            let result = ArtifactManifest::from_canonical_bytes(&bytes);
+            assert!(
+                result.is_err(),
+                "non-zero reserved2 must be rejected, got Ok"
+            );
+        }
+
+        #[test]
+        fn well_formed_input_still_round_trips() {
+            let bytes = one_entry_canonical_bytes();
+            let manifest = ArtifactManifest::from_canonical_bytes(&bytes).unwrap();
+            assert_eq!(manifest.canonical_bytes(), bytes);
+        }
+    }
+
     mod properties {
         use super::*;
         use hegel::generators as gs;
@@ -831,6 +915,24 @@ mod tests {
             // must reject because the attacker's pubkey does not match the
             // pinned active epoch.
             assert!(verify_manifest_signature(&m, &sig, &reg, at).is_err());
+        }
+
+        /// Issue #40 — for any well-formed manifest produced by
+        /// the public builder, `canonical_bytes` ↔ `from_canonical_bytes`
+        /// is byte-identical (and `manifest_id` therefore stable).
+        #[hegel::test]
+        fn prop_canonical_round_trip_byte_identical(tc: hegel::TestCase) {
+            let pairs = draw_artifacts(&tc);
+            let m = build_manifest(&pairs);
+            let bytes = m.canonical_bytes();
+            let reparsed = ArtifactManifest::from_canonical_bytes(&bytes)
+                .unwrap_or_else(|_| std::process::abort());
+            if reparsed.canonical_bytes() != bytes {
+                std::process::abort();
+            }
+            if reparsed.manifest_id() != m.manifest_id() {
+                std::process::abort();
+            }
         }
     }
 }
