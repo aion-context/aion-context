@@ -1,0 +1,19 @@
+# Configuration for `cargo audit`. The advisory db / RUSTSEC ignore set
+# is duplicated here from `deny.toml` because `cargo audit` and
+# `cargo deny` are independent tools that read independent configs;
+# both need the same ignore set to produce a clean dashboard.
+#
+# Keep this list in sync with `deny.toml [advisories] ignore`. At every
+# dep-bump, audit both: are the entries still load-bearing, or has the
+# transitive dep rev'd to something current?
+
+[advisories]
+ignore = [
+    # paste 1.0.15 — flagged "unmaintained" upstream as of 2024-10-07.
+    # Pulled transitively by pqcrypto-mldsa (PQ signatures, RFC-0027)
+    # and hegeltest (property-test backend). No CVE and no drop-in
+    # replacement currently available; the maintained successor
+    # (`pastey`) has not propagated through our transitive graph yet.
+    # Re-evaluate at every dep bump.
+    "RUSTSEC-2024-0436",
+]

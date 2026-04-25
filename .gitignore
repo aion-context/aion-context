@@ -49,6 +49,7 @@ book/book/
 # Project specific
 fuzz/corpus/
 fuzz/artifacts/
+fuzz/target/
 
 # Hegel property-test server logs (per-process, not for git)
 .hegel/
