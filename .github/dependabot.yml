@@ -1,0 +1,57 @@
+version: 2
+updates:
+  # Main crate (root Cargo.toml)
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - rust
+    commit-message:
+      prefix: "deps"
+    groups:
+      patch-updates:
+        update-types: ["patch"]
+      minor-updates:
+        update-types: ["minor"]
+
+  # Fuzz harness (separate Cargo.toml)
+  - package-ecosystem: cargo
+    directory: "/fuzz"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 3
+    labels:
+      - dependencies
+      - rust
+      - fuzz
+    commit-message:
+      prefix: "deps(fuzz)"
+    groups:
+      patch-updates:
+        update-types: ["patch"]
+      minor-updates:
+        update-types: ["minor"]
+
+  # GitHub Actions (workflow YAMLs)
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - ci
+    commit-message:
+      prefix: "ci"
