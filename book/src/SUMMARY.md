@@ -39,6 +39,7 @@
 - [Federation — cross-domain HW attestation](./examples/federation.md)
 - [Policy Loop — agent over a signed policy](./examples/policy_loop.md)
 - [LLM Policy Agent — Claude proposes, .aion gates](./examples/llm_policy_agent.md)
+- [Corpus → .aion — generic git-history replay](./examples/corpus_to_aion.md)
 
 # Reference
 
