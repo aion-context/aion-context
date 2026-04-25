@@ -161,6 +161,59 @@ The prompts didn't change. The gate did.
 | `LLM_POLICY_NO_NETWORK` | unset | When set non-empty, use the offline proposer (round-robin over the 5 actions) |
 | `AION_LOG` | `warn` | Tracing level — set to `info` to see the structured emit stream |
 
+## Command-line flags
+
+| Flag | Effect |
+|---|---|
+| `--keep-policy` | Don't delete the policy file at exit. Also writes the in-process registry to `<policy>.registry.json` so you can run `aion verify --registry ... <policy>` against it afterwards. |
+| `--decision-log <PATH>` | Append one NDJSON line per decision to PATH. Each record carries `tick`, `ticket_hash` (BLAKE3 prefix, stable across phases for the same ticket text), `decision`, `action`, `version`, and `reason`. |
+| `-h`, `--help` | Show usage |
+
+Example with both:
+
+```bash
+ANTHROPIC_API_KEY=sk-ant-... \
+  cargo run --release --features llm-agent-example \
+    --example llm_policy_agent -- \
+    --decision-log /tmp/llm_decisions.ndjson \
+    --keep-policy
+```
+
+After the run:
+
+```bash
+# the four guarantees on the kept file
+aion verify --registry /tmp/aion_llm_policy_demo.registry.json \
+            /tmp/aion_llm_policy_demo.aion
+
+# audit trail (CreateGenesis at v1, CommitVersion at v2)
+aion show --registry /tmp/aion_llm_policy_demo.registry.json \
+          /tmp/aion_llm_policy_demo.aion signatures
+
+# every decision the agent made, one JSON line each
+cat /tmp/llm_decisions.ndjson | jq .
+```
+
+## Two audit trails
+
+The example has two independent audit surfaces, both verifiable, both bounded:
+
+| Trail | Location | What it captures |
+|---|---|---|
+| **In-file audit chain** | `audit_trail_count` entries inside the `.aion` file, hash-chained, signed | `CreateGenesis` at v1, `CommitVersion` at v2 — the cryptographic ledger of changes to the policy file itself |
+| **Decision log** (`--decision-log`) | NDJSON file the operator chooses | Every per-tick decision the agent made: which ticket, which action Claude proposed, which version of the policy was active, what the verdict was, and why |
+
+The first is a **policy-mutation ledger** (what changed, who signed). The second is a **policy-application ledger** (what the gate decided to do, against what policy version). Together they reconstruct everything an auditor needs: "at time T, the policy was version V (proven by the in-file chain) and the agent classified ticket X as `decision=...` (proven by the decision log)."
+
+Phase 5 of the demo dumps the in-file chain to stdout so you can see it without reaching for the CLI:
+
+```text
+─── Phase 5 — in-file audit trail (hash-chained inside the .aion) ───
+  audit_trail_count = 2
+  #00  ts=1777131731111673740  author=81001  action=CreateGenesis  prev_hash=0000000000000000
+  #01  ts=1777131731112170658  author=81001  action=CommitVersion  prev_hash=7014bcee78291585
+```
+
 ## What you'll learn from running it
 
 - How to wrap an LLM proposer in an `.aion` policy gate without

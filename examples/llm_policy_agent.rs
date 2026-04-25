@@ -36,16 +36,20 @@
 #![allow(clippy::missing_const_for_fn)]
 
 use std::collections::HashSet;
+use std::fs::OpenOptions;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
+use aion_context::audit::ActionCode;
 use aion_context::crypto::SigningKey;
 use aion_context::key_registry::KeyRegistry;
 use aion_context::operations::{
     commit_version, init_file, show_current_rules, verify_file, CommitOptions, InitOptions,
     VerificationReport,
 };
+use aion_context::parser::AionParser;
 use aion_context::types::AuthorId;
 
 const OPERATOR_AUTHOR: u64 = 81_001;
@@ -349,12 +353,15 @@ fn print_decision(idx: u64, ticket: &str, d: &Decision) {
     }
 }
 
-fn run_phase(agent: &mut Agent, label: &str) {
+fn run_phase(agent: &mut Agent, label: &str, decision_log: Option<&DecisionLog>) {
     println!();
     println!("─── {label} ───────────────────────────────────────────────");
     for ticket in TICKETS {
         let d = agent.handle(ticket);
         print_decision(agent.tick_seq, ticket, &d);
+        if let Some(log) = decision_log {
+            log.append(agent.tick_seq, ticket, &d);
+        }
     }
 }
 
@@ -401,6 +408,168 @@ fn banner(title: &str) {
     println!("╚═══════════════════════════════════════════════════════════════════════╝");
 }
 
+#[derive(Debug, Default)]
+struct Args {
+    keep_policy: bool,
+    decision_log: Option<PathBuf>,
+}
+
+fn parse_args() -> Result<Args, String> {
+    let mut args = Args::default();
+    let mut iter = std::env::args().skip(1);
+    while let Some(a) = iter.next() {
+        match a.as_str() {
+            "--keep-policy" => args.keep_policy = true,
+            "--decision-log" => match iter.next() {
+                Some(p) => args.decision_log = Some(PathBuf::from(p)),
+                None => return Err("--decision-log requires a path argument".to_string()),
+            },
+            "-h" | "--help" => {
+                print_help();
+                std::process::exit(0);
+            }
+            other => return Err(format!("unknown argument: {other}")),
+        }
+    }
+    Ok(args)
+}
+
+fn print_help() {
+    println!("llm_policy_agent — Claude proposes, .aion policy gates");
+    println!();
+    println!("USAGE:");
+    println!("  llm_policy_agent [OPTIONS]");
+    println!();
+    println!("OPTIONS:");
+    println!("  --keep-policy           Do not delete the policy file at exit (so");
+    println!("                          you can run `aion show signatures` etc. on it)");
+    println!("  --decision-log <PATH>   Append one JSON line per decision to PATH");
+    println!("                          (NDJSON format, suitable for ingest)");
+    println!("  -h, --help              Show this help");
+    println!();
+    println!("ENVIRONMENT:");
+    println!("  ANTHROPIC_API_KEY       Required unless LLM_POLICY_NO_NETWORK=1");
+    println!("  LLM_POLICY_NO_NETWORK   When non-empty, use the offline proposer");
+    println!("  LLM_POLICY_MODEL        Override the Claude model name");
+    println!("  AION_LOG                tracing level (default: warn)");
+}
+
+/// Append-only NDJSON decision-log sink. Each line is one decision
+/// record with bounded fields suitable for log-store ingest.
+struct DecisionLog {
+    path: PathBuf,
+}
+
+impl DecisionLog {
+    fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+
+    fn append(&self, tick: u64, ticket: &str, decision: &Decision) {
+        let json = decision_record_json(tick, ticket, decision);
+        let mut file = match OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)
+        {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!(
+                    "warning: failed to open decision log {}: {e}",
+                    self.path.display()
+                );
+                return;
+            }
+        };
+        if let Err(e) = writeln!(file, "{json}") {
+            eprintln!(
+                "warning: failed to write decision log {}: {e}",
+                self.path.display()
+            );
+        }
+    }
+}
+
+fn decision_record_json(tick: u64, ticket: &str, decision: &Decision) -> String {
+    let (verdict, action, version, reason): (&str, String, Option<u64>, Option<&str>) =
+        match decision {
+            Decision::Executed { action, version } => {
+                ("execute", action.clone(), Some(*version), None)
+            }
+            Decision::Blocked {
+                action,
+                version,
+                reason,
+            } => ("block", action.clone(), Some(*version), Some(*reason)),
+            Decision::Refused { reason, .. } => ("refuse", String::new(), None, Some(*reason)),
+        };
+    let value = serde_json::json!({
+        "tick": tick,
+        "ticket_hash": short_hex_blake3(ticket.as_bytes()),
+        "decision": verdict,
+        "action": action,
+        "version": version,
+        "reason": reason,
+    });
+    value.to_string()
+}
+
+fn short_hex_blake3(bytes: &[u8]) -> String {
+    let h = aion_context::crypto::hash(bytes);
+    hex::encode(&h[..8])
+}
+
+/// Phase 5: dump the .aion file's in-file audit trail.
+///
+/// This is the audit ledger the file maintains for itself —
+/// CreateGenesis at v1, CommitVersion at v2 in this demo. It is
+/// hash-chained inside the file and signed; tampering breaks
+/// `aion verify`.
+fn dump_audit_trail(path: &Path) {
+    println!();
+    println!("─── Phase 5 — in-file audit trail (hash-chained inside the .aion) ───");
+    let bytes = match std::fs::read(path) {
+        Ok(b) => b,
+        Err(e) => {
+            println!("  error reading file: {e}");
+            return;
+        }
+    };
+    let parser = match AionParser::new(&bytes) {
+        Ok(p) => p,
+        Err(e) => {
+            println!("  error parsing file: {e}");
+            return;
+        }
+    };
+    let count = parser.header().audit_trail_count;
+    println!("  audit_trail_count = {count}");
+    for i in 0..count {
+        let entry = match parser.get_audit_entry(i as usize) {
+            Ok(e) => e,
+            Err(e) => {
+                println!("    [#{i}] error: {e}");
+                continue;
+            }
+        };
+        let action = entry
+            .action_code()
+            .map(|a| match a {
+                ActionCode::CreateGenesis => "CreateGenesis",
+                ActionCode::CommitVersion => "CommitVersion",
+                ActionCode::Verify => "Verify",
+                ActionCode::Inspect => "Inspect",
+            })
+            .unwrap_or("Unknown");
+        println!(
+            "  #{i:02}  ts={}  author={}  action={action}  prev_hash={}",
+            entry.timestamp(),
+            entry.author_id().as_u64(),
+            hex::encode(&entry.previous_hash()[..8])
+        );
+    }
+}
+
 fn main() -> ExitCode {
     let env_filter = tracing_subscriber::EnvFilter::try_from_env("AION_LOG")
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn"));
@@ -408,6 +577,15 @@ fn main() -> ExitCode {
         .with_env_filter(env_filter)
         .with_writer(std::io::stderr)
         .try_init();
+
+    let args = match parse_args() {
+        Ok(a) => a,
+        Err(msg) => {
+            eprintln!("error: {msg}");
+            eprintln!("hint: run with --help for usage");
+            return ExitCode::from(2);
+        }
+    };
 
     let llm = match LlmClient::from_env() {
         Ok(c) => c,
@@ -422,6 +600,7 @@ fn main() -> ExitCode {
     let path = std::env::temp_dir().join("aion_llm_policy_demo.aion");
     let key = SigningKey::generate();
     let author = AuthorId::new(OPERATOR_AUTHOR);
+    let decision_log = args.decision_log.clone().map(DecisionLog::new);
 
     banner("llm_policy_agent — Claude proposes, .aion policy gates");
     println!("  policy file:  {}", path.display());
@@ -434,6 +613,15 @@ fn main() -> ExitCode {
             format!("Anthropic API ({})", llm.model)
         }
     );
+    if let Some(ref dl) = decision_log {
+        println!(
+            "  decision log: {} (NDJSON, append-only)",
+            dl.path.display()
+        );
+    }
+    if args.keep_policy {
+        println!("  keep policy:  true (file will survive at exit)");
+    }
     println!("  tracing:      AION_LOG=info to see structured emits on stderr");
 
     let registry = init_demo(&path, &key, author);
@@ -441,7 +629,11 @@ fn main() -> ExitCode {
 
     println!();
     println!("Phase 1 — operator init: policy v1 (lenient — all 5 actions allowed)");
-    run_phase(&mut agent, "Phase 2 — LLM proposes under v1");
+    run_phase(
+        &mut agent,
+        "Phase 2 — LLM proposes under v1",
+        decision_log.as_ref(),
+    );
 
     println!();
     println!("Phase 3 — operator commits v2 (only fetch_url allowed)");
@@ -449,10 +641,41 @@ fn main() -> ExitCode {
     run_phase(
         &mut agent,
         "Phase 4 — same model, same prompts, tighter gate",
+        decision_log.as_ref(),
     );
+
+    dump_audit_trail(&path);
 
     println!();
     println!("✓ demo complete");
-    let _ = std::fs::remove_file(&path);
+    if args.keep_policy {
+        let registry_path = path.with_extension("registry.json");
+        match agent.registry.to_trusted_json() {
+            Ok(json) => {
+                if let Err(e) = std::fs::write(&registry_path, json) {
+                    eprintln!(
+                        "warning: failed to write registry to {}: {e}",
+                        registry_path.display()
+                    );
+                } else {
+                    println!("  registry kept at:    {}", registry_path.display());
+                }
+            }
+            Err(e) => eprintln!("warning: failed to serialize registry: {e}"),
+        }
+        println!("  policy file kept at: {}", path.display());
+        println!(
+            "  inspect with:  aion show --registry {} {} signatures",
+            registry_path.display(),
+            path.display()
+        );
+        println!(
+            "  verify with:   aion verify --registry {} {}",
+            registry_path.display(),
+            path.display()
+        );
+    } else {
+        let _ = std::fs::remove_file(&path);
+    }
     ExitCode::SUCCESS
 }
