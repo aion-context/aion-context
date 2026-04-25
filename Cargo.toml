@@ -19,7 +19,7 @@ ed25519-dalek = { version = "2.1", features = ["rand_core"] }
 chacha20poly1305 = "0.10"
 blake3 = "1.5"
 hkdf = "0.12"
-sha2 = "0.10"
+sha2 = "0.11"
 # Constant-time comparisons for any secret-or-key-shaped bytes
 # (crypto-rule: `==` on key bytes is a BLOCK, see .claude/rules/crypto.md).
 subtle = "2.6"
