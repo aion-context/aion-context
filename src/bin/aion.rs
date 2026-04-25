@@ -422,6 +422,13 @@ enum RegistrySubcommand {
         /// Path to the registry JSON file to mutate in place.
         #[arg(long, value_name = "REGISTRY_FILE")]
         registry: PathBuf,
+
+        /// Suppress the retroactive-invalidation warning that fires
+        /// when `--effective-from-version` equals the current active
+        /// epoch's `created_at_version` (zero-length window). See
+        /// issue #49 for the operator-mistake context.
+        #[arg(long)]
+        no_warn: bool,
     },
 
     /// Revoke an author's epoch (RFC-0028).
@@ -1290,6 +1297,7 @@ fn cmd_registry(args: &RegistryArgs) -> Result<ExitCode> {
             master_key,
             effective_from_version,
             registry,
+            no_warn,
         } => cmd_registry_rotate(
             *author,
             *from_epoch,
@@ -1298,6 +1306,7 @@ fn cmd_registry(args: &RegistryArgs) -> Result<ExitCode> {
             master_key,
             *effective_from_version,
             registry,
+            *no_warn,
         )?,
         RegistrySubcommand::Revoke {
             author,
@@ -1349,6 +1358,7 @@ fn cmd_registry_pin(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)] // CLI dispatch — args mirror the subcommand 1:1
 fn cmd_registry_rotate(
     author: u64,
     from_epoch: u32,
@@ -1357,12 +1367,25 @@ fn cmd_registry_rotate(
     master_key_id: &str,
     effective_from_version: u64,
     registry_path: &std::path::Path,
+    no_warn: bool,
 ) -> Result<()> {
     let keystore = KeyStore::new();
     let new_op = load_key_for_registry(&keystore, new_key_id)?;
     let master = load_key_for_registry(&keystore, master_key_id)?;
 
     let mut registry = load_existing_registry(registry_path)?;
+
+    // Issue #49 — retroactive-invalidation warning. If
+    // `effective_from_version` equals the current active epoch's
+    // `created_at_version`, epoch `from_epoch`'s window collapses
+    // to zero, retroactively invalidating every existing v=`V`
+    // signature by this author. The most common case is a
+    // per-file genesis archive where every file is at v1 and the
+    // operator naively passes `--effective-from-version 1`.
+    if !no_warn {
+        warn_retroactive_rotation(&registry, author, from_epoch, effective_from_version);
+    }
+
     let record = aion_context::key_registry::sign_rotation_record(
         AuthorId::new(author),
         from_epoch,
@@ -1385,6 +1408,49 @@ fn cmd_registry_rotate(
     );
     println!("   Registry: {}", registry_path.display());
     Ok(())
+}
+
+/// Print a stderr warning if the requested rotation would give the
+/// outgoing epoch a zero-length window.
+///
+/// Triggered when `effective_from_version` equals the current active
+/// epoch's `created_at_version`. The warning is informational —
+/// rotation still proceeds. Operators with growing-chain
+/// architectures or testing harnesses may legitimately set them
+/// equal; `--no-warn` suppresses the message.
+fn warn_retroactive_rotation(
+    registry: &aion_context::key_registry::KeyRegistry,
+    author: u64,
+    from_epoch: u32,
+    effective_from_version: u64,
+) {
+    let author_id = AuthorId::new(author);
+    let active = registry
+        .epochs_for(author_id)
+        .iter()
+        .find(|epoch| matches!(epoch.status, aion_context::key_registry::KeyStatus::Active));
+    let Some(epoch) = active else {
+        return;
+    };
+    if epoch.epoch != from_epoch {
+        return;
+    }
+    if epoch.created_at_version != effective_from_version {
+        return;
+    }
+    eprintln!(
+        "⚠️  --effective-from-version {effective_from_version} matches epoch {from_epoch}'s \
+         created_at_version. Epoch {from_epoch}'s window collapses to [{effective_from_version}, \
+         {effective_from_version}); every existing signature by author {author} at version \
+         {effective_from_version} will fail verify under the new registry."
+    );
+    eprintln!(
+        "   Suggested fix: pass `--effective-from-version {next}` (or higher) to leave \
+         existing v{effective_from_version} signatures valid, OR migrate to a growing-chain \
+         architecture (issue #50).",
+        next = effective_from_version.saturating_add(1),
+    );
+    eprintln!("   Use `--no-warn` to suppress this message.");
 }
 
 fn cmd_registry_revoke(
