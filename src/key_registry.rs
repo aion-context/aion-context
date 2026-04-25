@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Key rotation and revocation registry — RFC-0028.
 //!
 //! Each author has:

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Error types for AION v2
 //!
 //! This module defines the error types used throughout AION v2. Following Tiger Style,

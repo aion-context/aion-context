@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! llm_policy_agent — Claude proposes, the .aion policy gates.
 //!
 //! A real LLM-driven sibling of `policy_loop`. For each synthetic

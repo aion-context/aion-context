@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! corpus_to_aion — transform a git corpus into a single signed `.aion` chain.
 //!
 //! Walks an external git repository's history, captures a chosen subtree

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Benchmarks for zero-copy parser
 //!
 //! Demonstrates performance benefits of zero-copy parsing vs traditional approaches.

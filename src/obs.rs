@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Internal helpers for structured tracing emits.
 //!
 //! Per `.claude/rules/observability.md`, every tracing field has bounded

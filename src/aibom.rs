@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! AI Bill of Materials (AIBOM) — RFC-0029.
 //!
 //! [`AiBom`] captures the ingredients of a trained model: the

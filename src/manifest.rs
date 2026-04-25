@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! External artifact manifest — RFC-0022.
 //!
 //! `.aion` files attest to governance context (policy, approvals, audit).

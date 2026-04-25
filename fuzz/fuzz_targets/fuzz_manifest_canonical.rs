@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! `ArtifactManifest::from_canonical_bytes` totality fuzz target.
 //!
 //! The function was added in PR #32 (issue #28) for sealed-release

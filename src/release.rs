@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Release orchestration — RFC-0032.
 //!
 //! One call site that composes the Phase-A primitives into a

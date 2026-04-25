@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Signature chain protocol for AION v2
 //!
 //! This module implements the version signing protocol as specified in RFC-0005.

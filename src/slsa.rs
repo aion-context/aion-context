@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! SLSA v1.1 provenance emitter — RFC-0024.
 //!
 //! Builds an in-toto Statement carrying a SLSA v1.1 provenance

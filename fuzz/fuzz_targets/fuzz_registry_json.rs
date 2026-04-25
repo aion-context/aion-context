@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! `KeyRegistry::from_trusted_json` totality fuzz target.
 //!
 //! Loads operator-supplied registry JSON (the same format

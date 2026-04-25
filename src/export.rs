@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Export/Import Module
 //!
 //! Provides export and import functionality for AION files in various formats:

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Parser-totality fuzz target.
 //!
 //! Pairs with the Hegel property

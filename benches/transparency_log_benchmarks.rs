@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Transparency log inclusion-proof scaling benchmarks (issue #36).
 //!
 //! Pre-#36 the per-call cost of `TransparencyLog::inclusion_proof`

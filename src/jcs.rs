@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! RFC 8785 JSON Canonicalization Scheme — RFC-0031.
 //!
 //! Thin wrapper around [`serde_jcs`] with aion-typed errors. Use

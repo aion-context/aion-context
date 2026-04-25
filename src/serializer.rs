@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Deterministic serializer for AION v2 file format
 //!
 //! This module provides deterministic serialization of AION v2 files as specified

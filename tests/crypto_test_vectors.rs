@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Cryptographic Test Vectors for AION v2
 //!
 //! This module contains comprehensive test vectors from RFCs and other standards

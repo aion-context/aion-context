@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Type-safe domain identifiers for AION v2
 //!
 //! This module provides newtype wrappers around primitive types to prevent

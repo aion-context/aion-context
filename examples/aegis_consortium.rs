@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Aegis Consortium — maximum-complexity aion-context scenario.
 //!
 //! Five-party governance with K-of-N quorum (RFC-0021), hybrid

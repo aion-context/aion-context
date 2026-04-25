@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! String table for AION v2 file format
 //!
 //! This module implements the null-terminated UTF-8 string table as specified

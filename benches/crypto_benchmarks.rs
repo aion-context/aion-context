@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Cryptographic operation benchmarks for AION v2
 //!
 //! Performance targets from RFC-0018:
