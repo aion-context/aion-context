@@ -45,3 +45,4 @@
 
 - [RFC Index](./reference/rfcs.md)
 - [Glossary](./reference/glossary.md)
+- [vs. Other Supply-Chain Tools](./comparison.md)
