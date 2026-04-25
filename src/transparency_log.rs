@@ -713,11 +713,17 @@ mod tests {
         use super::*;
         use hegel::generators as gs;
 
+        // Cap raised from 16 to 256 (audit pass note): 16 only
+        // exercised power-of-2 boundaries up to 2^3=8; larger
+        // ranges drive the cascade past the n=17, 33, 65, 129
+        // off-by-one boundaries and the n=32, 64, 128, 256
+        // power-of-2 cases. Cost stays well under a second per
+        // trial because the subtree cache makes append O(log n).
         fn draw_payloads(tc: &hegel::TestCase) -> Vec<Vec<u8>> {
-            let n = tc.draw(gs::integers::<usize>().min_value(1).max_value(16));
+            let n = tc.draw(gs::integers::<usize>().min_value(1).max_value(256));
             let mut out: Vec<Vec<u8>> = Vec::with_capacity(n);
             for _ in 0..n {
-                out.push(tc.draw(gs::binary().max_size(256)));
+                out.push(tc.draw(gs::binary().max_size(64)));
             }
             out
         }
@@ -804,10 +810,10 @@ mod tests {
 
         #[hegel::test]
         fn prop_wrong_index_rejects(tc: hegel::TestCase) {
-            let n = tc.draw(gs::integers::<usize>().min_value(2).max_value(16));
+            let n = tc.draw(gs::integers::<usize>().min_value(2).max_value(256));
             let mut payloads: Vec<Vec<u8>> = Vec::with_capacity(n);
             for _ in 0..n {
-                payloads.push(tc.draw(gs::binary().max_size(128)));
+                payloads.push(tc.draw(gs::binary().max_size(64)));
             }
             let log = build_log(&payloads);
             let root = log.root_hash();
@@ -846,10 +852,10 @@ mod tests {
         #[hegel::test]
         fn prop_tampered_proof_sibling_rejects(tc: hegel::TestCase) {
             // Need at least 2 leaves so audit_path is non-empty.
-            let n = tc.draw(gs::integers::<usize>().min_value(2).max_value(16));
+            let n = tc.draw(gs::integers::<usize>().min_value(2).max_value(256));
             let mut payloads: Vec<Vec<u8>> = Vec::with_capacity(n);
             for _ in 0..n {
-                payloads.push(tc.draw(gs::binary().max_size(128)));
+                payloads.push(tc.draw(gs::binary().max_size(64)));
             }
             let log = build_log(&payloads);
             let root = log.root_hash();
