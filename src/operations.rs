@@ -324,7 +324,7 @@ fn commit_version_inner(
     let parser = AionParser::new(&file_bytes)?;
     let header = parser.header();
 
-    verify_existing_signatures(&parser, registry)?;
+    verify_head_signature(&parser, registry)?;
 
     let new_version = VersionNumber(header.current_version).next()?;
 
@@ -414,9 +414,21 @@ fn build_new_version_and_signature(
     (new_version_entry, signature_entry)
 }
 
-/// Verify all existing signatures in the file against a pinned registry.
+/// Verify only the head (most recent) signature against the pinned
+/// registry — issue #35.
+///
+/// Replaces the previous full-chain sweep that ran on every
+/// [`commit_version`]. Walking every prior signature on every append
+/// gave commit O(n) per call and chain construction O(n²) — building
+/// 10k versions took ~150 minutes. The hash chain (verified at parse
+/// time and again on read by [`verify_file`]) seals all earlier links;
+/// re-running every prior signature at write time was redundant.
+///
+/// Cost: one Ed25519 verify and one structural check, regardless of
+/// chain length.
 #[allow(clippy::cast_possible_truncation)] // File counts fit in usize
-fn verify_existing_signatures(
+#[allow(clippy::arithmetic_side_effects)] // count - 1 guarded by count > 0
+fn verify_head_signature(
     parser: &AionParser<'_>,
     registry: &crate::key_registry::KeyRegistry,
 ) -> Result<()> {
@@ -424,7 +436,6 @@ fn verify_existing_signatures(
     let version_count = header.version_chain_count as usize;
     let signature_count = header.signatures_count as usize;
 
-    // Must have matching counts
     if version_count != signature_count {
         return Err(AionError::InvalidFormat {
             reason: format!(
@@ -432,15 +443,16 @@ fn verify_existing_signatures(
             ),
         });
     }
-
-    // Verify each signature
-    for i in 0..version_count {
-        let version = parser.get_version_entry(i)?;
-        let signature = parser.get_signature_entry(i)?;
-        verify_signature(&version, &signature, registry)?;
+    if version_count == 0 {
+        return Err(AionError::InvalidFormat {
+            reason: "File has no versions".to_string(),
+        });
     }
 
-    Ok(())
+    let last = version_count - 1;
+    let version = parser.get_version_entry(last)?;
+    let signature = parser.get_signature_entry(last)?;
+    verify_signature(&version, &signature, registry)
 }
 
 /// Get the last version entry from the parser
@@ -2973,6 +2985,167 @@ mod tests {
                     _ => std::process::abort(),
                 }
             }
+        }
+    }
+
+    /// Issue #35 — `commit_version` must still detect head-signature
+    /// tampering even though the verify is now O(1) (head only) rather
+    /// than O(n) (full sweep). Tampering of *non-head* prior signatures
+    /// is intentionally caught by `verify_file`, not by commit.
+    mod commit_head_verify_tests {
+        use super::*;
+        use crate::parser::SIGNATURE_ENTRY_SIZE;
+
+        /// Tamper with a specific signature entry inside an .aion
+        /// file's signature section by flipping one byte.
+        #[allow(clippy::arithmetic_side_effects)] // bounded test inputs
+        fn flip_byte_in_signature_at(bytes: &mut [u8], index: usize) {
+            let parser = AionParser::new(bytes).unwrap();
+            let sig_offset = parser.header().signatures_offset as usize;
+            let target = sig_offset + index * SIGNATURE_ENTRY_SIZE + 50;
+            assert!(target < bytes.len(), "tamper offset out of bounds");
+            bytes[target] ^= 0x01;
+        }
+
+        /// Build a chain of v1..v3, all valid. Then tamper the HEAD
+        /// (v3) signature; `commit_version` of v4 must reject.
+        ///
+        /// This is the post-#35 contract: head-only verify still
+        /// catches tampering of the latest signature, even when
+        /// every earlier signature is intact.
+        #[test]
+        fn commit_rejects_tampered_head_on_multi_version_chain() {
+            let temp = TempDir::new().unwrap();
+            let path = temp.path().join("head_tamper.aion");
+            let signing_key = SigningKey::generate();
+            let author_id = AuthorId::new(70_001);
+            let registry = test_reg(author_id, &signing_key);
+
+            // Build v1, v2, v3 — all valid.
+            let init_opts = InitOptions {
+                author_id,
+                signing_key: &signing_key,
+                message: "v1",
+                timestamp: None,
+            };
+            init_file(&path, b"r1", &init_opts).unwrap();
+            for _ in 2..=3u64 {
+                let opts = CommitOptions {
+                    author_id,
+                    signing_key: &signing_key,
+                    message: "amend",
+                    timestamp: None,
+                };
+                commit_version(&path, b"r", &opts, &registry).unwrap();
+            }
+
+            // Tamper signature index 2 (== v3, the head).
+            let mut bytes = std::fs::read(&path).unwrap();
+            flip_byte_in_signature_at(&mut bytes, 2);
+            std::fs::write(&path, &bytes).unwrap();
+
+            let next_opts = CommitOptions {
+                author_id,
+                signing_key: &signing_key,
+                message: "v4",
+                timestamp: None,
+            };
+            let result = commit_version(&path, b"r4", &next_opts, &registry);
+            assert!(
+                result.is_err(),
+                "commit_version must reject when HEAD signature is tampered"
+            );
+        }
+
+        /// Counter-test documenting the deliberate scope-narrowing in
+        /// #35: tampering an EARLIER signature is no longer caught by
+        /// commit (it's caught by `verify_file` instead). The file is
+        /// committable but won't pass `verify_file`.
+        ///
+        /// This makes the contract explicit: commit is a write-side
+        /// O(1) check on the head; verify is the authoritative
+        /// O(n) chain validator. See issue #35 for the rationale.
+        #[test]
+        fn commit_does_not_catch_non_head_tamper_but_verify_does() {
+            let temp = TempDir::new().unwrap();
+            let path = temp.path().join("non_head_tamper.aion");
+            let signing_key = SigningKey::generate();
+            let author_id = AuthorId::new(70_002);
+            let registry = test_reg(author_id, &signing_key);
+
+            // v1, v2, v3.
+            let init_opts = InitOptions {
+                author_id,
+                signing_key: &signing_key,
+                message: "v1",
+                timestamp: None,
+            };
+            init_file(&path, b"r1", &init_opts).unwrap();
+            for _ in 2..=3u64 {
+                let opts = CommitOptions {
+                    author_id,
+                    signing_key: &signing_key,
+                    message: "amend",
+                    timestamp: None,
+                };
+                commit_version(&path, b"r", &opts, &registry).unwrap();
+            }
+
+            // Tamper signature index 0 (v1, NOT the head).
+            let mut bytes = std::fs::read(&path).unwrap();
+            flip_byte_in_signature_at(&mut bytes, 0);
+            std::fs::write(&path, &bytes).unwrap();
+
+            // commit_version succeeds: head-only check passes.
+            let next_opts = CommitOptions {
+                author_id,
+                signing_key: &signing_key,
+                message: "v4",
+                timestamp: None,
+            };
+            commit_version(&path, b"r4", &next_opts, &registry).unwrap();
+
+            // But verify_file now reports the file invalid.
+            let report = verify_file(&path, &registry).unwrap();
+            assert!(
+                !report.is_valid,
+                "verify_file must reject after a non-head signature tamper"
+            );
+        }
+
+        /// Build cost smoke-check: a 200-version chain post-#35 should
+        /// take well under a second. Pre-#35, this exact loop was
+        /// ~636 ms (already noticeable); the head-only verify drops
+        /// it close to file-I/O cost.
+        #[test]
+        fn commit_succeeds_on_clean_chain_of_many_versions() {
+            let temp = TempDir::new().unwrap();
+            let path = temp.path().join("many.aion");
+            let signing_key = SigningKey::generate();
+            let author_id = AuthorId::new(70_003);
+            let registry = test_reg(author_id, &signing_key);
+
+            let init_opts = InitOptions {
+                author_id,
+                signing_key: &signing_key,
+                message: "v1",
+                timestamp: None,
+            };
+            init_file(&path, b"v1", &init_opts).unwrap();
+
+            for _ in 2..=200u64 {
+                let opts = CommitOptions {
+                    author_id,
+                    signing_key: &signing_key,
+                    message: "amend",
+                    timestamp: None,
+                };
+                commit_version(&path, b"amend", &opts, &registry).unwrap();
+            }
+
+            let report = verify_file(&path, &registry).unwrap();
+            assert!(report.is_valid, "verify_file must accept the built chain");
+            assert_eq!(report.version_count, 200);
         }
     }
 }
