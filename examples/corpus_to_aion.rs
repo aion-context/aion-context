@@ -477,9 +477,7 @@ fn main() -> ExitCode {
 
     restore_checkout(&args, original_ref.as_deref());
 
-    let final_size = std::fs::metadata(&args.output)
-        .map(|m| m.len())
-        .unwrap_or(0);
+    let final_size = std::fs::metadata(&args.output).map_or(0, |m| m.len());
 
     println!();
     println!("=== summary ===");
