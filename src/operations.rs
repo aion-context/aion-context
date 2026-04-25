@@ -139,6 +139,12 @@ pub fn init_file(path: &Path, initial_rules: &[u8], options: &InitOptions) -> Re
     let aion_file = build_genesis_file(file_id, timestamp, rules_hash, encrypted_rules, options)?;
     write_serialized_file(&aion_file, path)?;
 
+    tracing::info!(
+        event = "file_initialized",
+        file_id = %crate::obs::short_hex(&file_id.as_u64().to_le_bytes()),
+        author = %crate::obs::author_short(options.author_id),
+        rules_hash = %crate::obs::short_hex(&rules_hash),
+    );
     Ok(InitResult {
         file_id,
         version: VersionNumber::GENESIS,
@@ -385,9 +391,18 @@ fn commit_version_inner(
     )?;
     AionSerializer::write_atomic(&updated_file, path)?;
 
+    let version_hash = compute_version_hash(&new_version_entry);
+    tracing::info!(
+        event = "commit_accepted",
+        file_id = %crate::obs::short_hex(&header.file_id.to_le_bytes()),
+        author = %crate::obs::author_short(options.author_id),
+        version = new_version.as_u64(),
+        version_hash = %crate::obs::short_hex(&version_hash),
+        rules_hash = %crate::obs::short_hex(&rules_hash),
+    );
     Ok(CommitResult {
         version: new_version,
-        version_hash: compute_version_hash(&new_version_entry),
+        version_hash,
         rules_hash,
     })
 }
@@ -955,6 +970,7 @@ pub fn verify_file(
     }
 
     let Some(versions) = collect_versions_into_report(&parser, &mut report)? else {
+        emit_verify_outcome(&report);
         return Ok(report);
     };
 
@@ -966,6 +982,7 @@ pub fn verify_file(
     }
 
     let Some(signatures) = collect_signatures_into_report(&parser, &mut report)? else {
+        emit_verify_outcome(&report);
         return Ok(report);
     };
 
@@ -981,7 +998,41 @@ pub fn verify_file(
         && report.integrity_hash_valid
         && report.hash_chain_valid
         && report.signatures_valid;
+    emit_verify_outcome(&report);
     Ok(report)
+}
+
+/// Bounded `reason` codes for `event="file_rejected"` (RFC-0007 / observability rule).
+const fn classify_verify_failure(report: &VerificationReport) -> &'static str {
+    if !report.structure_valid {
+        "structure_invalid"
+    } else if !report.integrity_hash_valid {
+        "integrity_hash_mismatch"
+    } else if !report.hash_chain_valid {
+        "hash_chain_broken"
+    } else if !report.signatures_valid {
+        "signature_invalid"
+    } else {
+        "unknown"
+    }
+}
+
+fn emit_verify_outcome(report: &VerificationReport) {
+    let file_id = crate::obs::short_hex(&report.file_id.as_u64().to_le_bytes());
+    if report.is_valid {
+        tracing::info!(
+            event = "file_verified",
+            file_id = %file_id,
+            versions = report.version_count,
+        );
+    } else {
+        tracing::warn!(
+            event = "file_rejected",
+            file_id = %file_id,
+            versions = report.version_count,
+            reason = classify_verify_failure(report),
+        );
+    }
 }
 
 #[allow(clippy::cast_possible_truncation)]

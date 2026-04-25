@@ -246,6 +246,11 @@ pub fn verify_signature(
     registry: &crate::key_registry::KeyRegistry,
 ) -> Result<()> {
     if version.author_id != signature.author_id {
+        emit_sig_rejected(
+            version.version_number,
+            AuthorId::new(signature.author_id),
+            "author_mismatch",
+        );
         return Err(crate::AionError::SignatureVerificationFailed {
             version: version.version_number,
             author: AuthorId::new(signature.author_id),
@@ -254,11 +259,15 @@ pub fn verify_signature(
     let signer = AuthorId::new(version.author_id);
     let epoch = registry
         .active_epoch_at(signer, version.version_number)
-        .ok_or(crate::AionError::SignatureVerificationFailed {
-            version: version.version_number,
-            author: signer,
+        .ok_or_else(|| {
+            emit_sig_rejected(version.version_number, signer, "no_active_epoch");
+            crate::AionError::SignatureVerificationFailed {
+                version: version.version_number,
+                author: signer,
+            }
         })?;
     if signature.public_key != epoch.public_key {
+        emit_sig_rejected(version.version_number, signer, "pubkey_substitution");
         return Err(crate::AionError::SignatureVerificationFailed {
             version: version.version_number,
             author: signer,
@@ -266,7 +275,21 @@ pub fn verify_signature(
     }
     let message = canonical_version_message(version);
     let verifying_key = VerifyingKey::from_bytes(&signature.public_key)?;
-    verifying_key.verify(&message, &signature.signature)
+    verifying_key
+        .verify(&message, &signature.signature)
+        .map_err(|e| {
+            emit_sig_rejected(version.version_number, signer, "bad_signature");
+            e
+        })
+}
+
+fn emit_sig_rejected(version: u64, author: AuthorId, reason: &'static str) {
+    tracing::warn!(
+        event = "signature_rejected",
+        version,
+        author = %crate::obs::author_short(author),
+        reason,
+    );
 }
 
 /// Build the canonical attestation message binding `(version, signer)` — RFC-0021.
@@ -328,11 +351,15 @@ pub fn verify_attestation(
     let signer = AuthorId::new(signature.author_id);
     let epoch = registry
         .active_epoch_at(signer, version.version_number)
-        .ok_or(crate::AionError::SignatureVerificationFailed {
-            version: version.version_number,
-            author: signer,
+        .ok_or_else(|| {
+            emit_sig_rejected(version.version_number, signer, "no_active_epoch");
+            crate::AionError::SignatureVerificationFailed {
+                version: version.version_number,
+                author: signer,
+            }
         })?;
     if signature.public_key != epoch.public_key {
+        emit_sig_rejected(version.version_number, signer, "pubkey_substitution");
         return Err(crate::AionError::SignatureVerificationFailed {
             version: version.version_number,
             author: signer,
@@ -340,7 +367,12 @@ pub fn verify_attestation(
     }
     let message = canonical_attestation_message(version, signer);
     let verifying_key = VerifyingKey::from_bytes(&signature.public_key)?;
-    verifying_key.verify(&message, &signature.signature)
+    verifying_key
+        .verify(&message, &signature.signature)
+        .map_err(|e| {
+            emit_sig_rejected(version.version_number, signer, "bad_attestation");
+            e
+        })
 }
 
 /// Verify signatures for multiple versions in batch, registry-pinned.

@@ -128,6 +128,11 @@ impl KeyStore {
 
         self.store_signing_key(author_id, &signing_key)?;
 
+        tracing::info!(
+            event = "keystore_key_created",
+            author = %crate::obs::author_short(author_id),
+            backend = if self.use_file_storage { "file" } else { "os_keyring" },
+        );
         Ok((signing_key, verifying_key))
     }
 
@@ -208,11 +213,24 @@ impl KeyStore {
     ///
     /// Returns error if key not found or access fails
     pub fn load_signing_key(&self, author_id: AuthorId) -> Result<SigningKey> {
-        if self.use_file_storage {
+        let result = if self.use_file_storage {
             self.load_key_from_file(author_id)
         } else {
             self.load_key_from_keyring(author_id)
+        };
+        if let Err(ref e) = result {
+            tracing::warn!(
+                event = "keystore_load_rejected",
+                author = %crate::obs::author_short(author_id),
+                reason = match e {
+                    AionError::KeyNotFound { .. } => "key_not_found",
+                    AionError::InvalidPrivateKey { .. } => "invalid_key_bytes",
+                    AionError::KeyringError { .. } => "keyring_error",
+                    _ => "load_error",
+                },
+            );
         }
+        result
     }
 
     /// Load a key from OS keyring

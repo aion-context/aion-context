@@ -43,4 +43,22 @@ Most subcommands that read or write `.aion` files take:
 - `--format text|json|yaml|markdown` — output format on
   reporting subcommands. `text` is the default.
 
+## Structured logs (`AION_LOG`)
+
+The CLI emits structured `tracing` events on stderr at every
+decision point — file verified, commit accepted, signature
+rejected, multisig short, etc. Two env vars control the output:
+
+- `AION_LOG` — log level / EnvFilter directive (default `warn`).
+  Examples: `AION_LOG=info`, `AION_LOG=aion_context=debug,warn`.
+- `AION_LOG_FORMAT` — `text` (default) or `json`.
+
+```bash
+AION_LOG=info aion verify rules.aion
+AION_LOG_FORMAT=json AION_LOG=info aion verify rules.aion
+```
+
+See [Observability](../architecture/observability.md) for the
+full event catalog, field lexicon, and bounded `reason` codes.
+
 [issue #23]: https://github.com/copyleftdev/aion-context/issues/23

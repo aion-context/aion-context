@@ -372,6 +372,11 @@ impl<'a> AionParser<'a> {
     pub fn new(data: &'a [u8]) -> Result<Self> {
         // Check minimum size
         if data.len() < HEADER_SIZE {
+            tracing::warn!(
+                event = "parser_rejected",
+                bytes = data.len(),
+                reason = "truncated_input",
+            );
             return Err(AionError::InvalidFormat {
                 reason: format!(
                     "File too small: {} bytes (minimum: {} bytes)",
@@ -384,10 +389,24 @@ impl<'a> AionParser<'a> {
         // Parse and validate header (zero-copy). The reference is
         // cached on `self` so `header()` can stay infallible without
         // re-running `ref_from_prefix` on every call.
-        let header = FileHeader::ref_from_prefix(data).ok_or_else(|| AionError::InvalidFormat {
-            reason: "Failed to parse header".to_string(),
+        let header = FileHeader::ref_from_prefix(data).ok_or_else(|| {
+            tracing::warn!(
+                event = "parser_rejected",
+                bytes = data.len(),
+                reason = "header_unparseable",
+            );
+            AionError::InvalidFormat {
+                reason: "Failed to parse header".to_string(),
+            }
         })?;
-        header.validate()?;
+        header.validate().map_err(|e| {
+            tracing::warn!(
+                event = "parser_rejected",
+                bytes = data.len(),
+                reason = "header_invalid",
+            );
+            e
+        })?;
 
         Ok(Self { data, header })
     }

@@ -80,7 +80,12 @@ pub mod slsa; // RFC-0024: SLSA v1.1 provenance emitter
 pub mod string_table; // Issue #8: String table
 pub mod transparency_log; // RFC-0025: Aion-native transparency log
 pub mod types; // Issue #2: Core types
-               // pub mod cli;          // CLI interface
+
+// Internal helpers for tracing field formatting (issue #57). Not part
+// of the public API — see `.claude/rules/observability.md` for the
+// field-naming and cardinality discipline these helpers enforce.
+mod obs;
+// pub mod cli;          // CLI interface
 
 // Test helpers (only available during testing)
 #[cfg(any(test, feature = "test-helpers"))]

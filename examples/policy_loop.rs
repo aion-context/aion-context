@@ -139,21 +139,29 @@ impl Agent {
         let report = match verify_file(&self.policy_path, &self.registry) {
             Ok(r) => r,
             Err(e) => {
+                tracing::warn!(event = "agent_refused", reason = "verify_error");
                 return Decision::Refused {
                     reason: "verify_error",
                     detail: e.to_string(),
-                }
+                };
             }
         };
         if !report.is_valid {
+            let reason = classify_invalid(&report);
+            tracing::warn!(event = "agent_refused", reason);
             return Decision::Refused {
-                reason: classify_invalid(&report),
+                reason,
                 detail: report.errors.join("; "),
             };
         }
 
         let version = report.version_count;
         if version != self.last_version {
+            tracing::info!(
+                event = "policy_updated",
+                from = self.last_version,
+                to = version
+            );
             println!(
                 "  ↻ policy update accepted: v{} → v{}",
                 self.last_version, version
@@ -173,8 +181,10 @@ impl Agent {
         let policy = Policy::parse(&rules);
 
         if policy.permits(&action) {
+            tracing::info!(event = "agent_decided", %action, version, decision = "allow");
             Decision::Allowed { action, version }
         } else {
+            tracing::info!(event = "agent_decided", %action, version, decision = "block");
             Decision::Blocked { action, version }
         }
     }
@@ -271,6 +281,17 @@ fn banner(title: &str) {
 }
 
 fn main() {
+    // The library never installs a subscriber (per the observability
+    // rule). Examples are demo binaries, so it's appropriate to wire
+    // one here so `AION_LOG=info cargo run --example policy_loop`
+    // shows the structured emits alongside the human narrative.
+    let env_filter = tracing_subscriber::EnvFilter::try_from_env("AION_LOG")
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn"));
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(env_filter)
+        .with_writer(std::io::stderr)
+        .try_init();
+
     let path = std::env::temp_dir().join("aion_policy_loop_demo.aion");
     let key = SigningKey::generate();
     let author = AuthorId::new(OPERATOR_AUTHOR);
@@ -279,6 +300,7 @@ fn main() {
     println!("  policy file:  {}", path.display());
     println!("  operator:     author {OPERATOR_AUTHOR}");
     println!("  tick:         every {TICK_MS}ms");
+    println!("  tracing:      AION_LOG=info to see structured emits on stderr");
 
     let registry = init_demo(&path, &key, author);
     println!();
