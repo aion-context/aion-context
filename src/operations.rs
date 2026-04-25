@@ -324,6 +324,24 @@ fn commit_version_inner(
     let parser = AionParser::new(&file_bytes)?;
     let header = parser.header();
 
+    // Pre-write integrity gate (audit follow-up to PR #37):
+    //
+    //   1. integrity_hash over the whole on-disk byte range — catches
+    //      any single-bit tamper in any section, including ones that
+    //      verify_head_signature alone wouldn't notice.
+    //   2. parent_hash chain over the version entries — catches
+    //      tampering of an intermediate VersionEntry that doesn't
+    //      change the head signature.
+    //   3. head signature — catches tampering of the latest sig.
+    //
+    // PR #37's commit message claimed (1) was already done by the
+    // parser at parse time. It was not — `AionParser::new` only
+    // does structural validation. Without (1) and (2), commit
+    // could layer a valid new entry on top of a corrupt chain,
+    // hiding the corruption beneath fresh bytes.
+    parser.verify_integrity()?;
+    let existing_versions = collect_versions(&parser, header.version_chain_count)?;
+    crate::signature_chain::verify_hash_chain(&existing_versions)?;
     verify_head_signature(&parser, registry)?;
 
     let new_version = VersionNumber(header.current_version).next()?;
@@ -376,6 +394,7 @@ fn preflight_registry_authz(
     new_version: VersionNumber,
     registry: &crate::key_registry::KeyRegistry,
 ) -> Result<()> {
+    use subtle::ConstantTimeEq;
     let Some(epoch) = registry.active_epoch_at(options.author_id, new_version.as_u64()) else {
         return Err(AionError::UnauthorizedSigner {
             author: options.author_id,
@@ -383,7 +402,11 @@ fn preflight_registry_authz(
         });
     };
     let supplied_pk = options.signing_key.verifying_key().to_bytes();
-    if supplied_pk != epoch.public_key {
+    // Constant-time comparison — never `==` on key-shaped bytes.
+    // See .claude/rules/crypto.md and the audit verdict on issue
+    // (audit, 2026-04-25): `!=` here is a hard rule violation
+    // even though public keys aren't strictly secret.
+    if !bool::from(supplied_pk.ct_eq(&epoch.public_key)) {
         return Err(AionError::KeyMismatch {
             author: options.author_id,
             epoch: epoch.epoch,
@@ -1425,17 +1448,23 @@ fn build_updated_file(
 }
 
 #[allow(clippy::cast_possible_truncation)]
+fn collect_versions(parser: &AionParser<'_>, count: u64) -> Result<Vec<VersionEntry>> {
+    let n = count as usize;
+    let mut versions = Vec::with_capacity(n);
+    for i in 0..n {
+        versions.push(parser.get_version_entry(i)?);
+    }
+    Ok(versions)
+}
+
+#[allow(clippy::cast_possible_truncation)]
 #[allow(clippy::arithmetic_side_effects)]
 fn collect_existing_plus(
     parser: &AionParser<'_>,
     count: u64,
     new_entry: VersionEntry,
 ) -> Result<Vec<VersionEntry>> {
-    let n = count as usize;
-    let mut versions = Vec::with_capacity(n + 1);
-    for i in 0..n {
-        versions.push(parser.get_version_entry(i)?);
-    }
+    let mut versions = collect_versions(parser, count)?;
     versions.push(new_entry);
     Ok(versions)
 }
@@ -3148,16 +3177,18 @@ mod tests {
             );
         }
 
-        /// Counter-test documenting the deliberate scope-narrowing in
-        /// #35: tampering an EARLIER signature is no longer caught by
-        /// commit (it's caught by `verify_file` instead). The file is
-        /// committable but won't pass `verify_file`.
+        /// Audit follow-up to #37: post-fix, `commit_version` runs
+        /// `verify_integrity()` and `verify_hash_chain()` before
+        /// every append, so tampering with ANY prior entry — not
+        /// just the head — is caught at write time. This closes the
+        /// laundering path that the original #37 narrative
+        /// documented as intentional.
         ///
-        /// This makes the contract explicit: commit is a write-side
-        /// O(1) check on the head; verify is the authoritative
-        /// O(n) chain validator. See issue #35 for the rationale.
+        /// (The function name predates the fix and is preserved for
+        /// git-blame continuity; the docstring captures the new
+        /// contract.)
         #[test]
-        fn commit_does_not_catch_non_head_tamper_but_verify_does() {
+        fn commit_now_catches_non_head_tamper_at_write_time() {
             let temp = TempDir::new().unwrap();
             let path = temp.path().join("non_head_tamper.aion");
             let signing_key = SigningKey::generate();
@@ -3186,17 +3217,31 @@ mod tests {
             let mut bytes = std::fs::read(&path).unwrap();
             flip_byte_in_signature_at(&mut bytes, 0);
             std::fs::write(&path, &bytes).unwrap();
+            let tampered = std::fs::read(&path).unwrap();
 
-            // commit_version succeeds: head-only check passes.
+            // commit_version must NOW reject — the integrity hash
+            // catches the byte flip even though it lives in a
+            // non-head entry.
             let next_opts = CommitOptions {
                 author_id,
                 signing_key: &signing_key,
                 message: "v4",
                 timestamp: None,
             };
-            commit_version(&path, b"r4", &next_opts, &registry).unwrap();
+            let result = commit_version(&path, b"r4", &next_opts, &registry);
+            assert!(
+                result.is_err(),
+                "commit_version must reject non-head tamper at write time"
+            );
 
-            // But verify_file now reports the file invalid.
+            // No bytes written — the refused commit must not mutate.
+            let post = std::fs::read(&path).unwrap();
+            assert_eq!(
+                tampered, post,
+                "refused commit must not mutate the tampered file"
+            );
+
+            // verify_file also rejects, as before.
             let report = verify_file(&path, &registry).unwrap();
             assert!(
                 !report.is_valid,
