@@ -10,6 +10,7 @@ on:
     - cron: "0 12 * * 1"  # Monday 12:00 UTC, paired with the CI advisory drift schedule
   push:
     branches: [main]
+  workflow_dispatch:
 
 permissions: read-all
 
