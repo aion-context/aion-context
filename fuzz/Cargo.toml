@@ -18,3 +18,15 @@ name = "fuzz_file_parser"
 path = "fuzz_targets/fuzz_file_parser.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "fuzz_manifest_canonical"
+path = "fuzz_targets/fuzz_manifest_canonical.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_registry_json"
+path = "fuzz_targets/fuzz_registry_json.rs"
+test = false
+doc = false
