@@ -1,0 +1,23 @@
+[book]
+title = "aion-context"
+authors = ["aion-context maintainers"]
+description = "Cryptographically-signed, versioned business-context file format"
+src = "src"
+language = "en"
+
+[output.html]
+default-theme = "navy"
+preferred-dark-theme = "navy"
+git-repository-url = "https://github.com/copyleftdev/aion-context"
+edit-url-template = "https://github.com/copyleftdev/aion-context/edit/main/book/{path}"
+fold = { enable = true, level = 1 }
+
+[output.html.search]
+enable = true
+limit-results = 30
+use-boolean-and = true
+boost-title = 2
+boost-hierarchy = 1
+boost-paragraph = 1
+expand = true
+heading-split-level = 3
