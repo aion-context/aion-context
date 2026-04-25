@@ -5,6 +5,11 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Weekly drift catch — re-runs the supply-chain jobs against the
+  # current advisory db so a new RUSTSEC entry surfaces without
+  # waiting for a PR. Uses Monday 12:00 UTC (low-traffic).
+  schedule:
+    - cron: "0 12 * * 1"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -33,14 +38,13 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      # Tiger Style deny-lints (unwrap_used, expect_used, panic,
-      # todo, unreachable, unimplemented) are set to "deny" at the
-      # crate level in Cargo.toml and fail clippy on their own.
-      # Advisory-level lints (indexing_slicing, arithmetic_side_effects,
-      # format_push_string) are intentionally "warn" per Cargo.toml;
-      # do not add -D warnings here — that would block CI on hygiene
-      # the crate-level posture deliberately leaves as warn.
-      - run: cargo clippy --all-targets --all-features
+      # Crate-level Cargo.toml denies unwrap_used / expect_used /
+      # panic / todo / unreachable / unimplemented (Tiger Style) and
+      # warns indexing_slicing / arithmetic_side_effects (advisory).
+      # Run with `-D warnings` so advisory warnings also fail CI —
+      # the local-CI discipline (CLAUDE.md, .claude/rules/tiger-style.md)
+      # already requires this; CI mirrors it.
+      - run: cargo clippy --all-targets --all-features -- -D warnings
 
   test:
     name: test (stable)

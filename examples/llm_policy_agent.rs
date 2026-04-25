@@ -126,9 +126,7 @@ struct LlmClient {
 
 impl LlmClient {
     fn from_env() -> Result<Self, &'static str> {
-        let offline = std::env::var(ENV_OFFLINE)
-            .map(|v| !v.is_empty())
-            .unwrap_or(false);
+        let offline = std::env::var(ENV_OFFLINE).is_ok_and(|v| !v.is_empty());
         let api_key = if offline {
             String::new()
         } else {
@@ -553,15 +551,12 @@ fn dump_audit_trail(path: &Path) {
                 continue;
             }
         };
-        let action = entry
-            .action_code()
-            .map(|a| match a {
-                ActionCode::CreateGenesis => "CreateGenesis",
-                ActionCode::CommitVersion => "CommitVersion",
-                ActionCode::Verify => "Verify",
-                ActionCode::Inspect => "Inspect",
-            })
-            .unwrap_or("Unknown");
+        let action = entry.action_code().map_or("Unknown", |a| match a {
+            ActionCode::CreateGenesis => "CreateGenesis",
+            ActionCode::CommitVersion => "CommitVersion",
+            ActionCode::Verify => "Verify",
+            ActionCode::Inspect => "Inspect",
+        });
         println!(
             "  #{i:02}  ts={}  author={}  action={action}  prev_hash={}",
             entry.timestamp(),
