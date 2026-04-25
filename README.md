@@ -31,10 +31,9 @@ Built for two audiences:
 
 It is *not* a replacement for sigstore, in-toto, or SLSA. It is
 the **document/policy-shaped** sibling those systems leave on the
-table — see [#70 — comparison page] for the contrast (page lands
-shortly).
+table — see [the comparison chapter] for the contrast.
 
-[#70 — comparison page]: https://github.com/copyleftdev/aion-context/issues/70
+[the comparison chapter]: book/src/comparison.md
 
 ## Hello world
 
