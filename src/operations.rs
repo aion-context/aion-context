@@ -279,6 +279,8 @@ pub struct CommitResult {
 /// // println!("Created version {}", result.version.as_u64());
 /// # Ok::<(), aion_context::AionError>(())
 /// ```
+#[must_use = "the CommitResult carries the new version number and rules hash; \
+              dropping it silently usually indicates a missing post-commit step"]
 pub fn commit_version(
     path: &Path,
     new_rules: &[u8],
@@ -301,6 +303,10 @@ pub fn commit_version(
 /// # Errors
 ///
 /// Same error surface as [`commit_version`] minus the authz errors.
+#[must_use = "the resulting file will NOT pass `verify` against the \
+              supplied registry until the registry is updated to pin \
+              this signer; check the CommitResult and ensure the \
+              registry update is staged"]
 pub fn commit_version_force_unregistered(
     path: &Path,
     new_rules: &[u8],
