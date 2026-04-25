@@ -12,6 +12,7 @@
 [![crates.io](https://img.shields.io/crates/v/aion-context.svg)](https://crates.io/crates/aion-context)
 [![docs.rs](https://img.shields.io/docsrs/aion-context)](https://docs.rs/aion-context)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/aion-context/aion-context/badge)](https://scorecard.dev/viewer/?uri=github.com/aion-context/aion-context)
 
 **Live demo:** [demo.aion-context.dev](https://demo.aion-context.dev/) — running `.aion` policies in a real agent loop.
 

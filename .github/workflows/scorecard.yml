@@ -1,0 +1,56 @@
+name: Scorecard
+
+# Runs the OpenSSF Scorecard analyzer on a schedule + on every push to
+# main + on branch-protection-rule changes (so the score reflects
+# protection settings the moment they change).
+
+on:
+  branch_protection_rule:
+  schedule:
+    - cron: "0 12 * * 1"  # Monday 12:00 UTC, paired with the CI advisory drift schedule
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions: read-all
+
+jobs:
+  analysis:
+    name: Scorecard analysis
+    runs-on: ubuntu-latest
+    permissions:
+      # Needed to upload SARIF to Code Scanning
+      security-events: write
+      # Needed to publish results to scorecard.dev (OIDC token)
+      id-token: write
+      # Needed by the action to read repo metadata
+      contents: read
+      # Needed to read workflow runs / actions metadata for the
+      # Token-Permissions and Maintained checks. Without this the
+      # ListCommits GraphQL call returns "Resource not accessible
+      # by integration".
+      actions: read
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+        with:
+          persist-credentials: false
+
+      - name: Run analysis
+        uses: ossf/scorecard-action@99c09fe975337306107572b4fdf4db224cf8e2f2  # v2.4.3
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          publish_results: true
+
+      - name: Upload SARIF artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: SARIF
+          path: results.sarif
+          retention-days: 7
+
+      - name: Upload to Code Scanning dashboard
+        uses: github/codeql-action/upload-sarif@865f5f5c36632f18690a3d569fa0a764f2da0c3e  # v3
+        with:
+          sarif_file: results.sarif
