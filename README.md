@@ -100,6 +100,34 @@ aion --help
 | **Tracing** | `AION_LOG=info` produces structured per-event lines (`event=file_verified`, `event=signature_rejected reason=...`, etc.). `AION_LOG_FORMAT=json` for log-store ingest. |
 | **Examples** | `policy_loop`, `llm_policy_agent` (Claude as proposer + `.aion` as gate), `aegis_consortium` (5-party PQC quorum), `federation_hw_attest` (cross-domain TEE keys), `corpus_to_aion` (any git history → signed chain) |
 
+## Standards and protocols
+
+aion-context speaks the existing supply-chain ecosystem rather
+than replacing it. Sealed releases (RFC-0032) emit DSSE-wrapped
+SLSA Statements you can hand to sigstore-shaped verifiers; the
+transparency log (RFC-0025) is RFC 6962-compatible; OCI manifests
+let releases publish through container registries; JCS gives
+deterministic JSON for cross-implementation hashing.
+
+[![Rust](https://img.shields.io/badge/Rust-1.70%2B-DEA584?logo=rust&logoColor=white)](https://www.rust-lang.org/)
+[![Crates.io](https://img.shields.io/crates/v/aion-context.svg?logo=rust&logoColor=white&color=DEA584)](https://crates.io/crates/aion-context)
+[![Sigstore](https://img.shields.io/badge/Sigstore-DSSE%20envelopes-3F2828?logo=sigstore&logoColor=white)](https://www.sigstore.dev/)
+[![SLSA v1.1](https://img.shields.io/badge/SLSA-v1.1-2F855A)](https://slsa.dev/)
+[![in-toto](https://img.shields.io/badge/in--toto-Statements-3B5998)](https://in-toto.io/)
+[![OCI](https://img.shields.io/badge/OCI-Image%20Manifest%20v1.1-2496ED?logo=opencontainersinitiative&logoColor=white)](https://opencontainers.org/)
+[![DSSE](https://img.shields.io/badge/DSSE-PAE-555555)](https://github.com/secure-systems-lab/dsse)
+[![JCS / RFC 8785](https://img.shields.io/badge/JCS-RFC%208785-555555)](https://datatracker.ietf.org/doc/rfc8785/)
+[![Transparency Log / RFC 6962](https://img.shields.io/badge/Transparency%20Log-RFC%206962-555555)](https://datatracker.ietf.org/doc/rfc6962/)
+[![FIPS 204 ML-DSA](https://img.shields.io/badge/Post--Quantum-FIPS%20204%20ML--DSA-7B2D8E)](https://csrc.nist.gov/pubs/fips/204/final)
+[![Ed25519](https://img.shields.io/badge/Signatures-Ed25519-EF6C00)](https://ed25519.cr.yp.to/)
+[![BLAKE3](https://img.shields.io/badge/Hashing-BLAKE3-1E5631)](https://github.com/BLAKE3-team/BLAKE3)
+[![ChaCha20-Poly1305](https://img.shields.io/badge/AEAD-ChaCha20--Poly1305-555555)](https://datatracker.ietf.org/doc/rfc8439/)
+
+See the [comparison chapter] for how aion-context relates to each
+of the neighbors above (when to reach for each).
+
+[comparison chapter]: book/src/comparison.md
+
 ## Documentation
 
 - **[The Book](book/src/SUMMARY.md)** — quickstart, mental model,
