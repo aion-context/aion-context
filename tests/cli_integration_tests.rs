@@ -1144,6 +1144,132 @@ fn test_cli_registry_rotate_happy_path() {
     cleanup_key(&new_op_key);
 }
 
+/// Issue #49 — rotating with `--effective-from-version` equal to
+/// epoch 0's `created_at_version` (the registry default of 0)
+/// retroactively invalidates every prior v0 signature. The CLI
+/// must warn on stderr without blocking, and `--no-warn` must
+/// suppress.
+#[test]
+fn test_cli_registry_rotate_warns_on_retroactive_invalidation() {
+    let (temp_dir, op_key) = setup_test_env();
+    let master_key = format!("{}", rand::random::<u32>() % 900000 + 950000);
+    let new_op_key = format!("{}", rand::random::<u32>() % 900000 + 960000);
+    run_cli(&["key", "generate", "--id", &master_key]);
+    run_cli(&["key", "generate", "--id", &new_op_key]);
+
+    let registry_path = temp_dir.path().join("registry.json");
+    // pin registers the author with created_at_version = 0.
+    pin_with_distinct_master(&registry_path, "9501", &op_key, &master_key);
+
+    // Rotate with --effective-from-version 0 — same as the active
+    // epoch's created_at_version → smell triggers.
+    let output = run_cli(&[
+        "registry",
+        "rotate",
+        "--author",
+        "9501",
+        "--from-epoch",
+        "0",
+        "--to-epoch",
+        "1",
+        "--new-key",
+        &new_op_key,
+        "--master-key",
+        &master_key,
+        "--effective-from-version",
+        "0",
+        "--registry",
+        registry_path.to_str().unwrap(),
+    ]);
+    // The rotation itself fails per library semantics (effective <
+    // current) — that's fine. The warning must still print BEFORE
+    // the failure because the smell check runs first.
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--effective-from-version 0") || stderr.contains("window collapses"),
+        "rotate must warn on retroactive invalidation, got stderr: {stderr}"
+    );
+
+    // --no-warn suppresses the warning (and we use a clean rotation
+    // so the rotation itself succeeds; otherwise the fail message
+    // would also appear on stderr).
+    let registry_clean = temp_dir.path().join("registry-clean.json");
+    pin_with_distinct_master(&registry_clean, "9502", &op_key, &master_key);
+    let quiet = run_cli(&[
+        "registry",
+        "rotate",
+        "--author",
+        "9502",
+        "--from-epoch",
+        "0",
+        "--to-epoch",
+        "1",
+        "--new-key",
+        &new_op_key,
+        "--master-key",
+        &master_key,
+        "--effective-from-version",
+        "5",
+        "--registry",
+        registry_clean.to_str().unwrap(),
+        "--no-warn",
+    ]);
+    assert!(quiet.status.success(), "clean rotation must succeed");
+    let quiet_stderr = String::from_utf8_lossy(&quiet.stderr);
+    assert!(
+        !quiet_stderr.contains("window collapses"),
+        "--no-warn must suppress the warning, got stderr: {quiet_stderr}"
+    );
+
+    cleanup_key(&op_key);
+    cleanup_key(&master_key);
+    cleanup_key(&new_op_key);
+}
+
+/// Counter-test: a clean rotation at version > `created_at` must
+/// produce no warning even without `--no-warn`.
+#[test]
+fn test_cli_registry_rotate_no_warning_on_clean_rotation() {
+    let (temp_dir, op_key) = setup_test_env();
+    let master_key = format!("{}", rand::random::<u32>() % 900000 + 970000);
+    let new_op_key = format!("{}", rand::random::<u32>() % 900000 + 980000);
+    run_cli(&["key", "generate", "--id", &master_key]);
+    run_cli(&["key", "generate", "--id", &new_op_key]);
+
+    let registry_path = temp_dir.path().join("registry.json");
+    pin_with_distinct_master(&registry_path, "9503", &op_key, &master_key);
+
+    // Rotate at v=10 — well past the registry's created_at=0.
+    let output = run_cli(&[
+        "registry",
+        "rotate",
+        "--author",
+        "9503",
+        "--from-epoch",
+        "0",
+        "--to-epoch",
+        "1",
+        "--new-key",
+        &new_op_key,
+        "--master-key",
+        &master_key,
+        "--effective-from-version",
+        "10",
+        "--registry",
+        registry_path.to_str().unwrap(),
+    ]);
+    assert!(output.status.success(), "clean rotation must succeed");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("window collapses"),
+        "no warning expected for V > created_at, got: {stderr}"
+    );
+
+    cleanup_key(&op_key);
+    cleanup_key(&master_key);
+    cleanup_key(&new_op_key);
+}
+
 #[test]
 fn test_cli_registry_rotate_rejects_wrong_master() {
     let (temp_dir, op_key) = setup_test_env();

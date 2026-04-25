@@ -1,7 +1,7 @@
 {
   "version": "1",
-  "generated_at": "2026-04-25T04:22:55Z",
+  "generated_at": "2026-04-25T04:34:43Z",
   "crates": {
-    "aion-context": { "panics": 432, "tests": 451, "pub_items": 494, "loc": 24379, "max_fn": 151 }
+    "aion-context": { "panics": 432, "tests": 453, "pub_items": 494, "loc": 24445, "max_fn": 151 }
   }
 }
