@@ -8,18 +8,23 @@ and the project follows [Semantic Versioning].
 [Keep a Changelog 1.1.0]: https://keepachangelog.com/en/1.1.0/
 [Semantic Versioning]: https://semver.org/spec/v2.0.0.html
 
-> **Pre-1.0 note.** Until 1.0.0 ships, the public API surface and the
-> on-disk binary format may evolve. The work below is on `main` and
-> tagged `0.2.0` in `Cargo.toml` but has not been pushed to
-> crates.io. The 1.0.0 cut will lock in stability — see issue #71.
-
 ## [Unreleased]
 
 _Nothing here yet. Next changes land in this section._
 
-## [0.2.0] — 2026-04-25
+## [1.0.0] — 2026-04-25
 
-The first substantial release after the extraction from `aion-v2`.
+The 1.0.0 cut. The public API surface, the on-disk binary format,
+the CLI exit-code contract, the structured tracing event names,
+and the bounded `reason` vocabulary are now under semver. See
+[`book/src/architecture/stability.md`] for the written promise of
+what's stable, what isn't, and what triggers a major-version bump.
+
+The release content is the work that landed on `main` over the
+0.x development arc (originally numbered `0.2.0`) — it is the
+first version pushed to crates.io.
+
+[`book/src/architecture/stability.md`]: book/src/architecture/stability.md
 Adds the registry-aware verify rollout (RFC-0034), the operator
 surface (`aion registry`, `aion release`, `aion archive`), three
 new examples, the operator-facing mdbook, and structured tracing

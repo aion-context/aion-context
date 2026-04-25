@@ -107,20 +107,17 @@ After #73 the install line will be `cargo install aion-context` /
 
 ## Status
 
-Currently `0.2.0` on `main`, not yet on crates.io. The 1.0.0 cut
-([issue #71]) will lock in the public API surface and the on-disk
-binary format. Until 1.0.0, those may evolve — though we already
-follow the discipline that breaking changes carry a `!` in the
-commit subject and are called out in [CHANGELOG.md].
+**1.0.0** — public API, on-disk binary format, CLI exit-code
+contract, structured tracing event vocabulary, and bounded
+`reason` codes are now under semver. The full written stability
+promise lives at [`book/src/architecture/stability.md`].
 
-What is **already stable**:
+The crypto primitives (Ed25519, BLAKE3, ChaCha20-Poly1305,
+HKDF-SHA-256, ML-DSA-65) will not change without a major version
+and an RFC. Breaking changes carry `!` in the commit subject and
+are documented in [CHANGELOG.md].
 
-- The CLI exit-code contract (0 = VALID, 1 = INVALID)
-- The structured tracing event names + bounded reason vocabulary
-- The crypto primitives (Ed25519, BLAKE3, ChaCha20-Poly1305) — these
-  will not change without a major version + an RFC
-
-[issue #71]: https://github.com/copyleftdev/aion-context/issues/71
+[`book/src/architecture/stability.md`]: book/src/architecture/stability.md
 [CHANGELOG.md]: CHANGELOG.md
 
 ## Below the fold — for current contributors
