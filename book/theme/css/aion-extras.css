@@ -1,0 +1,25 @@
+/* Inject the aion wordmark above the sidebar nav. */
+
+.sidebar-scrollbox {
+    position: relative;
+}
+
+.sidebar-scrollbox::before {
+    content: "";
+    display: block;
+    width: 100%;
+    height: 96px;
+    margin: 12px 0 18px 0;
+    background-image: url("../../aion-logo.png");
+    background-repeat: no-repeat;
+    background-position: center center;
+    background-size: contain;
+    opacity: 0.95;
+}
+
+/* Tighten the menu-title (book title) below the logo so the two
+   don't fight for visual weight. */
+.menu-title {
+    font-size: 1.1rem;
+    letter-spacing: 0.02em;
+}
