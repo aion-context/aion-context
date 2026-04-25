@@ -1,3 +1,9 @@
+<p align="center">
+  <a href="https://aion-context.dev">
+    <img src="media/aion-logo.png" alt="aion" width="220">
+  </a>
+</p>
+
 # aion-context
 
 > **Tamper-evident policy files. The gate your AI agent can't bypass —
