@@ -44,7 +44,7 @@ hex = "0.4"
 base64 = "0.22"
 
 # Zero-copy parsing
-zerocopy = { version = "0.7", features = ["derive"] }
+zerocopy = { version = "0.8", features = ["derive"] }
 memmap2 = "0.9"
 
 # Security - sensitive data handling
