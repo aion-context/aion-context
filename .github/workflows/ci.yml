@@ -12,8 +12,7 @@ on:
     - cron: "0 12 * * 1"
 
 # Default to read-only at the workflow level. Jobs that need write
-# access declare it explicitly. Scorecard's Token-Permissions check
-# scores us on this.
+# access declare it explicitly.
 permissions:
   contents: read
 
