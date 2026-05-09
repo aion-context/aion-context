@@ -8,10 +8,10 @@ repository = "https://github.com/aion-context/aion-context"
 homepage = "https://aion-context.dev"
 documentation = "https://docs.rs/aion-context"
 rust-version = "1.70"
-description = "Cryptographically-signed, versioned business-context file format"
+description = "Tamper-evident policy files with hash-chained signatures — AI agent governance and regulatory compliance auditing in Rust"
 readme = "README.md"
-keywords = ["cryptography", "versioning", "ai", "compliance", "signatures"]
-categories = ["cryptography", "command-line-utilities"]
+keywords = ["policy", "tamper-evident", "audit-trail", "compliance", "cryptography"]
+categories = ["cryptography", "command-line-utilities", "filesystem", "encoding"]
 
 [dependencies]
 # Cryptography - pinned versions for security
