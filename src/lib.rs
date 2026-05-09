@@ -1,55 +1,64 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! AION v2: Versioned Truth Infrastructure for AI Systems
+//! Tamper-evident policy files with hash-chained signatures.
 //!
-//! AION v2 provides cryptographically-signed, versioned business context that AI systems
-//! can consume and prove they used. This solves the AI compliance crisis by providing
-//! mathematical proof instead of expensive retraining.
+//! `aion-context` wraps any byte payload — a YAML policy, a Markdown spec, a JSON config —
+//! in a cryptographically-signed, version-chained integrity trail. Every change is signed
+//! by a named author, every byte is bound into a BLAKE3 hash chain. Verifying any past
+//! version is an O(log n) operation against a pinned [`key_registry::KeyRegistry`].
 //!
-//! # Features
+//! Built for two audiences: **AI agent operators** who need policy files the model cannot
+//! bypass, and **compliance teams** who need an auditor-ready record of exactly what a
+//! policy said and who signed it — at any past version, without trusting any external
+//! service.
 //!
-//! - **Local-first**: Zero server dependency, works offline
-//! - **Cryptographically-signed**: Ed25519 signatures for tamper-proof versioning
-//! - **Embedded audit trails**: Complete history of all changes
-//! - **OS keyring integration**: Secure key storage using platform keychains
-//! - **Zero panics**: Tiger Style implementation with explicit error handling
-//!
-//! # Architecture
-//!
-//! - **Core Types**: Type-safe domain identifiers (`FileId`, `AuthorId`, `VersionNumber`)
-//! - **Cryptography**: Ed25519, ChaCha20-Poly1305, Blake3, HKDF
-//! - **File Format**: Binary format with zero-copy parsing
-//! - **Operations**: init, commit, verify, show
-//! - **CLI**: Command-line interface for all operations
-//!
-//! # Example
+//! # Quick start
 //!
 //! ```rust,no_run
-//! # use aion_context::Result;
-//! # fn example() -> Result<()> {
-//! // Future API example - not yet implemented
-//! // let file_id = aion_context::init_file("policy.aion", &rules)?;
-//! // let version = aion_context::commit_version("policy.aion", &updated_rules)?;
-//! // let verification = aion_context::verify_file("policy.aion")?;
-//! # Ok(())
-//! # }
+//! use aion_context::crypto::SigningKey;
+//! use aion_context::key_registry::KeyRegistry;
+//! use aion_context::operations::{init_file, verify_file, InitOptions};
+//! use aion_context::types::AuthorId;
+//! use std::path::Path;
+//!
+//! fn main() -> anyhow::Result<()> {
+//!     let key = SigningKey::generate();
+//!     let author = AuthorId::new(1);
+//!     let mut registry = KeyRegistry::new();
+//!     registry.register_author(author, key.verifying_key(), key.verifying_key(), 0)?;
+//!     init_file(
+//!         Path::new("/tmp/policy.aion"),
+//!         b"allow: read\nallow: write",
+//!         &InitOptions { author_id: author, signing_key: &key, message: "v1", timestamp: None },
+//!     )?;
+//!     let report = verify_file(Path::new("/tmp/policy.aion"), &registry)?;
+//!     assert!(report.is_valid);
+//!     Ok(())
+//! }
 //! ```
 //!
-//! # Safety and Security
+//! Flip one byte of the file on disk and `report.is_valid` is `false` — no further
+//! configuration needed.
 //!
-//! This library follows NASA Power of 10 rules and Tiger Style:
-//! - No `unwrap()`, `expect()`, or `panic!()` in production code
-//! - All errors explicit with context
-//! - Constant-time cryptographic operations
-//! - Zeroization of sensitive data
-//! - Maximum function size: 60 lines
-//! - Maximum cyclomatic complexity: 15
+//! # Key properties
 //!
-//! # Performance Targets
+//! - **Tamper-evident** — BLAKE3 hash chain binds every version; any mutation is detectable
+//! - **Signed** — Ed25519 per-version signatures; optional ML-DSA-65 hybrid (FIPS 204)
+//! - **Replay-resistant** — `(author_id, version)` pairs are rejected if already seen
+//! - **Offline-first** — zero network dependency; single static binary
+//! - **Zero panics** — Tiger Style: all fallible paths return `Result<T, AionError>`
+//! - **Zero-copy parsing** — `zerocopy`-backed parser for hot verification paths
 //!
-//! - File creation: <10ms for 1MB rules
-//! - Version commit: <5ms for 1MB rules
-//! - Signature verification: <1ms per version
-//! - File parsing: <3ms for 100-version file
+//! # Standards
+//!
+//! Sealed releases speak the supply-chain ecosystem: DSSE envelopes, SLSA v1.1
+//! Statements, OCI Image Manifest v1.1, RFC 8785 canonical JSON, RFC 6962-compatible
+//! transparency log, and Ed25519 + ML-DSA-65 hybrid signatures.
+//!
+//! # Performance
+//!
+//! - File creation: <10 ms for 1 MB payload
+//! - Signature verification: <1 ms per version
+//! - File parsing: <3 ms for a 100-version chain
 
 // Enforce Tiger Style at the crate level
 // Note: unwrap_used, expect_used, panic, etc. are enforced via Cargo.toml clippy lints
