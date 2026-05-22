@@ -46,7 +46,7 @@ dependencies = [
  "hex",
  "hkdf",
  "hostname",
- "keyring",
+ "keyring-core",
  "memmap2",
  "pqcrypto-mldsa",
  "pqcrypto-traits",
@@ -1013,13 +1013,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "keyring"
-version = "3.6.3"
+name = "keyring-core"
+version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eebcc3aff044e5944a8fbaf69eb277d11986064cba30c468730e8b9909fb551c"
+checksum = "fb1e621458ca9c51aa110bd0339d4751a056b9576bf1253aee1aa560dda0fc9d"
 dependencies = [
  "log",
- "zeroize",
 ]
 
 [[package]]
