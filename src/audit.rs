@@ -944,7 +944,7 @@ mod tests {
         #[hegel::test]
         fn prop_validate_chain_rejects_nonzero_reserved1(tc: hegel::TestCase) {
             let chain = build_chain(&tc, 2);
-            let prev = chain.get(0).unwrap_or_else(|| std::process::abort());
+            let prev = chain.first().unwrap_or_else(|| std::process::abort());
             let curr = chain.get(1).unwrap_or_else(|| std::process::abort());
             let val = tc.draw(gs::integers::<u8>().min_value(1).max_value(255));
             let tampered = with_reserved_byte(curr, 18, val);
@@ -954,7 +954,7 @@ mod tests {
         #[hegel::test]
         fn prop_validate_chain_rejects_nonzero_reserved2(tc: hegel::TestCase) {
             let chain = build_chain(&tc, 2);
-            let prev = chain.get(0).unwrap_or_else(|| std::process::abort());
+            let prev = chain.first().unwrap_or_else(|| std::process::abort());
             let curr = chain.get(1).unwrap_or_else(|| std::process::abort());
             let val = tc.draw(gs::integers::<u8>().min_value(1).max_value(255));
             let tampered = with_reserved_byte(curr, 36, val);
@@ -964,7 +964,7 @@ mod tests {
         #[hegel::test]
         fn prop_validate_chain_rejects_nonzero_reserved3(tc: hegel::TestCase) {
             let chain = build_chain(&tc, 2);
-            let prev = chain.get(0).unwrap_or_else(|| std::process::abort());
+            let prev = chain.first().unwrap_or_else(|| std::process::abort());
             let curr = chain.get(1).unwrap_or_else(|| std::process::abort());
             let val = tc.draw(gs::integers::<u8>().min_value(1).max_value(255));
             let tampered = with_reserved_byte(curr, 72, val);
