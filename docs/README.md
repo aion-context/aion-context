@@ -4,6 +4,22 @@ This directory contains comprehensive documentation including user guides, secur
 
 ## User Documentation
 
+### 🧭 [Product Positioning](POSITIONING.md)
+
+**Purpose**: Plain-English messaging for explaining aion-context to
+product, security, compliance, and platform audiences
+
+**Contents**:
+- Core positioning and one-liners
+- Audience-specific messaging
+- Website and launch-page skeleton
+- Objection handling
+
+**Target Audience**: Product leaders, security teams, compliance teams,
+platform engineers
+
+---
+
 ### 📖 [User Guide](USER_GUIDE.md)
 
 **Purpose**: Complete user documentation for AION v2

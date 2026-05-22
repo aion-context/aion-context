@@ -6,8 +6,9 @@
 
 # aion-context
 
-> **Tamper-evident policy files. The gate your AI agent can't bypass —
-> and the audit trail your regulator wants to see.**
+> **A verifiable control layer for AI agents. Keep critical policies
+> outside the model, prove who approved every change, and give auditors
+> a trail they can trust.**
 
 [![crates.io](https://img.shields.io/crates/v/aion-context.svg)](https://crates.io/crates/aion-context)
 [![docs.rs](https://img.shields.io/docsrs/aion-context)](https://docs.rs/aion-context)
@@ -15,28 +16,49 @@
 
 **Live demo:** [demo.aion-context.dev](https://demo.aion-context.dev/) — running `.aion` policies in a real agent loop.
 
-## What it is
+## Why teams use it
 
-`aion-context` is a Rust library and CLI for a binary file format
-(`.aion`) that wraps any byte payload — a YAML policy, a Markdown
-spec, a JSON config — in a **hash-chained signature trail**. Every
-change is signed, every change is versioned, every byte is bound
-into an integrity hash. Verifying any past version is an O(log n)
-cryptographic operation against a small pinned key registry.
+AI agents are starting to touch workflows where "just put it in the
+prompt" is not enough: access rules, refund limits, escalation
+thresholds, clinical or financial policies, jurisdiction constraints,
+and customer-specific exceptions. Those rules need to be updated
+without retraining a model, enforced outside the model, and explained
+months later when someone asks what the system was allowed to do.
 
-Built for two audiences:
+`aion-context` turns business rules into signed policy artifacts.
+Your agent can check the policy before it acts. Your operators can
+update policy through signed versions. Your security, compliance, or
+audit team can verify what changed, who approved it, and whether the
+file was altered after the fact.
 
-- **AI / agent operators** — your model proposes an action, your
-  `.aion` policy gates it. Even a maximally jailbroken or prompt-
-  injected model cannot bypass a policy that lives outside it.
-- **Compliance / regulated industries** — every change to a
-  policy is signed and dated. An auditor reading the file at any
-  point in the future can verify exactly what the policy said and
-  who signed off on it.
+Use it when you need to answer:
 
-It is *not* a replacement for sigstore, in-toto, or SLSA. It is
-the **document/policy-shaped** sibling those systems leave on the
-table — see [the comparison chapter] for the contrast.
+- What did the approved policy say when this agent acted?
+- Who approved the latest policy change?
+- Has this policy file been edited outside the approved path?
+- Can we change agent behavior without changing the model or prompt?
+- Can an auditor independently verify the policy history?
+
+## What it does
+
+At the product level, aion-context gives you:
+
+| Need | What aion-context provides |
+|---|---|
+| **Rules outside the model** | Keep enforceable policy in a file the model can read but not silently rewrite. |
+| **Signed policy changes** | Every policy version is signed by an authorized key, so ownership and approval are explicit. |
+| **Tamper evidence** | If someone flips a byte, deletes history, or rewrites a prior version, verification fails. |
+| **Audit-ready history** | The policy carries its own version trail, so teams can reconstruct what changed over time. |
+| **Local enforcement** | The CLI and Rust library work offline; no hosted service is required. |
+
+Under the hood, `.aion` files wrap YAML, Markdown, JSON, or any other
+policy payload in a versioned signature chain with integrity checks.
+The technical details matter, but the outcome is simple: policy changes
+become provable instead of assumed.
+
+It is *not* a replacement for sigstore, in-toto, or SLSA. It is the
+policy/document-shaped sibling those systems leave on the table — see
+[the comparison chapter] for the contrast.
 
 [the comparison chapter]: book/src/comparison.md
 
@@ -133,6 +155,8 @@ of the neighbors above (when to reach for each).
 - **[The Book](book/src/SUMMARY.md)** — quickstart, mental model,
   CLI reference, architecture deep-dives, operations playbooks,
   examples narratives. Build with `mdbook serve book/`.
+- **[Product Positioning](docs/POSITIONING.md)** — plain-English
+  messaging for product, security, compliance, and platform audiences.
 - **[CHANGELOG](CHANGELOG.md)** — what's in the version you're
   running.
 - **[RFCs](rfcs/)** — 35 RFCs covering the protocol design from
