@@ -44,10 +44,10 @@ fn run_cli_with_stdin(args: &[&str], stdin: &[u8]) -> std::process::Output {
         .spawn()
         .expect("Failed to spawn CLI");
 
-    if let Some(ref mut stdin_handle) = child.stdin {
-        stdin_handle
-            .write_all(stdin)
-            .expect("Failed to write stdin");
+    if let Some(mut stdin_handle) = child.stdin.take() {
+        // Ignore broken-pipe: the child may exit before we finish writing
+        // (e.g. it rejects a missing file before reading stdin at all).
+        let _ = stdin_handle.write_all(stdin);
     }
 
     child.wait_with_output().expect("Failed to wait on CLI")
