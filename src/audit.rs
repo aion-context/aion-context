@@ -899,5 +899,76 @@ mod tests {
             );
             assert!(tampered.validate_chain(prev).is_err());
         }
+
+        // Byte layout of AuditEntry (repr(C), 80 bytes total):
+        //   0..8   timestamp, 8..16  author_id, 16..18  action_code,
+        //   18..24 reserved1,  24..32 details_offset,   32..36 details_length,
+        //   36..40 reserved2,  40..72 previous_hash,    72..80 reserved3
+        fn with_reserved_byte(entry: &AuditEntry, byte_offset: usize, val: u8) -> AuditEntry {
+            let mut raw = [0u8; 80];
+            for (i, b) in entry.as_bytes().iter().enumerate() {
+                if let Some(slot) = raw.get_mut(i) {
+                    *slot = *b;
+                }
+            }
+            if let Some(slot) = raw.get_mut(byte_offset) {
+                *slot = val;
+            }
+            AuditEntry::from_bytes(&raw).unwrap_or_else(|_| std::process::abort())
+        }
+
+        #[hegel::test]
+        fn prop_accessor_round_trip(tc: hegel::TestCase) {
+            let action = draw_action(&tc);
+            let offset = tc.draw(gs::integers::<u64>());
+            let length = tc.draw(gs::integers::<u32>());
+            let ts = tc.draw(gs::integers::<u64>().min_value(1));
+            let author = AuthorId(tc.draw(gs::integers::<u64>()));
+            let entry = AuditEntry::new(ts, author, action, offset, length, [0u8; 32]);
+            assert_eq!(entry.action_code_raw(), action as u16);
+            assert_eq!(entry.details_offset(), offset);
+        }
+
+        #[hegel::test]
+        fn prop_compute_hash_is_content_dependent(tc: hegel::TestCase) {
+            let ts = tc.draw(gs::integers::<u64>().min_value(1));
+            let author = AuthorId(tc.draw(gs::integers::<u64>()));
+            let offset_a = tc.draw(gs::integers::<u64>());
+            let offset_b = offset_a.wrapping_add(1);
+            let action = draw_action(&tc);
+            let a = AuditEntry::new(ts, author, action, offset_a, 0, [0u8; 32]);
+            let b = AuditEntry::new(ts, author, action, offset_b, 0, [0u8; 32]);
+            assert_ne!(a.compute_hash(), b.compute_hash());
+        }
+
+        #[hegel::test]
+        fn prop_validate_chain_rejects_nonzero_reserved1(tc: hegel::TestCase) {
+            let chain = build_chain(&tc, 2);
+            let prev = chain.get(0).unwrap_or_else(|| std::process::abort());
+            let curr = chain.get(1).unwrap_or_else(|| std::process::abort());
+            let val = tc.draw(gs::integers::<u8>().min_value(1).max_value(255));
+            let tampered = with_reserved_byte(curr, 18, val);
+            assert!(tampered.validate_chain(prev).is_err());
+        }
+
+        #[hegel::test]
+        fn prop_validate_chain_rejects_nonzero_reserved2(tc: hegel::TestCase) {
+            let chain = build_chain(&tc, 2);
+            let prev = chain.get(0).unwrap_or_else(|| std::process::abort());
+            let curr = chain.get(1).unwrap_or_else(|| std::process::abort());
+            let val = tc.draw(gs::integers::<u8>().min_value(1).max_value(255));
+            let tampered = with_reserved_byte(curr, 36, val);
+            assert!(tampered.validate_chain(prev).is_err());
+        }
+
+        #[hegel::test]
+        fn prop_validate_chain_rejects_nonzero_reserved3(tc: hegel::TestCase) {
+            let chain = build_chain(&tc, 2);
+            let prev = chain.get(0).unwrap_or_else(|| std::process::abort());
+            let curr = chain.get(1).unwrap_or_else(|| std::process::abort());
+            let val = tc.draw(gs::integers::<u8>().min_value(1).max_value(255));
+            let tampered = with_reserved_byte(curr, 72, val);
+            assert!(tampered.validate_chain(prev).is_err());
+        }
     }
 }

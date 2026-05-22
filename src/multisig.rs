@@ -473,5 +473,131 @@ mod tests {
             assert_eq!(result.valid_count, 0);
             assert!(!result.threshold_met);
         }
+
+        #[hegel::test]
+        fn prop_is_valid_true_when_threshold_met_no_invalid(tc: hegel::TestCase) {
+            let n = tc.draw(gs::integers::<u32>().min_value(1).max_value(8));
+            let threshold = tc.draw(gs::integers::<u32>().min_value(1).max_value(n));
+            let version_author =
+                AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1).max_value(u64::MAX)));
+            let version = make_version(version_author);
+            let signers = distinct_signers(n, version_author);
+            let authorized: Vec<AuthorId> = signers.iter().map(|(a, _)| *a).collect();
+            let policy = MultiSigPolicy::new(threshold, authorized)
+                .unwrap_or_else(|_| std::process::abort());
+            let attestations: Vec<SignatureEntry> = signers
+                .iter()
+                .take(threshold as usize)
+                .map(|(who, key)| sign_attestation(&version, *who, key))
+                .collect();
+            let reg = pin_all(&signers);
+            let result = verify_multisig(&version, &attestations, &policy, &reg)
+                .unwrap_or_else(|_| std::process::abort());
+            assert!(result.is_valid());
+        }
+
+        #[hegel::test]
+        fn prop_is_valid_false_when_threshold_not_met(tc: hegel::TestCase) {
+            let n = tc.draw(gs::integers::<u32>().min_value(2).max_value(8));
+            let threshold = tc.draw(gs::integers::<u32>().min_value(2).max_value(n));
+            let version_author =
+                AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1).max_value(u64::MAX)));
+            let version = make_version(version_author);
+            let signers = distinct_signers(n, version_author);
+            let authorized: Vec<AuthorId> = signers.iter().map(|(a, _)| *a).collect();
+            let policy = MultiSigPolicy::new(threshold, authorized)
+                .unwrap_or_else(|_| std::process::abort());
+            let short = threshold.saturating_sub(1) as usize;
+            let attestations: Vec<SignatureEntry> = signers
+                .iter()
+                .take(short)
+                .map(|(who, key)| sign_attestation(&version, *who, key))
+                .collect();
+            let reg = pin_all(&signers);
+            let result = verify_multisig(&version, &attestations, &policy, &reg)
+                .unwrap_or_else(|_| std::process::abort());
+            assert!(!result.is_valid());
+        }
+
+        #[hegel::test]
+        fn prop_is_valid_false_with_byzantine_signer(tc: hegel::TestCase) {
+            let version_author =
+                AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1).max_value(9_999)));
+            let version = make_version(version_author);
+            let valid_signer = AuthorId::new(10_001);
+            let valid_key = SigningKey::generate();
+            let byzantine = AuthorId::new(10_002);
+            let byzantine_pinned = SigningKey::generate();
+            let wrong_key = SigningKey::generate();
+            let policy = MultiSigPolicy::new(1, vec![valid_signer, byzantine])
+                .unwrap_or_else(|_| std::process::abort());
+            let valid_att = sign_attestation(&version, valid_signer, &valid_key);
+            let bad_att = sign_attestation(&version, byzantine, &wrong_key);
+            let reg = pin_all(&[(valid_signer, valid_key), (byzantine, byzantine_pinned)]);
+            let result = verify_multisig(&version, &[valid_att, bad_att], &policy, &reg)
+                .unwrap_or_else(|_| std::process::abort());
+            assert!(result.threshold_met);
+            assert!(!result.invalid_signers.is_empty());
+            assert!(!result.is_valid());
+        }
+
+        #[hegel::test]
+        fn prop_missing_signers_are_non_participants(tc: hegel::TestCase) {
+            let n = tc.draw(gs::integers::<u32>().min_value(2).max_value(6));
+            let k = tc.draw(
+                gs::integers::<u32>()
+                    .min_value(1)
+                    .max_value(n.saturating_sub(1)),
+            );
+            let version_author = AuthorId::new(1);
+            let version = make_version(version_author);
+            let signers = distinct_signers(n, version_author);
+            let authorized: Vec<AuthorId> = signers.iter().map(|(a, _)| *a).collect();
+            let policy =
+                MultiSigPolicy::new(k, authorized).unwrap_or_else(|_| std::process::abort());
+            let attestations: Vec<SignatureEntry> = signers
+                .iter()
+                .take(k as usize)
+                .map(|(who, key)| sign_attestation(&version, *who, key))
+                .collect();
+            let reg = pin_all(&signers);
+            let result = verify_multisig(&version, &attestations, &policy, &reg)
+                .unwrap_or_else(|_| std::process::abort());
+            let expected_missing: Vec<AuthorId> =
+                signers.iter().skip(k as usize).map(|(a, _)| *a).collect();
+            assert_eq!(result.missing_signers.len(), expected_missing.len());
+            for author in &expected_missing {
+                assert!(result.missing_signers.contains(author));
+            }
+            let signing_authors: Vec<AuthorId> =
+                signers.iter().take(k as usize).map(|(a, _)| *a).collect();
+            for author in &signing_authors {
+                assert!(!result.missing_signers.contains(author));
+            }
+        }
+
+        #[hegel::test]
+        fn prop_aggregator_preserves_all_signatures(tc: hegel::TestCase) {
+            let n = tc.draw(gs::integers::<u32>().min_value(1).max_value(8));
+            let version_author = AuthorId::new(1);
+            let version = make_version(version_author);
+            let signers = distinct_signers(n, version_author);
+            let entries: Vec<SignatureEntry> = signers
+                .iter()
+                .map(|(who, key)| sign_attestation(&version, *who, key))
+                .collect();
+            let mut agg = SignatureAggregator::new();
+            for e in &entries {
+                agg.add_signature(*e);
+            }
+            assert_eq!(agg.count(), n as usize);
+            assert_eq!(agg.signatures().len(), n as usize);
+            let owned = agg.into_signatures();
+            assert_eq!(owned.len(), n as usize);
+            for (i, expected) in entries.iter().enumerate() {
+                let got = owned.get(i).unwrap_or_else(|| std::process::abort());
+                assert_eq!(got.author_id, expected.author_id);
+            }
+        }
     }
 }
