@@ -451,9 +451,10 @@ impl KeyStore {
 
     /// Get keyring entry for an author
     #[allow(clippy::unused_self)] // Method for API consistency
-    fn get_entry(&self, author_id: AuthorId) -> Result<keyring::Entry> {
+    fn get_entry(&self, author_id: AuthorId) -> Result<keyring_core::Entry> {
+        ensure_keyring_store();
         let username = format!("author-{}", author_id.as_u64());
-        keyring::Entry::new(KEYRING_SERVICE, &username).map_err(|e| AionError::KeyringError {
+        keyring_core::Entry::new(KEYRING_SERVICE, &username).map_err(|e| AionError::KeyringError {
             operation: "access".to_string(),
             reason: e.to_string(),
         })
@@ -576,11 +577,25 @@ fn get_aion_keys_dir() -> PathBuf {
         .join(KEYS_DIR)
 }
 
+/// Initialize the platform keyring store.
+///
+/// Callers should set a persistent store (e.g. Secret Service via an RFC) before
+/// calling keyring operations. Without a store, `keyring_core::Entry::new` returns
+/// `NoDefaultStore`; `is_keyring_available` catches that and routes to the
+/// file-based fallback. See `.claude/rules/rfc-discipline.md` for adding stores.
+const fn ensure_keyring_store() {
+    // No store is wired here yet: RFC required for platform-specific store
+    // selection (Secret Service on Linux/macOS, Credential Manager on Windows).
+    // Until that RFC lands, `is_keyring_available()` returns false and the
+    // ChaCha20-Poly1305 + Argon2 file-based backend is used on all platforms.
+}
+
 /// Check if OS keyring is available and functional
 fn is_keyring_available() -> bool {
+    ensure_keyring_store();
     // Try to create a test entry - if this fails, keyring isn't available
     let test_username = "__aion_keyring_test__";
-    let test_entry = keyring::Entry::new(KEYRING_SERVICE, test_username);
+    let test_entry = keyring_core::Entry::new(KEYRING_SERVICE, test_username);
 
     let Ok(entry) = test_entry else {
         return false;
@@ -594,7 +609,7 @@ fn is_keyring_available() -> bool {
 
     // Create a NEW entry instance (simulating a different process/invocation)
     // This tests whether the keyring persists data across entry instances
-    let Ok(entry2) = keyring::Entry::new(KEYRING_SERVICE, test_username) else {
+    let Ok(entry2) = keyring_core::Entry::new(KEYRING_SERVICE, test_username) else {
         let _ = entry.delete_credential();
         return false;
     };
