@@ -165,6 +165,17 @@ of the neighbors above (when to reach for each).
   conventions.
 - **[SECURITY](SECURITY.md)** — disclosure policy.
 
+## Reference implementations
+
+Production-shaped examples that show aion-context wired into a real domain, end to end:
+
+- **[aion-edu](https://github.com/aion-context/aion-edu)** — a synthetic, AI-native
+  university where every rubric, credential, and accreditation is a signed, hash-chained
+  record. Demonstrates sealing and **offline verification**, **K-of-N multisig** for joint
+  degrees, **registry-epoch** delegation/revocation, and institution-to-institution
+  **federation** — a 7-crate Rust workspace with an axum web app (cinematic landing, live
+  classroom, federation console).
+
 ## Status
 
 **1.0.0** — public API, on-disk binary format, CLI exit-code
