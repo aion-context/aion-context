@@ -335,7 +335,12 @@ pub enum AionError {
     },
 
     /// Broken audit chain
-    #[error("Broken audit chain: expected hash {expected:?}, got {actual:?}")]
+    ///
+    /// The Display message is deliberately bounded (no hash bytes) so it
+    /// is safe to surface in `VerificationReport::errors`; callers that
+    /// need the digests match the variant fields directly. See
+    /// `.claude/rules/observability.md` on cardinality.
+    #[error("Broken audit chain: previous_hash mismatch")]
     BrokenAuditChain {
         /// Expected previous hash
         expected: [u8; 32],
@@ -623,12 +628,16 @@ mod tests {
         }
 
         #[test]
-        fn broken_audit_chain_should_display_hashes() {
+        fn broken_audit_chain_display_is_bounded() {
             let expected = [0xAB; 32];
             let actual = [0xCD; 32];
             let err = AionError::BrokenAuditChain { expected, actual };
             let msg = format!("{err}");
             assert!(msg.contains("Broken audit chain"));
+            // Cardinality: the Display must not leak raw hash bytes
+            // (observability.md) — the digests stay on the variant fields.
+            assert!(!msg.contains("171"), "decimal 0xAB must not appear");
+            assert!(!msg.contains("205"), "decimal 0xCD must not appear");
         }
 
         #[test]

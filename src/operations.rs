@@ -752,6 +752,8 @@ pub struct VerificationReport {
     pub integrity_hash_valid: bool,
     /// Whether the hash chain is intact
     pub hash_chain_valid: bool,
+    /// Whether the embedded audit-trail hash chain is intact
+    pub audit_chain_valid: bool,
     /// Whether all signatures are valid
     pub signatures_valid: bool,
     /// Overall verification result
@@ -772,6 +774,7 @@ impl VerificationReport {
             structure_valid: false,
             integrity_hash_valid: false,
             hash_chain_valid: false,
+            audit_chain_valid: false,
             signatures_valid: false,
             is_valid: false,
             errors: Vec::new(),
@@ -994,13 +997,62 @@ pub fn verify_file(
             .push(format!("Signature verification failed: {e}")),
     }
 
+    verify_audit_chain_into_report(&parser, &mut report);
+
     report.temporal_warnings = check_temporal_ordering(&versions);
     report.is_valid = report.structure_valid
         && report.integrity_hash_valid
         && report.hash_chain_valid
+        && report.audit_chain_valid
         && report.signatures_valid;
     emit_verify_outcome(&report);
     Ok(report)
+}
+
+/// Validate the embedded audit-trail hash chain (RFC-0002, issue #141).
+///
+/// Walks every audit entry and checks each `previous_hash` against the
+/// prior entry's `compute_hash()`. Sets `audit_chain_valid` on success;
+/// on a broken link or unreadable entry, pushes a bounded error and
+/// leaves the flag `false`. An empty trail is vacuously valid.
+fn verify_audit_chain_into_report(parser: &AionParser<'_>, report: &mut VerificationReport) {
+    let count = parser.header().audit_trail_count as usize;
+    if count == 0 {
+        report.audit_chain_valid = true;
+        return;
+    }
+    let mut previous = match parser.get_audit_entry(0) {
+        Ok(entry) => entry,
+        Err(e) => {
+            report.errors.push(format!("Audit entry 0 unreadable: {e}"));
+            return;
+        }
+    };
+    if !previous.is_genesis() {
+        report
+            .errors
+            .push("Audit chain genesis has non-zero previous_hash".to_string());
+        return;
+    }
+    for index in 1..count {
+        let entry = match parser.get_audit_entry(index) {
+            Ok(entry) => entry,
+            Err(e) => {
+                report
+                    .errors
+                    .push(format!("Audit entry {index} unreadable: {e}"));
+                return;
+            }
+        };
+        if let Err(e) = entry.validate_chain(&previous) {
+            report
+                .errors
+                .push(format!("Audit chain broken at entry {index}: {e}"));
+            return;
+        }
+        previous = entry;
+    }
+    report.audit_chain_valid = true;
 }
 
 /// Bounded `reason` codes for `event="file_rejected"` (RFC-0007 / observability rule).
@@ -1011,6 +1063,8 @@ const fn classify_verify_failure(report: &VerificationReport) -> &'static str {
         "integrity_hash_mismatch"
     } else if !report.hash_chain_valid {
         "hash_chain_broken"
+    } else if !report.audit_chain_valid {
+        "audit_chain_broken"
     } else if !report.signatures_valid {
         "signature_invalid"
     } else {
@@ -1678,6 +1732,99 @@ mod tests {
 
             assert_eq!(result.version.as_u64(), 2);
             assert_ne!(result.rules_hash, [0u8; 32]);
+        }
+
+        // Regression test for issue #141: the audit-trail hash chain
+        // must verify across multiple commits through the real
+        // init -> commit -> parse path, and `verify_file` must surface
+        // a healthy chain via `audit_chain_valid`.
+        #[test]
+        fn audit_chain_round_trips_across_multiple_commits() {
+            let temp_dir = TempDir::new().unwrap_or_else(|_| std::process::abort());
+            let file_path = temp_dir.path().join("chain.aion");
+
+            let signing_key = SigningKey::generate();
+            let author_id = AuthorId::new(50_001);
+            let registry = test_reg(author_id, &signing_key);
+
+            let initial_bytes = create_test_file(&signing_key, author_id);
+            std::fs::write(&file_path, &initial_bytes).unwrap_or_else(|_| std::process::abort());
+
+            for i in 1..=3u64 {
+                let options = CommitOptions {
+                    author_id,
+                    signing_key: &signing_key,
+                    message: "rev",
+                    timestamp: Some(1_700_000_000_000_000_000 + i * 1_000_000_000),
+                };
+                commit_version(&file_path, b"new rules", &options, &registry)
+                    .unwrap_or_else(|_| std::process::abort());
+            }
+
+            let bytes = std::fs::read(&file_path).unwrap_or_else(|_| std::process::abort());
+            let parser = AionParser::new(&bytes).unwrap_or_else(|_| std::process::abort());
+            let count = parser.header().audit_trail_count as usize;
+            assert!(count >= 4, "genesis + 3 commits, got {count}");
+
+            for index in 1..count {
+                let prev = parser
+                    .get_audit_entry(index - 1)
+                    .unwrap_or_else(|_| std::process::abort());
+                let curr = parser
+                    .get_audit_entry(index)
+                    .unwrap_or_else(|_| std::process::abort());
+                assert!(
+                    curr.validate_chain(&prev).is_ok(),
+                    "audit chain broken at entry {index}",
+                );
+            }
+
+            let report =
+                verify_file(&file_path, &registry).unwrap_or_else(|_| std::process::abort());
+            assert!(report.audit_chain_valid, "verify_file must accept chain");
+        }
+
+        // Regression test for issue #141: a tampered audit entry must
+        // make `verify_file` report the audit chain as invalid.
+        #[test]
+        fn verify_file_rejects_tampered_audit_chain() {
+            let temp_dir = TempDir::new().unwrap_or_else(|_| std::process::abort());
+            let file_path = temp_dir.path().join("tampered.aion");
+
+            let signing_key = SigningKey::generate();
+            let author_id = AuthorId::new(50_002);
+            let registry = test_reg(author_id, &signing_key);
+
+            let initial_bytes = create_test_file(&signing_key, author_id);
+            std::fs::write(&file_path, &initial_bytes).unwrap_or_else(|_| std::process::abort());
+
+            let options = CommitOptions {
+                author_id,
+                signing_key: &signing_key,
+                message: "rev",
+                timestamp: Some(1_700_000_001_000_000_000),
+            };
+            commit_version(&file_path, b"new rules", &options, &registry)
+                .unwrap_or_else(|_| std::process::abort());
+
+            let mut bytes = std::fs::read(&file_path).unwrap_or_else(|_| std::process::abort());
+            let audit_offset = parse_audit_section_offset(&bytes);
+            // Flip a byte inside entry #1's previous_hash field (offset 40).
+            bytes[audit_offset + 80 + 40] ^= 0xFF;
+            std::fs::write(&file_path, &bytes).unwrap_or_else(|_| std::process::abort());
+
+            let report =
+                verify_file(&file_path, &registry).unwrap_or_else(|_| std::process::abort());
+            assert!(
+                !report.audit_chain_valid,
+                "tampered audit chain must be rejected",
+            );
+            assert!(!report.is_valid);
+        }
+
+        fn parse_audit_section_offset(bytes: &[u8]) -> usize {
+            let parser = AionParser::new(bytes).unwrap_or_else(|_| std::process::abort());
+            parser.header().audit_trail_offset as usize
         }
 
         #[test]
