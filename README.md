@@ -6,9 +6,9 @@
 
 # aion-context
 
-> **A verifiable control layer for AI agents. Keep critical policies
-> outside the model, prove who approved every change, and give auditors
-> a trail they can trust.**
+> **Signed, tamper-proof rulebooks for AI agents. Decide what your AI
+> is allowed to do, prove who approved each rule, and catch any change
+> after the fact — no deep tech knowledge required.**
 
 [![crates.io](https://img.shields.io/crates/v/aion-context.svg)](https://crates.io/crates/aion-context)
 [![docs.rs](https://img.shields.io/docsrs/aion-context)](https://docs.rs/aion-context)
