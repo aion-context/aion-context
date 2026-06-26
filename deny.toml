@@ -89,4 +89,16 @@ ignore = [
     # the transitive chain migrates to `pastey` (a drop-in fork) or
     # to `with_builtin_macros`.
     { id = "RUSTSEC-2024-0436", reason = "paste unmaintained; transitive macro helper; no CVE; migrate when upstream deps switch to pastey" },
+    # `pqcrypto-mldsa` / `pqcrypto-traits` wrap PQClean's C ML-DSA
+    # (FIPS 204) implementation. PQClean announced archival in/after
+    # 2026-07, so these crates stop receiving updates. No CVE, no safe
+    # upgrade exists today. ML-DSA is used only in the RFC-0027 hybrid
+    # signature path (src/hybrid_sig.rs); the classical Ed25519 half is
+    # unaffected. Migration target is the pure-Rust `ml-dsa` crate — an
+    # RFC + full fuzz pass per supply-chain.md (crypto deps are
+    # load-bearing). Re-evaluate at the next dep-bump; remove once the
+    # `ml-dsa` migration lands.
+    { id = "RUSTSEC-2026-0166", reason = "pqcrypto-mldsa unmaintained (PQClean archival); no CVE, no safe upgrade; ML-DSA confined to RFC-0027 hybrid path; migrate to pure-Rust ml-dsa crate via RFC" },
+    { id = "RUSTSEC-2026-0162", reason = "pqcrypto-traits unmaintained (PQClean archival); shared traits for pqcrypto-mldsa; tracked with RUSTSEC-2026-0166; remove on ml-dsa migration" },
+    { id = "RUSTSEC-2026-0163", reason = "pqcrypto-internals unmaintained (PQClean archival); internal FFI for pqcrypto-mldsa; tracked with RUSTSEC-2026-0166; remove on ml-dsa migration" },
 ]
