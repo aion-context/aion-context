@@ -791,8 +791,11 @@ impl<'a> AionParser<'a> {
                 reason: "Invalid details length bytes".to_string(),
             }
         })?);
+        // previous_hash occupies bytes 40..72 of the repr(C) AuditEntry:
+        // timestamp 8 + author_id 8 + action_code 2 + reserved1 6 +
+        // details_offset 8 + details_length 4 + reserved2 4 = 40.
         let previous_hash: [u8; 32] =
-            entry_bytes[48..80]
+            entry_bytes[40..72]
                 .try_into()
                 .map_err(|_| AionError::InvalidFormat {
                     reason: "Invalid previous hash bytes".to_string(),
