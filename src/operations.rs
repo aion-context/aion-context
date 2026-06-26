@@ -1028,6 +1028,12 @@ fn verify_audit_chain_into_report(parser: &AionParser<'_>, report: &mut Verifica
             return;
         }
     };
+    if !previous.is_genesis() {
+        report
+            .errors
+            .push("Audit chain genesis has non-zero previous_hash".to_string());
+        return;
+    }
     for index in 1..count {
         let entry = match parser.get_audit_entry(index) {
             Ok(entry) => entry,
@@ -1734,7 +1740,7 @@ mod tests {
         // a healthy chain via `audit_chain_valid`.
         #[test]
         fn audit_chain_round_trips_across_multiple_commits() {
-            let temp_dir = TempDir::new().unwrap();
+            let temp_dir = TempDir::new().unwrap_or_else(|_| std::process::abort());
             let file_path = temp_dir.path().join("chain.aion");
 
             let signing_key = SigningKey::generate();
@@ -1742,7 +1748,7 @@ mod tests {
             let registry = test_reg(author_id, &signing_key);
 
             let initial_bytes = create_test_file(&signing_key, author_id);
-            std::fs::write(&file_path, &initial_bytes).unwrap();
+            std::fs::write(&file_path, &initial_bytes).unwrap_or_else(|_| std::process::abort());
 
             for i in 1..=3u64 {
                 let options = CommitOptions {
@@ -1751,24 +1757,30 @@ mod tests {
                     message: "rev",
                     timestamp: Some(1_700_000_000_000_000_000 + i * 1_000_000_000),
                 };
-                commit_version(&file_path, b"new rules", &options, &registry).unwrap();
+                commit_version(&file_path, b"new rules", &options, &registry)
+                    .unwrap_or_else(|_| std::process::abort());
             }
 
-            let bytes = std::fs::read(&file_path).unwrap();
-            let parser = AionParser::new(&bytes).unwrap();
+            let bytes = std::fs::read(&file_path).unwrap_or_else(|_| std::process::abort());
+            let parser = AionParser::new(&bytes).unwrap_or_else(|_| std::process::abort());
             let count = parser.header().audit_trail_count as usize;
             assert!(count >= 4, "genesis + 3 commits, got {count}");
 
             for index in 1..count {
-                let prev = parser.get_audit_entry(index - 1).unwrap();
-                let curr = parser.get_audit_entry(index).unwrap();
+                let prev = parser
+                    .get_audit_entry(index - 1)
+                    .unwrap_or_else(|_| std::process::abort());
+                let curr = parser
+                    .get_audit_entry(index)
+                    .unwrap_or_else(|_| std::process::abort());
                 assert!(
                     curr.validate_chain(&prev).is_ok(),
                     "audit chain broken at entry {index}",
                 );
             }
 
-            let report = verify_file(&file_path, &registry).unwrap();
+            let report =
+                verify_file(&file_path, &registry).unwrap_or_else(|_| std::process::abort());
             assert!(report.audit_chain_valid, "verify_file must accept chain");
         }
 
@@ -1776,7 +1788,7 @@ mod tests {
         // make `verify_file` report the audit chain as invalid.
         #[test]
         fn verify_file_rejects_tampered_audit_chain() {
-            let temp_dir = TempDir::new().unwrap();
+            let temp_dir = TempDir::new().unwrap_or_else(|_| std::process::abort());
             let file_path = temp_dir.path().join("tampered.aion");
 
             let signing_key = SigningKey::generate();
@@ -1784,7 +1796,7 @@ mod tests {
             let registry = test_reg(author_id, &signing_key);
 
             let initial_bytes = create_test_file(&signing_key, author_id);
-            std::fs::write(&file_path, &initial_bytes).unwrap();
+            std::fs::write(&file_path, &initial_bytes).unwrap_or_else(|_| std::process::abort());
 
             let options = CommitOptions {
                 author_id,
@@ -1792,15 +1804,17 @@ mod tests {
                 message: "rev",
                 timestamp: Some(1_700_000_001_000_000_000),
             };
-            commit_version(&file_path, b"new rules", &options, &registry).unwrap();
+            commit_version(&file_path, b"new rules", &options, &registry)
+                .unwrap_or_else(|_| std::process::abort());
 
-            let mut bytes = std::fs::read(&file_path).unwrap();
+            let mut bytes = std::fs::read(&file_path).unwrap_or_else(|_| std::process::abort());
             let audit_offset = parse_audit_section_offset(&bytes);
             // Flip a byte inside entry #1's previous_hash field (offset 40).
             bytes[audit_offset + 80 + 40] ^= 0xFF;
-            std::fs::write(&file_path, &bytes).unwrap();
+            std::fs::write(&file_path, &bytes).unwrap_or_else(|_| std::process::abort());
 
-            let report = verify_file(&file_path, &registry).unwrap();
+            let report =
+                verify_file(&file_path, &registry).unwrap_or_else(|_| std::process::abort());
             assert!(
                 !report.audit_chain_valid,
                 "tampered audit chain must be rejected",
@@ -1809,7 +1823,7 @@ mod tests {
         }
 
         fn parse_audit_section_offset(bytes: &[u8]) -> usize {
-            let parser = AionParser::new(bytes).unwrap();
+            let parser = AionParser::new(bytes).unwrap_or_else(|_| std::process::abort());
             parser.header().audit_trail_offset as usize
         }
 
