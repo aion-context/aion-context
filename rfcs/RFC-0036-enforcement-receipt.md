@@ -1,9 +1,10 @@
 # RFC 0036: Enforcement Receipt
 
 - **Author:** copyleftdev
-- **Status:** DRAFT
+- **Status:** IMPLEMENTED
 - **Created:** 2026-07-20
 - **Updated:** 2026-07-20
+- **Implemented in:** #154 (`src/enforcement_receipt.rs`, Phase A)
 - **Depends on:** RFC-0012 (versioning), RFC-0014 (multi-signature), RFC-0019
   (audit trail), RFC-0021 (multisig attestation), RFC-0023 (DSSE envelope),
   RFC-0024 (SLSA provenance), RFC-0025 (transparency log), RFC-0028 (key
