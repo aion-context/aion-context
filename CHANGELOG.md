@@ -10,7 +10,29 @@ and the project follows [Semantic Versioning].
 
 ## [Unreleased]
 
-_Nothing here yet. Next changes land in this section._
+### Added
+
+- **RFC-0036 Enforcement Receipt** (#151, #154) — the `enforcement_receipt`
+  module attests that a runtime *applied* a policy, the claim the
+  provenance chain (DSSE/SLSA/transparency-log) does not make. A receipt
+  is a DSSE-wrapped in-toto predicate binding policy identity, the pinned
+  key-registry epoch, the decision (`allow`/`deny`/`degraded`/
+  `fail_closed`), gating-approval references, and the enforcing runtime's
+  identity. Policy-issuing and enforcement-attesting authorities are
+  distinct registry identities by construction; `verify_with_registry`
+  rejects unless the runtime's own signature is present and verifies
+  (author binding). Composes existing primitives — no new cryptography.
+- **Opt-in approval verification** — `verify_with_registry_and_approvals`
+  resolves each approval reference against an `AttestationStore` and
+  hard-fails on any that cannot be independently verified; the base path
+  binds approval references without resolving them.
+- **Independent witness co-signature** — `add_witness_signature` lets a
+  second party co-sign the same envelope, resolved at its own version
+  space; receipts append to the transparency log as
+  `LogEntryKind::EnforcementReceipt`, and reconstruct out-of-process via
+  `EnforcementReceipt::from_envelope` / `from_json`.
+- **`AionError::UnresolvedApproval`** — bounded failure for
+  unresolvable or invalid approval references in the receipt path.
 
 ## [1.0.0] — 2026-04-25
 
