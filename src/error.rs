@@ -383,6 +383,19 @@ pub enum AionError {
         reason: String,
     },
 
+    /// An enforcement receipt referenced an approval attestation
+    /// (RFC-0036) that could not be resolved or independently verified
+    /// against the supplied attestation store. The reason is bounded —
+    /// it names the approver and a fixed cause code, never attestation
+    /// bytes (see `.claude/rules/observability.md`).
+    #[error("Unresolved approval from author {approver}: {reason}")]
+    UnresolvedApproval {
+        /// The approver whose referenced attestation failed to resolve.
+        approver: AuthorId,
+        /// Bounded cause code (e.g. `not_found`, `invalid_signature`).
+        reason: String,
+    },
+
     /// Resource exhausted
     #[error("Resource exhausted: {resource}")]
     ResourceExhausted {
