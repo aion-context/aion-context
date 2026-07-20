@@ -1099,7 +1099,7 @@ mod tests {
             }
             let epochs = reg.epochs_for(author);
             for pair in epochs.windows(2) {
-                assert!(pair[1].epoch == pair[0].epoch.saturating_add(1));
+                assert_eq!(pair[1].epoch, pair[0].epoch.saturating_add(1));
                 assert!(pair[1].created_at_version >= pair[0].created_at_version);
             }
         }
