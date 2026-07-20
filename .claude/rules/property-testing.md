@@ -184,6 +184,14 @@ blocks on a drop.
 | `src/hw_attestation.rs`         | RFC-0034 registry verify rejects binding signed by wrong master |
 | `src/release.rs`                | RFC-0034 `verify_with_registry` accepts a pinned release       |
 | `src/release.rs`                | RFC-0034 `verify_with_registry` rejects rotated-out signer     |
+| `src/enforcement_receipt.rs`    | RFC-0036 `seal` → `verify_with_registry` round-trip            |
+| `src/enforcement_receipt.rs`    | RFC-0036 tampered predicate payload ⇒ verify rejects           |
+| `src/enforcement_receipt.rs`    | RFC-0036 wrong runtime key ⇒ verify rejects                    |
+| `src/enforcement_receipt.rs`    | RFC-0036 distinct-signer substitution ⇒ verify rejects (author binding) |
+| `src/enforcement_receipt.rs`    | RFC-0036 runtime signature absent ⇒ verify rejects             |
+| `src/enforcement_receipt.rs`    | RFC-0036 unresolvable approval ⇒ `_and_approvals` hard-fails, base passes |
+| `src/enforcement_receipt.rs`    | RFC-0036 witness co-signature resolves at its own version      |
+| `src/enforcement_receipt.rs`    | RFC-0036 statement JSON round-trip preserves the predicate     |
 
 ## Tier 3 (model / stateful — required once the audit chain is stable)
 

@@ -69,6 +69,8 @@ pub enum LogEntryKind {
     SlsaStatement = 5,
     /// Generic DSSE envelope (RFC-0023).
     DsseEnvelope = 6,
+    /// Enforcement receipt attesting runtime policy application (RFC-0036).
+    EnforcementReceipt = 7,
 }
 
 impl LogEntryKind {
@@ -85,6 +87,7 @@ impl LogEntryKind {
             4 => Ok(Self::KeyRevocation),
             5 => Ok(Self::SlsaStatement),
             6 => Ok(Self::DsseEnvelope),
+            7 => Ok(Self::EnforcementReceipt),
             other => Err(AionError::InvalidFormat {
                 reason: format!("Unknown log entry kind: {other}"),
             }),
