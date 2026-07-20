@@ -28,8 +28,8 @@
 //! use aion_context::types::AuthorId;
 //!
 //! let runtime = AuthorId::new(60_001);
-//! let master = SigningKey::generate();
-//! let key = SigningKey::generate();
+//! let master = SigningKey::generate().unwrap();
+//! let key = SigningKey::generate().unwrap();
 //! let mut registry = KeyRegistry::new();
 //! registry
 //!     .register_author(runtime, master.verifying_key(), key.verifying_key(), 0)
@@ -640,7 +640,7 @@ mod tests {
     fn reg_pinning(pairs: &[(AuthorId, &SigningKey)]) -> KeyRegistry {
         let mut reg = KeyRegistry::new();
         for (author, key) in pairs {
-            let master = SigningKey::generate();
+            let master = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             reg.register_author(*author, master.verifying_key(), key.verifying_key(), 0)
                 .unwrap();
         }
@@ -669,7 +669,7 @@ mod tests {
     #[test]
     fn seal_then_verify_roundtrip() {
         let runtime = AuthorId::new(60_001);
-        let key = SigningKey::generate();
+        let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
         let reg = reg_pinning(&[(runtime, &key)]);
         let receipt = sample_builder(AuthorId::new(50_001), runtime)
             .seal(&key)
@@ -691,7 +691,7 @@ mod tests {
             author_id: AuthorId::new(50_001),
             epoch: 0,
         };
-        let key = SigningKey::generate();
+        let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
         assert!(
             EnforcementReceiptBuilder::new(policy.clone(), epoch.clone())
                 .seal(&key)
@@ -705,7 +705,7 @@ mod tests {
     #[test]
     fn tampered_decision_rejects() {
         let runtime = AuthorId::new(60_001);
-        let key = SigningKey::generate();
+        let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
         let reg = reg_pinning(&[(runtime, &key)]);
         let mut receipt = sample_builder(AuthorId::new(50_001), runtime)
             .seal(&key)
@@ -723,13 +723,19 @@ mod tests {
         // runtime, with Y's own valid key. Must reject — no X signature.
         let victim = AuthorId::new(60_001);
         let attacker = AuthorId::new(60_002);
-        let attacker_key = SigningKey::generate();
+        let attacker_key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
         // Predicate names the victim as runtime, but attacker seals it.
         let receipt = sample_builder(AuthorId::new(50_001), victim)
             .seal(&attacker_key)
             .unwrap();
         // Registry pins BOTH authors with real keys (attacker is valid).
-        let reg = reg_pinning(&[(victim, &SigningKey::generate()), (attacker, &attacker_key)]);
+        let reg = reg_pinning(&[
+            (
+                victim,
+                &SigningKey::generate().unwrap_or_else(|_| std::process::abort()),
+            ),
+            (attacker, &attacker_key),
+        ]);
         // The envelope carries attacker's keyid, predicate claims victim.
         assert!(receipt.verify_with_registry(&reg).is_err());
     }
@@ -738,8 +744,8 @@ mod tests {
     fn runtime_signature_must_be_present() {
         let runtime = AuthorId::new(60_001);
         let witness = AuthorId::new(70_001);
-        let runtime_key = SigningKey::generate();
-        let witness_key = SigningKey::generate();
+        let runtime_key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+        let witness_key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
         let mut receipt = sample_builder(AuthorId::new(50_001), runtime)
             .seal(&runtime_key)
             .unwrap();
@@ -759,8 +765,8 @@ mod tests {
     fn witness_cosignature_roundtrip() {
         let runtime = AuthorId::new(60_001);
         let witness = AuthorId::new(70_001);
-        let runtime_key = SigningKey::generate();
-        let witness_key = SigningKey::generate();
+        let runtime_key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+        let witness_key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
         let mut receipt = sample_builder(AuthorId::new(50_001), runtime)
             .seal(&runtime_key)
             .unwrap();
@@ -776,7 +782,7 @@ mod tests {
     fn unresolvable_approval_hard_fails_but_base_passes() {
         let runtime = AuthorId::new(60_001);
         let approver = AuthorId::new(50_010);
-        let key = SigningKey::generate();
+        let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
         let mut b = sample_builder(AuthorId::new(50_001), runtime);
         b.add_approval(ApprovalRef {
             approver_author_id: approver,
@@ -808,8 +814,8 @@ mod tests {
         // witness sidecar, reconstruct elsewhere, and re-verify.
         let runtime = AuthorId::new(60_001);
         let witness = AuthorId::new(70_001);
-        let runtime_key = SigningKey::generate();
-        let witness_key = SigningKey::generate();
+        let runtime_key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+        let witness_key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
         let mut receipt = sample_builder(AuthorId::new(50_001), runtime)
             .seal(&runtime_key)
             .unwrap();
@@ -829,8 +835,8 @@ mod tests {
         // A witness signature with no bound version fails closed.
         let runtime = AuthorId::new(60_001);
         let witness = AuthorId::new(70_001);
-        let runtime_key = SigningKey::generate();
-        let witness_key = SigningKey::generate();
+        let runtime_key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+        let witness_key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
         let mut receipt = sample_builder(AuthorId::new(50_001), runtime)
             .seal(&runtime_key)
             .unwrap();
@@ -846,7 +852,7 @@ mod tests {
     #[test]
     fn log_entry_kind_is_enforcement_receipt() {
         let runtime = AuthorId::new(60_001);
-        let key = SigningKey::generate();
+        let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
         let receipt = sample_builder(AuthorId::new(50_001), runtime)
             .seal(&key)
             .unwrap();
@@ -862,7 +868,7 @@ mod tests {
     #[test]
     fn json_predicate_shape_is_nested() {
         let runtime = AuthorId::new(60_001);
-        let key = SigningKey::generate();
+        let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
         let receipt = sample_builder(AuthorId::new(50_001), runtime)
             .seal(&key)
             .unwrap();
@@ -895,7 +901,7 @@ mod tests {
         fn prop_enforcement_receipt_seal_verify_roundtrip(tc: hegel::TestCase) {
             let (policy, runtime) = draw_ids(&tc);
             let version = tc.draw(gs::integers::<u64>().min_value(1).max_value(1 << 30));
-            let key = SigningKey::generate();
+            let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let mut b = EnforcementReceiptBuilder::new(
                 PolicyIdentity {
                     file_id: tc.draw(gs::integers::<u64>()),
@@ -921,7 +927,7 @@ mod tests {
         #[hegel::test]
         fn prop_enforcement_receipt_tampered_payload_rejects(tc: hegel::TestCase) {
             let (policy, runtime) = draw_ids(&tc);
-            let key = SigningKey::generate();
+            let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let mut receipt = sample_builder(policy, runtime)
                 .seal(&key)
                 .unwrap_or_else(|_| std::process::abort());
@@ -937,8 +943,8 @@ mod tests {
         #[hegel::test]
         fn prop_enforcement_receipt_wrong_runtime_key_rejects(tc: hegel::TestCase) {
             let (policy, runtime) = draw_ids(&tc);
-            let real = SigningKey::generate();
-            let wrong = SigningKey::generate();
+            let real = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+            let wrong = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let receipt = sample_builder(policy, runtime)
                 .seal(&real)
                 .unwrap_or_else(|_| std::process::abort());
@@ -951,18 +957,24 @@ mod tests {
         fn prop_enforcement_receipt_distinct_signer_substitution_rejects(tc: hegel::TestCase) {
             let (policy, victim) = draw_ids(&tc);
             let attacker = AuthorId::new(victim.as_u64().saturating_add(1));
-            let attacker_key = SigningKey::generate();
+            let attacker_key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let receipt = sample_builder(policy, victim)
                 .seal(&attacker_key)
                 .unwrap_or_else(|_| std::process::abort());
-            let reg = reg_pinning(&[(victim, &SigningKey::generate()), (attacker, &attacker_key)]);
+            let reg = reg_pinning(&[
+                (
+                    victim,
+                    &SigningKey::generate().unwrap_or_else(|_| std::process::abort()),
+                ),
+                (attacker, &attacker_key),
+            ]);
             assert!(receipt.verify_with_registry(&reg).is_err());
         }
 
         #[hegel::test]
         fn prop_enforcement_receipt_json_roundtrip(tc: hegel::TestCase) {
             let (policy, runtime) = draw_ids(&tc);
-            let key = SigningKey::generate();
+            let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let receipt = sample_builder(policy, runtime)
                 .seal(&key)
                 .unwrap_or_else(|_| std::process::abort());

@@ -27,8 +27,8 @@
 //!
 //! let mut log = TransparencyLog::new();
 //! let signer = AuthorId::new(50_001);
-//! let master = SigningKey::generate();
-//! let key = SigningKey::generate();
+//! let master = SigningKey::generate().unwrap();
+//! let key = SigningKey::generate().unwrap();
 //! let mut registry = KeyRegistry::new();
 //! registry
 //!     .register_author(signer, master.verifying_key(), key.verifying_key(), 0)
@@ -772,7 +772,7 @@ mod tests {
     /// Build a registry pinning `signer` with `key` as the active op at epoch 0.
     fn reg_pinning(signer: AuthorId, key: &SigningKey) -> KeyRegistry {
         let mut reg = KeyRegistry::new();
-        let master = SigningKey::generate();
+        let master = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
         reg.register_author(signer, master.verifying_key(), key.verifying_key(), 0)
             .unwrap();
         reg
@@ -800,7 +800,7 @@ mod tests {
     #[test]
     fn seal_requires_primary_artifact() {
         let mut log = TransparencyLog::new();
-        let key = SigningKey::generate();
+        let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
         let mut b = ReleaseBuilder::new("m", "1", "safetensors");
         b.builder_id("https://ci/1");
         assert!(b.seal(AuthorId::new(1), &key, &mut log).is_err());
@@ -809,7 +809,7 @@ mod tests {
     #[test]
     fn seal_requires_builder_id() {
         let mut log = TransparencyLog::new();
-        let key = SigningKey::generate();
+        let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
         let mut b = ReleaseBuilder::new("m", "1", "safetensors");
         b.primary_artifact("x", vec![0u8; 32]);
         assert!(b.seal(AuthorId::new(1), &key, &mut log).is_err());
@@ -818,7 +818,7 @@ mod tests {
     #[test]
     fn seal_and_verify_round_trip() {
         let mut log = TransparencyLog::new();
-        let key = SigningKey::generate();
+        let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
         let signed = sample_builder()
             .seal(AuthorId::new(50_001), &key, &mut log)
             .unwrap();
@@ -830,7 +830,7 @@ mod tests {
     #[test]
     fn log_has_three_entries_in_kind_order() {
         let mut log = TransparencyLog::new();
-        let key = SigningKey::generate();
+        let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
         let signed = sample_builder()
             .seal(AuthorId::new(50_001), &key, &mut log)
             .unwrap();
@@ -843,7 +843,7 @@ mod tests {
     #[test]
     fn oci_referrers_link_to_primary() {
         let mut log = TransparencyLog::new();
-        let key = SigningKey::generate();
+        let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
         let signed = sample_builder()
             .seal(AuthorId::new(50_001), &key, &mut log)
             .unwrap();
@@ -861,7 +861,7 @@ mod tests {
     #[test]
     fn aibom_model_hash_equals_manifest_primary() {
         let mut log = TransparencyLog::new();
-        let key = SigningKey::generate();
+        let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
         let signed = sample_builder()
             .seal(AuthorId::new(50_001), &key, &mut log)
             .unwrap();
@@ -874,7 +874,7 @@ mod tests {
     #[test]
     fn tampered_aibom_envelope_rejects() {
         let mut log = TransparencyLog::new();
-        let key = SigningKey::generate();
+        let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
         let mut signed = sample_builder()
             .seal(AuthorId::new(50_001), &key, &mut log)
             .unwrap();
@@ -887,8 +887,8 @@ mod tests {
     #[test]
     fn wrong_key_rejects() {
         let mut log = TransparencyLog::new();
-        let key = SigningKey::generate();
-        let other = SigningKey::generate();
+        let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+        let other = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
         let signed = sample_builder()
             .seal(AuthorId::new(50_001), &key, &mut log)
             .unwrap();
@@ -925,7 +925,7 @@ mod tests {
         #[hegel::test]
         fn prop_release_seal_verify_roundtrip(tc: hegel::TestCase) {
             let mut log = TransparencyLog::new();
-            let key = SigningKey::generate();
+            let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let signer = AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1)));
             let signed = build_and_seal(&tc, &mut log, signer, &key);
             let reg = reg_pinning(signer, &key);
@@ -937,7 +937,7 @@ mod tests {
         #[hegel::test]
         fn prop_release_tampered_manifest_detected(tc: hegel::TestCase) {
             let mut log = TransparencyLog::new();
-            let key = SigningKey::generate();
+            let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let mut signed = build_and_seal(
                 &tc,
                 &mut log,
@@ -959,7 +959,7 @@ mod tests {
         #[hegel::test]
         fn prop_release_oci_referrers_link_to_primary(tc: hegel::TestCase) {
             let mut log = TransparencyLog::new();
-            let key = SigningKey::generate();
+            let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let signed = build_and_seal(
                 &tc,
                 &mut log,
@@ -987,7 +987,7 @@ mod tests {
         #[hegel::test]
         fn prop_release_aibom_model_ref_matches_manifest(tc: hegel::TestCase) {
             let mut log = TransparencyLog::new();
-            let key = SigningKey::generate();
+            let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let signed = build_and_seal(
                 &tc,
                 &mut log,
@@ -1006,7 +1006,7 @@ mod tests {
         #[hegel::test]
         fn prop_release_log_has_expected_kinds(tc: hegel::TestCase) {
             let mut log = TransparencyLog::new();
-            let key = SigningKey::generate();
+            let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let signed = build_and_seal(
                 &tc,
                 &mut log,
@@ -1023,8 +1023,8 @@ mod tests {
         fn prop_release_registry_verify_accepts_pinned_release(tc: hegel::TestCase) {
             use crate::key_registry::KeyRegistry;
             let mut log = TransparencyLog::new();
-            let master = SigningKey::generate();
-            let op = SigningKey::generate();
+            let master = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+            let op = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let signer =
                 AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1).max_value(1 << 32)));
             let mut reg = KeyRegistry::new();
@@ -1041,9 +1041,9 @@ mod tests {
         fn prop_release_registry_verify_rejects_rotated_out_signer(tc: hegel::TestCase) {
             use crate::key_registry::{sign_rotation_record, KeyRegistry};
             let mut log = TransparencyLog::new();
-            let master = SigningKey::generate();
-            let op0 = SigningKey::generate();
-            let op1 = SigningKey::generate();
+            let master = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+            let op0 = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+            let op1 = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let signer =
                 AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1).max_value(1 << 32)));
             let mut reg = KeyRegistry::new();

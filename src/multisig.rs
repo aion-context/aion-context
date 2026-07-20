@@ -329,7 +329,7 @@ mod tests {
         fn pin_all(signers: &[(AuthorId, SigningKey)]) -> KeyRegistry {
             let mut reg = KeyRegistry::new();
             for (author, key) in signers {
-                let master = SigningKey::generate();
+                let master = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
                 reg.register_author(*author, master.verifying_key(), key.verifying_key(), 0)
                     .unwrap_or_else(|_| std::process::abort());
             }
@@ -356,7 +356,10 @@ mod tests {
             let mut next_id: u64 = 10_000;
             while (out.len() as u32) < n {
                 if next_id != exclude.as_u64() {
-                    out.push((AuthorId::new(next_id), SigningKey::generate()));
+                    out.push((
+                        AuthorId::new(next_id),
+                        SigningKey::generate().unwrap_or_else(|_| std::process::abort()),
+                    ));
                 }
                 next_id = next_id.saturating_add(1);
             }
@@ -438,13 +441,13 @@ mod tests {
             let author = AuthorId::new(author_id);
             let version = make_version(author);
             let impostor = AuthorId::new(author_id.wrapping_add(1).max(2));
-            let key = SigningKey::generate();
+            let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let sig = sign_attestation(&version, impostor, &key);
             let policy =
                 MultiSigPolicy::new(1, vec![author]).unwrap_or_else(|_| std::process::abort());
             // Pin the authorized author, not the impostor — verify still rejects the
             // impostor because they're not in the policy's authorized_signers.
-            let author_key = SigningKey::generate();
+            let author_key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let reg = pin_all(&[(author, author_key)]);
             let result = verify_multisig(&version, &[sig], &policy, &reg)
                 .unwrap_or_else(|_| std::process::abort());
@@ -459,14 +462,14 @@ mod tests {
             let version = make_version(version_author);
             let real_signer = AuthorId::new(version_author.as_u64().saturating_add(1));
             let fake_signer = AuthorId::new(real_signer.as_u64().saturating_add(1));
-            let key = SigningKey::generate();
+            let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let mut sig = sign_attestation(&version, real_signer, &key);
             sig.author_id = fake_signer.as_u64();
             let policy =
                 MultiSigPolicy::new(1, vec![fake_signer]).unwrap_or_else(|_| std::process::abort());
             // Pin the fake_signer — registry check detects the pubkey mismatch
             // (sig was made by real_signer's key, pinned key is different).
-            let fake_key = SigningKey::generate();
+            let fake_key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let reg = pin_all(&[(fake_signer, fake_key)]);
             let result = verify_multisig(&version, &[sig], &policy, &reg)
                 .unwrap_or_else(|_| std::process::abort());
@@ -525,10 +528,10 @@ mod tests {
                 AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1).max_value(9_999)));
             let version = make_version(version_author);
             let valid_signer = AuthorId::new(10_001);
-            let valid_key = SigningKey::generate();
+            let valid_key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let byzantine = AuthorId::new(10_002);
-            let byzantine_pinned = SigningKey::generate();
-            let wrong_key = SigningKey::generate();
+            let byzantine_pinned = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+            let wrong_key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let policy = MultiSigPolicy::new(1, vec![valid_signer, byzantine])
                 .unwrap_or_else(|_| std::process::abort());
             let valid_att = sign_attestation(&version, valid_signer, &valid_key);

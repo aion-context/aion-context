@@ -22,14 +22,14 @@ use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criteri
 fn bench_ed25519_key_generation(c: &mut Criterion) {
     c.bench_function("ed25519_key_generation", |b| {
         b.iter(|| {
-            let key = SigningKey::generate();
+            let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             black_box(key);
         });
     });
 }
 
 fn bench_ed25519_signing(c: &mut Criterion) {
-    let key = SigningKey::generate();
+    let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
     let message = b"Test message for signing benchmark";
 
     c.bench_function("ed25519_sign_small_message", |b| {
@@ -42,7 +42,7 @@ fn bench_ed25519_signing(c: &mut Criterion) {
 
 fn bench_ed25519_signing_large(c: &mut Criterion) {
     let mut group = c.benchmark_group("ed25519_sign_large");
-    let key = SigningKey::generate();
+    let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
 
     for size in [1024, 10_240, 102_400, 1_048_576].iter() {
         let message = vec![0x42u8; *size];
@@ -59,7 +59,7 @@ fn bench_ed25519_signing_large(c: &mut Criterion) {
 }
 
 fn bench_ed25519_verification(c: &mut Criterion) {
-    let key = SigningKey::generate();
+    let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
     let verifying_key = key.verifying_key();
     let message = b"Test message for verification benchmark";
     let signature = key.sign(message);
@@ -73,7 +73,7 @@ fn bench_ed25519_verification(c: &mut Criterion) {
 
 fn bench_ed25519_verification_large(c: &mut Criterion) {
     let mut group = c.benchmark_group("ed25519_verify_large");
-    let key = SigningKey::generate();
+    let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
     let verifying_key = key.verifying_key();
 
     for size in [1024, 10_240, 102_400, 1_048_576].iter() {
@@ -189,7 +189,7 @@ fn bench_chacha20_decryption(c: &mut Criterion) {
 fn bench_nonce_generation(c: &mut Criterion) {
     c.bench_function("generate_nonce", |b| {
         b.iter(|| {
-            let nonce = generate_nonce();
+            let nonce = generate_nonce().unwrap_or_else(|_| std::process::abort());
             black_box(nonce);
         });
     });
@@ -201,7 +201,7 @@ fn bench_nonce_generation(c: &mut Criterion) {
 
 fn bench_batch_signing(c: &mut Criterion) {
     let mut group = c.benchmark_group("batch_signing");
-    let key = SigningKey::generate();
+    let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
 
     for count in [10, 100, 1000].iter() {
         let messages: Vec<Vec<u8>> = (0..*count)
@@ -224,7 +224,7 @@ fn bench_batch_signing(c: &mut Criterion) {
 
 fn bench_batch_verification(c: &mut Criterion) {
     let mut group = c.benchmark_group("batch_verification");
-    let key = SigningKey::generate();
+    let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
     let verifying_key = key.verifying_key();
 
     for count in [10, 100, 1000].iter() {

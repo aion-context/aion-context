@@ -22,8 +22,8 @@
 //! };
 //! use aion_context::types::AuthorId;
 //!
-//! let master = SigningKey::generate();
-//! let op = SigningKey::generate();
+//! let master = SigningKey::generate().unwrap();
+//! let op = SigningKey::generate().unwrap();
 //! let evidence = AttestationEvidence {
 //!     kind: AttestationKind::Tpm2Quote,
 //!     nonce: [0u8; 32],
@@ -339,7 +339,7 @@ mod tests {
 
     #[test]
     fn signature_round_trip() {
-        let master = SigningKey::generate();
+        let master = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
         let binding = sign_binding(
             AuthorId::new(1),
             0,
@@ -352,8 +352,8 @@ mod tests {
 
     #[test]
     fn wrong_master_rejects() {
-        let master = SigningKey::generate();
-        let other = SigningKey::generate();
+        let master = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+        let other = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
         let binding = sign_binding(
             AuthorId::new(1),
             0,
@@ -366,7 +366,7 @@ mod tests {
 
     #[test]
     fn tampered_evidence_rejects() {
-        let master = SigningKey::generate();
+        let master = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
         let mut binding = sign_binding(
             AuthorId::new(1),
             0,
@@ -380,7 +380,7 @@ mod tests {
 
     #[test]
     fn tampered_pubkey_rejects() {
-        let master = SigningKey::generate();
+        let master = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
         let mut binding = sign_binding(
             AuthorId::new(1),
             0,
@@ -406,8 +406,8 @@ mod tests {
     #[test]
     fn accept_all_verifier_accepts() {
         let author = AuthorId::new(1);
-        let master = SigningKey::generate();
-        let op = SigningKey::generate();
+        let master = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+        let op = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
         let binding = sign_binding(
             author,
             0,
@@ -422,8 +422,8 @@ mod tests {
     #[test]
     fn reject_all_verifier_rejects_even_valid_signature() {
         let author = AuthorId::new(1);
-        let master = SigningKey::generate();
-        let op = SigningKey::generate();
+        let master = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+        let op = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
         let binding = sign_binding(
             author,
             0,
@@ -438,8 +438,8 @@ mod tests {
     #[test]
     fn pubkey_prefix_verifier_matches_prefix_only() {
         let author = AuthorId::new(1);
-        let master = SigningKey::generate();
-        let op = SigningKey::generate();
+        let master = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+        let op = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
         let pk = op.verifying_key().to_bytes();
         // Evidence that starts with the pubkey — prefix matches.
         let mut good_evidence = pk.to_vec();
@@ -507,7 +507,7 @@ mod tests {
 
         #[hegel::test]
         fn prop_binding_signature_roundtrip(tc: hegel::TestCase) {
-            let master = SigningKey::generate();
+            let master = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let author = AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1)));
             let epoch = tc.draw(gs::integers::<u32>());
             let pubkey = draw_pubkey(&tc);
@@ -519,8 +519,8 @@ mod tests {
 
         #[hegel::test]
         fn prop_binding_rejects_wrong_master(tc: hegel::TestCase) {
-            let master = SigningKey::generate();
-            let other = SigningKey::generate();
+            let master = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+            let other = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let author = AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1)));
             let epoch = tc.draw(gs::integers::<u32>());
             let pubkey = draw_pubkey(&tc);
@@ -531,7 +531,7 @@ mod tests {
 
         #[hegel::test]
         fn prop_binding_rejects_tampered_evidence(tc: hegel::TestCase) {
-            let master = SigningKey::generate();
+            let master = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let author = AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1)));
             let epoch = tc.draw(gs::integers::<u32>());
             let pubkey = draw_pubkey(&tc);
@@ -553,7 +553,7 @@ mod tests {
 
         #[hegel::test]
         fn prop_binding_rejects_tampered_pubkey(tc: hegel::TestCase) {
-            let master = SigningKey::generate();
+            let master = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let author = AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1)));
             let epoch = tc.draw(gs::integers::<u32>());
             let pubkey = draw_pubkey(&tc);
@@ -565,7 +565,7 @@ mod tests {
 
         #[hegel::test]
         fn prop_binding_rejects_tampered_nonce(tc: hegel::TestCase) {
-            let master = SigningKey::generate();
+            let master = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let author = AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1)));
             let epoch = tc.draw(gs::integers::<u32>());
             let pubkey = draw_pubkey(&tc);
@@ -577,7 +577,7 @@ mod tests {
 
         #[hegel::test]
         fn prop_binding_rejects_tampered_author_or_epoch(tc: hegel::TestCase) {
-            let master = SigningKey::generate();
+            let master = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let author_raw = tc.draw(gs::integers::<u64>().min_value(1).max_value(u64::MAX / 2));
             let epoch = tc.draw(gs::integers::<u32>().max_value(u32::MAX - 1));
             let pubkey = draw_pubkey(&tc);
@@ -608,8 +608,8 @@ mod tests {
 
         #[hegel::test]
         fn prop_verify_binding_accept_all_ok(tc: hegel::TestCase) {
-            let master = SigningKey::generate();
-            let op = SigningKey::generate();
+            let master = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+            let op = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let author = AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1)));
             let evidence = draw_evidence(&tc);
             let binding = sign_binding(author, 0, op.verifying_key().to_bytes(), evidence, &master);
@@ -620,8 +620,8 @@ mod tests {
 
         #[hegel::test]
         fn prop_verify_binding_reject_all_err(tc: hegel::TestCase) {
-            let master = SigningKey::generate();
-            let op = SigningKey::generate();
+            let master = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+            let op = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let author = AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1)));
             let evidence = draw_evidence(&tc);
             let binding = sign_binding(author, 0, op.verifying_key().to_bytes(), evidence, &master);
@@ -631,8 +631,8 @@ mod tests {
 
         #[hegel::test]
         fn prop_pubkey_prefix_verifier_matches_prefix(tc: hegel::TestCase) {
-            let master = SigningKey::generate();
-            let op = SigningKey::generate();
+            let master = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+            let op = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let author = AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1)));
             let pubkey = op.verifying_key().to_bytes();
             let tail = tc.draw(gs::binary().max_size(128));
@@ -667,8 +667,8 @@ mod tests {
             use crate::key_registry::KeyRegistry;
             let author =
                 AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1).max_value(1 << 32)));
-            let master = SigningKey::generate();
-            let op = SigningKey::generate();
+            let master = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+            let op = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let mut reg = KeyRegistry::new();
             reg.register_author(author, master.verifying_key(), op.verifying_key(), 0)
                 .unwrap_or_else(|_| std::process::abort());
@@ -688,9 +688,9 @@ mod tests {
             use crate::key_registry::KeyRegistry;
             let author =
                 AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1).max_value(1 << 32)));
-            let real_master = SigningKey::generate();
-            let imposter_master = SigningKey::generate();
-            let op = SigningKey::generate();
+            let real_master = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+            let imposter_master = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+            let op = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             // Registry is pinned to the REAL master.
             let mut reg = KeyRegistry::new();
             reg.register_author(author, real_master.verifying_key(), op.verifying_key(), 0)

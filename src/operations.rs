@@ -18,7 +18,7 @@
 //! use aion_context::types::AuthorId;
 //! use std::path::Path;
 //!
-//! let signing_key = SigningKey::generate();
+//! let signing_key = SigningKey::generate().unwrap();
 //! let options = CommitOptions {
 //!     author_id: AuthorId::new(50001),
 //!     signing_key: &signing_key,
@@ -110,7 +110,7 @@ pub struct InitResult {
 /// use aion_context::types::AuthorId;
 /// use std::path::Path;
 ///
-/// let signing_key = SigningKey::generate();
+/// let signing_key = SigningKey::generate().unwrap();
 /// let options = InitOptions {
 ///     author_id: AuthorId::new(50001),
 ///     signing_key: &signing_key,
@@ -270,7 +270,7 @@ pub struct CommitResult {
 /// use aion_context::types::AuthorId;
 /// use std::path::Path;
 ///
-/// let signing_key = SigningKey::generate();
+/// let signing_key = SigningKey::generate().unwrap();
 /// let options = CommitOptions {
 ///     author_id: AuthorId::new(50001),
 ///     signing_key: &signing_key,
@@ -542,7 +542,7 @@ fn encrypt_rules(
     )?;
 
     // Generate nonce and encrypt
-    let nonce = generate_nonce();
+    let nonce = generate_nonce().unwrap_or_else(|_| std::process::abort());
     let aad = version.as_u64().to_le_bytes();
     let ciphertext = encrypt(&encryption_key, &nonce, rules, &aad)?;
 
@@ -1640,7 +1640,7 @@ mod tests {
     /// Used by every test that calls `verify_file` / `commit_version` / `show_signatures`.
     fn test_reg(author_id: AuthorId, signing_key: &SigningKey) -> KeyRegistry {
         let mut reg = KeyRegistry::new();
-        let master = SigningKey::generate();
+        let master = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
         reg.register_author(
             author_id,
             master.verifying_key(),
@@ -1709,7 +1709,7 @@ mod tests {
             let file_path = temp_dir.path().join("test.aion");
 
             // Create initial file
-            let signing_key = SigningKey::generate();
+            let signing_key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let author_id = AuthorId::new(50001);
             let initial_bytes = create_test_file(&signing_key, author_id);
             std::fs::write(&file_path, &initial_bytes).unwrap();
@@ -1743,7 +1743,7 @@ mod tests {
             let temp_dir = TempDir::new().unwrap_or_else(|_| std::process::abort());
             let file_path = temp_dir.path().join("chain.aion");
 
-            let signing_key = SigningKey::generate();
+            let signing_key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let author_id = AuthorId::new(50_001);
             let registry = test_reg(author_id, &signing_key);
 
@@ -1791,7 +1791,7 @@ mod tests {
             let temp_dir = TempDir::new().unwrap_or_else(|_| std::process::abort());
             let file_path = temp_dir.path().join("tampered.aion");
 
-            let signing_key = SigningKey::generate();
+            let signing_key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let author_id = AuthorId::new(50_002);
             let registry = test_reg(author_id, &signing_key);
 
@@ -1833,7 +1833,7 @@ mod tests {
             let file_path = temp_dir.path().join("test.aion");
 
             // Create initial file
-            let signing_key = SigningKey::generate();
+            let signing_key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let author_id = AuthorId::new(50001);
             let initial_bytes = create_test_file(&signing_key, author_id);
             std::fs::write(&file_path, &initial_bytes).unwrap();
@@ -1850,7 +1850,7 @@ mod tests {
             let file_path = temp_dir.path().join("test.aion");
 
             // Create initial file
-            let signing_key = SigningKey::generate();
+            let signing_key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let author_id = AuthorId::new(50001);
             let initial_bytes = create_test_file(&signing_key, author_id);
             std::fs::write(&file_path, &initial_bytes).unwrap();
@@ -1887,7 +1887,7 @@ mod tests {
             let file_path = temp_dir.path().join("test.aion");
 
             // Create initial file
-            let signing_key = SigningKey::generate();
+            let signing_key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let author_id = AuthorId::new(50001);
             let initial_bytes = create_test_file(&signing_key, author_id);
             std::fs::write(&file_path, &initial_bytes).unwrap();
@@ -1927,7 +1927,7 @@ mod tests {
             let file_path = temp_dir.path().join("test.aion");
 
             // Create initial file
-            let signing_key = SigningKey::generate();
+            let signing_key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let author_id = AuthorId::new(50001);
             let initial_bytes = create_test_file(&signing_key, author_id);
             std::fs::write(&file_path, &initial_bytes).unwrap();
@@ -2212,7 +2212,7 @@ mod tests {
             let file_path = temp_dir.path().join("test.aion");
 
             // Create initial file
-            let signing_key = SigningKey::generate();
+            let signing_key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let author_id = AuthorId::new(50001);
             let mut initial_bytes = create_test_file(&signing_key, author_id);
 
@@ -2256,7 +2256,7 @@ mod tests {
         fn should_reject_tampered_version_entry_reserved_bytes() {
             let temp_dir = TempDir::new().unwrap();
             let file_path = temp_dir.path().join("ver_tamper.aion");
-            let signing_key = SigningKey::generate();
+            let signing_key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let author_id = AuthorId::new(50_011);
             let mut bytes = create_test_file(&signing_key, author_id);
 
@@ -2298,7 +2298,7 @@ mod tests {
         fn should_reject_tampered_signature_entry_reserved_bytes() {
             let temp_dir = TempDir::new().unwrap();
             let file_path = temp_dir.path().join("sig_tamper.aion");
-            let signing_key = SigningKey::generate();
+            let signing_key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let author_id = AuthorId::new(50_012);
             let mut bytes = create_test_file(&signing_key, author_id);
 
@@ -2344,7 +2344,7 @@ mod tests {
             let file_path = temp_dir.path().join("test.aion");
 
             // Create a valid file
-            let signing_key = SigningKey::generate();
+            let signing_key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let author_id = AuthorId::new(50001);
             let file_bytes = create_test_file(&signing_key, author_id);
             std::fs::write(&file_path, &file_bytes).unwrap();
@@ -2367,7 +2367,7 @@ mod tests {
             let file_path = temp_dir.path().join("test.aion");
 
             // Create initial file
-            let signing_key = SigningKey::generate();
+            let signing_key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let author_id = AuthorId::new(50001);
             let initial_bytes = create_test_file(&signing_key, author_id);
             std::fs::write(&file_path, &initial_bytes).unwrap();
@@ -2415,7 +2415,7 @@ mod tests {
             let file_path = temp_dir.path().join("test.aion");
 
             // Create a valid file
-            let signing_key = SigningKey::generate();
+            let signing_key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let author_id = AuthorId::new(50001);
             let mut file_bytes = create_test_file(&signing_key, author_id);
 
@@ -2442,7 +2442,7 @@ mod tests {
             let file_path = temp_dir.path().join("test.aion");
 
             // Create initial file
-            let signing_key = SigningKey::generate();
+            let signing_key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let author_id = AuthorId::new(50001);
             let initial_bytes = create_test_file(&signing_key, author_id);
             std::fs::write(&file_path, &initial_bytes).unwrap();
@@ -2492,7 +2492,7 @@ mod tests {
             let file_path = temp_dir.path().join("test.aion");
 
             // Create a valid file
-            let signing_key = SigningKey::generate();
+            let signing_key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let author_id = AuthorId::new(50001);
             let mut file_bytes = create_test_file(&signing_key, author_id);
 
@@ -2547,7 +2547,7 @@ mod tests {
             let file_path = temp_dir.path().join("test.aion");
 
             // Create initial file
-            let signing_key = SigningKey::generate();
+            let signing_key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let author_id = AuthorId::new(50001);
             let initial_bytes = create_test_file(&signing_key, author_id);
             std::fs::write(&file_path, &initial_bytes).unwrap();
@@ -2617,7 +2617,7 @@ mod tests {
             let file_path = temp_dir.path().join("test.aion");
 
             // Create a valid file
-            let signing_key = SigningKey::generate();
+            let signing_key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let author_id = AuthorId::new(50001);
             let file_bytes = create_test_file(&signing_key, author_id);
             std::fs::write(&file_path, &file_bytes).unwrap();
@@ -2640,7 +2640,7 @@ mod tests {
             let file_path = temp_dir.path().join("test.aion");
 
             // Create a test file
-            let signing_key = SigningKey::generate();
+            let signing_key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let author_id = AuthorId::new(50001);
             let file_bytes = create_test_file(&signing_key, author_id);
             std::fs::write(&file_path, &file_bytes).unwrap();
@@ -2658,7 +2658,7 @@ mod tests {
             let file_path = temp_dir.path().join("test.aion");
 
             // Create a test file
-            let signing_key = SigningKey::generate();
+            let signing_key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let author_id = AuthorId::new(50001);
             let file_bytes = create_test_file(&signing_key, author_id);
             std::fs::write(&file_path, &file_bytes).unwrap();
@@ -2679,7 +2679,7 @@ mod tests {
             let file_path = temp_dir.path().join("test.aion");
 
             // Create initial file
-            let signing_key = SigningKey::generate();
+            let signing_key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let author_id = AuthorId::new(50001);
             let initial_bytes = create_test_file(&signing_key, author_id);
             std::fs::write(&file_path, &initial_bytes).unwrap();
@@ -2736,7 +2736,7 @@ mod tests {
             let file_path = temp_dir.path().join("test.aion");
 
             // Create a test file
-            let signing_key = SigningKey::generate();
+            let signing_key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let author_id = AuthorId::new(50001);
             let file_bytes = create_test_file(&signing_key, author_id);
             std::fs::write(&file_path, &file_bytes).unwrap();
@@ -2758,7 +2758,7 @@ mod tests {
             let file_path = temp_dir.path().join("test.aion");
 
             // Create initial file
-            let signing_key = SigningKey::generate();
+            let signing_key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let author_id = AuthorId::new(50001);
             let initial_bytes = create_test_file(&signing_key, author_id);
             std::fs::write(&file_path, &initial_bytes).unwrap();
@@ -2795,7 +2795,7 @@ mod tests {
             let file_path = temp_dir.path().join("test.aion");
 
             // Create a valid file
-            let signing_key = SigningKey::generate();
+            let signing_key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let author_id = AuthorId::new(50001);
             let mut file_bytes = create_test_file(&signing_key, author_id);
 
@@ -2823,7 +2823,7 @@ mod tests {
             let file_path = temp_dir.path().join("test.aion");
 
             // Create initial file
-            let signing_key = SigningKey::generate();
+            let signing_key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let author_id = AuthorId::new(50001);
             let initial_bytes = create_test_file(&signing_key, author_id);
             std::fs::write(&file_path, &initial_bytes).unwrap();
@@ -2863,7 +2863,7 @@ mod tests {
             let file_path = temp_dir.path().join("test.aion");
 
             // Create initial file
-            let signing_key = SigningKey::generate();
+            let signing_key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let author_id = AuthorId::new(50001);
             let initial_bytes = create_test_file(&signing_key, author_id);
             std::fs::write(&file_path, &initial_bytes).unwrap();
@@ -2925,7 +2925,7 @@ mod tests {
             let temp_dir = TempDir::new().unwrap();
             let file_path = temp_dir.path().join("new.aion");
 
-            let signing_key = SigningKey::generate();
+            let signing_key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let author_id = AuthorId::new(50001);
             let options = InitOptions {
                 author_id,
@@ -2951,7 +2951,7 @@ mod tests {
             let temp_dir = TempDir::new().unwrap();
             let file_path = temp_dir.path().join("structured.aion");
 
-            let signing_key = SigningKey::generate();
+            let signing_key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let author_id = AuthorId::new(50001);
             let options = InitOptions {
                 author_id,
@@ -2987,7 +2987,7 @@ mod tests {
             let file_path = temp_dir.path().join("exists.aion");
 
             // Create file first
-            let signing_key = SigningKey::generate();
+            let signing_key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let author_id = AuthorId::new(50001);
             let options = InitOptions {
                 author_id,
@@ -3010,7 +3010,7 @@ mod tests {
             let path1 = temp_dir.path().join("file1.aion");
             let path2 = temp_dir.path().join("file2.aion");
 
-            let signing_key = SigningKey::generate();
+            let signing_key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let author_id = AuthorId::new(50001);
             let options = InitOptions {
                 author_id,
@@ -3031,7 +3031,7 @@ mod tests {
             let temp_dir = TempDir::new().unwrap();
             let file_path = temp_dir.path().join("encrypted.aion");
 
-            let signing_key = SigningKey::generate();
+            let signing_key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let author_id = AuthorId::new(50001);
             let options = InitOptions {
                 author_id,
@@ -3059,7 +3059,7 @@ mod tests {
             let temp_dir = TempDir::new().unwrap();
             let file_path = temp_dir.path().join("signed.aion");
 
-            let signing_key = SigningKey::generate();
+            let signing_key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let author_id = AuthorId::new(50001);
             let options = InitOptions {
                 author_id,
@@ -3082,7 +3082,7 @@ mod tests {
             let temp_dir = TempDir::new().unwrap();
             let file_path = temp_dir.path().join("timestamped.aion");
 
-            let signing_key = SigningKey::generate();
+            let signing_key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let author_id = AuthorId::new(50001);
             let options = InitOptions {
                 author_id,
@@ -3107,7 +3107,7 @@ mod tests {
             let temp_dir = TempDir::new().unwrap();
             let file_path = temp_dir.path().join("empty.aion");
 
-            let signing_key = SigningKey::generate();
+            let signing_key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let author_id = AuthorId::new(50001);
             let options = InitOptions {
                 author_id,
@@ -3129,7 +3129,7 @@ mod tests {
             let temp_dir = TempDir::new().unwrap();
             let file_path = temp_dir.path().join("large.aion");
 
-            let signing_key = SigningKey::generate();
+            let signing_key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let author_id = AuthorId::new(50001);
             let options = InitOptions {
                 author_id,
@@ -3153,7 +3153,7 @@ mod tests {
             let temp_dir = TempDir::new().unwrap();
             let file_path = temp_dir.path().join("longmsg.aion");
 
-            let signing_key = SigningKey::generate();
+            let signing_key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let author_id = AuthorId::new(50001);
             let long_message = "A".repeat(1000);
             let options = InitOptions {
@@ -3236,7 +3236,7 @@ mod tests {
             /// Build a fresh registry that pins exactly one author at
             /// epoch 0 with the supplied operational key.
             fn single_author_registry(author: AuthorId, op_key: &SigningKey) -> KeyRegistry {
-                let master = SigningKey::generate();
+                let master = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
                 let mut reg = KeyRegistry::new();
                 reg.register_author(author, master.verifying_key(), op_key.verifying_key(), 0)
                     .unwrap_or_else(|_| std::process::abort());
@@ -3262,11 +3262,11 @@ mod tests {
                 }
                 let version = tc.draw(gs::integers::<u64>().min_value(1).max_value(1 << 30));
 
-                let pinned_key = SigningKey::generate();
+                let pinned_key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
                 let reg = single_author_registry(AuthorId::new(pinned_id), &pinned_key);
 
                 // Probe: a different author, any key.
-                let probe_key = SigningKey::generate();
+                let probe_key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
                 let opts = options(AuthorId::new(probe_id), &probe_key);
 
                 match preflight_registry_authz(&opts, VersionNumber(version), &reg) {
@@ -3282,7 +3282,7 @@ mod tests {
                 let version = tc.draw(gs::integers::<u64>().min_value(1).max_value(1 << 30));
                 let author = AuthorId::new(author_id);
 
-                let op_key = SigningKey::generate();
+                let op_key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
                 let reg = single_author_registry(author, &op_key);
                 let opts = options(author, &op_key);
 
@@ -3298,10 +3298,10 @@ mod tests {
                 let version = tc.draw(gs::integers::<u64>().min_value(1).max_value(1 << 30));
                 let author = AuthorId::new(author_id);
 
-                let pinned_key = SigningKey::generate();
+                let pinned_key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
                 let reg = single_author_registry(author, &pinned_key);
 
-                let wrong_key = SigningKey::generate();
+                let wrong_key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
                 let opts = options(author, &wrong_key);
 
                 match preflight_registry_authz(&opts, VersionNumber(version), &reg) {
@@ -3341,7 +3341,7 @@ mod tests {
         fn commit_rejects_tampered_head_on_multi_version_chain() {
             let temp = TempDir::new().unwrap();
             let path = temp.path().join("head_tamper.aion");
-            let signing_key = SigningKey::generate();
+            let signing_key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let author_id = AuthorId::new(70_001);
             let registry = test_reg(author_id, &signing_key);
 
@@ -3395,7 +3395,7 @@ mod tests {
         fn commit_now_catches_non_head_tamper_at_write_time() {
             let temp = TempDir::new().unwrap();
             let path = temp.path().join("non_head_tamper.aion");
-            let signing_key = SigningKey::generate();
+            let signing_key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let author_id = AuthorId::new(70_002);
             let registry = test_reg(author_id, &signing_key);
 
@@ -3461,7 +3461,7 @@ mod tests {
         fn commit_succeeds_on_clean_chain_of_many_versions() {
             let temp = TempDir::new().unwrap();
             let path = temp.path().join("many.aion");
-            let signing_key = SigningKey::generate();
+            let signing_key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let author_id = AuthorId::new(70_003);
             let registry = test_reg(author_id, &signing_key);
 

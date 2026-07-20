@@ -301,7 +301,7 @@ struct Replayer<'a> {
 
 impl<'a> Replayer<'a> {
     fn new(args: &'a Args) -> Self {
-        let key = SigningKey::generate();
+        let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
         let mut registry = KeyRegistry::new();
         registry
             .register_author(
