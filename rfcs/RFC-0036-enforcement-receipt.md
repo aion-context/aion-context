@@ -85,9 +85,13 @@ own unsigned log line.
 
 - A receipt cryptographically binds: policy identity (`file_id`,
   `policy_version`, `policy_author_id`), the key-registry epoch
-  pinned at verification time, the enforcement decision, any gating
-  approvals, the enforcing runtime's identity, and BLAKE3 digests of
-  the decision inputs.
+  pinned at verification time, the enforcement decision, **references
+  to** any gating approvals, the enforcing runtime's identity, and
+  BLAKE3 digests of the decision inputs. The runtime's signature
+  makes these fields tamper-evident; note that base verification binds
+  the approval *references*, not proof the referenced approvals are
+  valid quorum-satisfying attestations — that is a separate check,
+  see `verify_with_registry` and the `AttestationStore` option below.
 - Every receipt carries a per-runtime monotonic `receipt_version` for
   `(runtime_author_id, receipt_version)` replay defense, matching the
   crate's existing `(author, version)` discipline
@@ -293,20 +297,39 @@ pub struct EnforcementReceipt {
 
 impl EnforcementReceipt {
     /// Verifies the DSSE signature(s) against the key registry,
-    /// resolving the runtime's active epoch at `predicate.
-    /// runtime_author_id, predicate.receipt_version`. Does not
-    /// check replay state — that is the caller's persisted
-    /// `(runtime_author_id, receipt_version)` ledger, per
+    /// resolving the runtime's active epoch at
+    /// `(predicate.runtime_author_id, predicate.receipt_version)`.
+    ///
+    /// Fails unless the runtime's own key
+    /// (`keyid_for(predicate.runtime_author_id)`) is present in the
+    /// envelope AND verifies — the mandatory author-binding step. Does
+    /// not resolve approvals and does not check replay state; those
+    /// are the caller's `(runtime_author_id, receipt_version)` ledger
+    /// and the approval variant below, per
     /// `.claude/rules/distributed.md`.
     pub fn verify_with_registry(&self, registry: &KeyRegistry) -> Result<()>;
 
+    /// As `verify_with_registry`, plus: resolve every
+    /// `ApprovalRef.attestation_digest` against `store`, independently
+    /// verify each referenced RFC-0021 attestation, and hard-fail on
+    /// any that cannot be resolved and verified. Required for callers
+    /// gating a decision on approval quorum.
+    pub fn verify_with_registry_and_approvals(
+        &self,
+        registry: &KeyRegistry,
+        store: &dyn AttestationStore,
+    ) -> Result<()>;
+
     /// Adds an independent witness co-signature to the same DSSE
-    /// envelope. The witness signs the identical PAE bytes the
-    /// runtime signed — DSSE's native multi-signature support
-    /// (RFC-0023) carries this with no format change.
+    /// envelope. The witness signs the identical PAE bytes the runtime
+    /// signed (DSSE native multi-signature, RFC-0023). `witness_version`
+    /// binds this signature to the witness's OWN author version space —
+    /// never the runtime's `receipt_version` — so verification resolves
+    /// the witness epoch independently.
     pub fn add_witness_signature(
         &mut self,
         witness_author_id: AuthorId,
+        witness_version: u64,
         witness_key: &SigningKey,
     ) -> Result<()>;
 
@@ -344,18 +367,37 @@ pub enum LogEntryKind {
 1. Parse the DSSE envelope's payload into an `InTotoStatement`;
    `predicateType` must equal `ENFORCEMENT_RECEIPT_PREDICATE_TYPE` or
    `Err(InvalidFormat)`.
-2. Extract `EnforcementPredicate` from the predicate JSON.
+2. Extract `EnforcementPredicate` from the predicate JSON. Reject an
+   empty `subject[]` (`Err(InvalidFormat)`) — a receipt with no bound
+   inputs attests to nothing, per RFC-0024.
 3. Resolve `registry.active_epoch_at(predicate.runtime_author_id,
    predicate.receipt_version)`. `None` ⇒
    `Err(SignatureVerificationFailed { version, author })` (sanitized,
    per the RFC-0033 §C10 precedent already used by RFC-0034).
-4. Confirm every `DsseSignature.keyid` in the envelope that claims to
-   be the runtime resolves to a public key matching the resolved
-   epoch's `public_key` bytes.
-5. Call `dsse::verify_envelope` (RFC-0023) over the resolved keys;
-   any failure is hard — same all-or-nothing semantics DSSE already
-   has.
-6. Caller-side, **not** inside this function: check
+4. Compute `expected_keyid = keyid_for(predicate.runtime_author_id)`
+   and compare the resolved epoch's `public_key` bytes against the
+   signing key's bytes using `subtle::ConstantTimeEq::ct_eq`
+   (`.claude/rules/crypto.md` — never `==` on key bytes; the same
+   `ct_eq` path `signature_chain` already uses under RFC-0034).
+5. **Mandatory runtime-signature presence (load-bearing — the
+   author-binding guarantee lives here).** `verify_with_registry`
+   MUST fail with `Err(SignatureVerificationFailed { .. })` unless
+   `expected_keyid` is present in `envelope.signatures` **and** the
+   set of keyids returned `Ok` by `dsse::verify_envelope` **contains**
+   `expected_keyid`. A universally-quantified "every runtime-claiming
+   keyid matches" check is **not** sufficient — it is vacuously true
+   when no runtime keyid is present at all, which would let any other
+   validly-registered author sign a predicate naming a victim
+   `runtime_author_id` and have it accepted as the victim's receipt.
+   The runtime's own signature over these exact bytes is the whole
+   claim; its absence is a hard rejection, never a pass.
+6. Call `dsse::verify_envelope(&self.envelope, registry,
+   predicate.receipt_version)` (RFC-0023, real registry-aware
+   signature — see the doc-drift note in References). Every signature
+   present must verify — same all-or-nothing semantics DSSE already
+   has. Witness signatures, if present, are resolved under the witness
+   version space, not `receipt_version` (see below).
+7. Caller-side, **not** inside this function: check
    `predicate.nonce` was not previously observed for this
    `runtime_author_id` (replay ledger), and check
    `(runtime_author_id, receipt_version)` has not been previously
@@ -364,10 +406,45 @@ pub enum LogEntryKind {
    every other versioned artifact in the crate already requires of
    its caller.
 
+**Optional approval verification.** `verify_with_registry` binds the
+approval *references* (they are inside the signed PAE bytes) but does
+**not** resolve them — base verification gives no quorum guarantee.
+Callers gating high-stakes `Allow` decisions on approvals MUST use the
+`verify_with_registry_and_approvals(&KeyRegistry, &dyn
+AttestationStore)` variant, which additionally resolves every
+`ApprovalRef.attestation_digest` against the store, independently
+verifies each referenced RFC-0021 attestation, and hard-fails
+(`Err(UnresolvedApproval)`) if any referenced approval cannot be
+resolved and verified. See Rationale for why this is opt-in rather
+than folded into the base path.
+
+**Witness signature version space.** A witness co-signs the identical
+PAE bytes but resolves under its **own** author version, not the
+runtime's `receipt_version`. A single `at_version` cannot resolve
+multiple independent signers' epoch timelines, and a witness serving
+many runtimes has a rotation history unrelated to any one runtime's
+per-decision counter. Each witness signature therefore carries a
+`witness_version` alongside the envelope (an unsigned sidecar keyed by
+witness keyid, not inside the runtime-signed predicate — the runtime
+cannot know witness versions in advance). Carrying it unauthenticated
+is safe: the version only *selects which epoch's public key to check*,
+so a forged or wrong `witness_version` resolves to a key the witness
+signature does not verify against and the receipt is rejected. This
+means `dsse::verify_envelope`'s single-`at_version` signature does not
+suffice for mixed runtime+witness envelopes; the implementation
+resolves the runtime signature at `receipt_version` and each witness
+signature at its own `witness_version`, then requires all to verify.
+Reusing `receipt_version` for witness resolution is forbidden by this
+design.
+
 ### Anti-replay and anti-fabrication mechanisms
 
-Four complementary mechanisms, because no single one is sufficient
-against a runtime that is willing to lie about itself:
+Three structural mechanisms plus one forensic aid, because no single
+one is sufficient against a runtime willing to lie about itself. The
+two load-bearing controls are mechanisms 1 and 2 (trust-root
+separation and revocable runtime keys); the nonce (3) is a security
+control **only** when externally supplied, and log/witness anchoring
+(4) bounds submission order, not decision-time honesty:
 
 1. **Separate trust roots for policy and enforcement.** A policy's
    `author_id` and a runtime's `author_id` are distinct entries in
@@ -387,24 +464,34 @@ against a runtime that is willing to lie about itself:
    `effective_from_version`, and every receipt claiming that runtime
    identity at or after that version is rejected under
    `verify_with_registry`.
-3. **Nonce binding.** `predicate.nonce` is part of the signed bytes.
-   A verifier or witness that supplies the nonce out-of-band (a
+3. **Nonce binding — anti-fabrication only when externally
+   supplied.** `predicate.nonce` is part of the signed bytes. A
+   verifier or witness that supplies the nonce out-of-band (a
    challenge/response handshake at decision time) can confirm the
    receipt was produced *after* the challenge was issued, not
-   pre-fabricated. A runtime that self-generates its own nonce (the
-   degraded, no-witness case) gets weaker anti-fabrication — this
-   is named explicitly in Unresolved Questions, not hidden.
-4. **Transparency-log anchoring and optional witness co-signature.**
-   Logging the receipt (`LogEntryKind::EnforcementReceipt`) gives it
-   a `seq` position that an operator's Signed Tree Head (RFC-0025)
-   later attests to; a receipt whose claimed decision time doesn't
-   fit its log position is suspicious the same way a backdated key
-   rotation is suspicious (RFC-0025's original motivating scenario).
-   `add_witness_signature` lets a second, independently operated
-   party — ideally one that issued the nonce in mechanism 3 — commit
-   to the identical PAE bytes via DSSE's native multi-signature
-   support, so the runtime is not the sole attester of its own
-   compliance.
+   pre-fabricated. When the runtime **self-generates** its own nonce
+   (the no-witness case the RFC expects to be the majority
+   deployment), it provides **no** anti-fabrication guarantee beyond
+   what `(runtime_author_id, receipt_version)` dedup already gives —
+   in that configuration the nonce is a forensic-correlation datum,
+   not a security control, and must not be counted as an independent
+   line of defense. Unresolved Question 1 proposes a public randomness
+   beacon as a minimum bar for the self-issued case.
+4. **Transparency-log anchoring and optional witness co-signature —
+   bounds submission order, not decision proximity.** Logging the
+   receipt (`LogEntryKind::EnforcementReceipt`) gives it a `seq`
+   position that an operator's Signed Tree Head (RFC-0025) later
+   attests to. This proves *when the receipt entered the log*, not how
+   soon after the decision it was signed — the predicate carries no
+   timestamp by design, so an honest-but-slow (or dishonest-and-slow)
+   witness co-signing a receipt long after the fact is not detectable
+   from log position alone. Meaningful backdating resistance for the
+   witness's contribution specifically requires the external-challenge
+   nonce of mechanism 3, not log anchoring. `add_witness_signature`
+   lets a second, independently operated party — ideally the one that
+   issued that nonce — commit to the identical PAE bytes via DSSE's
+   native multi-signature support, so the runtime is not the sole
+   attester of its own compliance.
 
 None of these make forgery by a runtime that is dishonest *and* not
 yet revoked *and* colludes with its witness impossible — see Security
@@ -439,6 +526,24 @@ Considerations for exactly what is and is not proven.
   attests to nothing decidable.
 
 ## Rationale and Alternatives
+
+### Why is approval verification opt-in rather than part of the base verify path?
+
+The base `verify_with_registry` proves the runtime's own claim under a
+pinned trust context — a purely *local* operation needing only the
+receipt and the registry. Resolving approvals requires an
+`AttestationStore` the verifier may not have (an offline auditor
+handed one receipt has no approval corpus), and forcing every verifier
+to carry one would make the common "is this receipt authentic?" check
+fail for want of unrelated data. Splitting the two keeps base
+verification dependency-free while giving quorum-sensitive callers
+(`Allow` gated on human approval) a strictly stronger
+`verify_with_registry_and_approvals` that hard-fails on any
+unresolvable or invalid referenced attestation. The cost is that a
+careless caller could use the weak variant where the strong one was
+required — Unresolved Question 6 tracks whether a policy-side
+"approval-gated" flag should make that mistake impossible rather than
+merely documented.
 
 ### Why a distinct artifact type and not an audit-chain entry (RFC-0019)?
 
@@ -508,15 +613,21 @@ RFC.
    revocation machinery as any other author (RFC-0028) — once
    revoked, receipts at or after `effective_from_version` under that
    key are rejected by `verify_with_registry`.
-2. **Policy/runtime key confusion.** Attacker tries to get a receipt
-   accepted as if it were signed by the policy author, or vice
-   versa. Rejected structurally — `registry.active_epoch_at` is keyed
-   by `AuthorId`, and the predicate names `policy_author_id` and
-   `runtime_author_id` as distinct fields; a verifier that conflates
-   them is a caller bug, not a receipt-format weakness, and the
-   Testing Strategy below includes a property test asserting the
-   distinct fields cannot be swapped without invalidating the
-   receipt.
+2. **Identity substitution / policy-runtime key confusion.** Attacker
+   — any *validly-registered* author, including a policy author or a
+   different runtime — signs a predicate naming a victim's
+   `runtime_author_id` with the attacker's own real key, hoping the
+   receipt is accepted as the victim's. Rejected only because the
+   verification flow's **mandatory runtime-signature-presence** step
+   (Verification flow step 5) requires `keyid_for(runtime_author_id)`
+   to be present and to verify — a "resolve every runtime-claiming
+   keyid" check without the presence requirement is vacuously true on
+   an envelope containing no runtime keyid and would let this attack
+   through. `registry.active_epoch_at` keyed by `AuthorId` and the
+   distinct `policy_author_id` / `runtime_author_id` fields are
+   necessary but not sufficient without step 5. Testing Strategy
+   covers both the field-swap and the distinct-signer substitution
+   cases.
 3. **Receipt tampering in transit.** Attacker modifies the decision,
    approvals, or policy identity after signing. Detected — any
    change to the predicate JSON changes the PAE bytes, and DSSE
@@ -628,11 +739,36 @@ Added to `.claude/rules/property-testing.md`:
 - `prop_enforcement_receipt_policy_and_runtime_author_not_swappable`:
   swapping `policy_author_id` and `runtime_author_id` in the
   predicate invalidates the signature (they are both inside PAE).
+- `prop_enforcement_receipt_distinct_signer_substitution_rejects`
+  (**guards CRITICAL-1**): a *different, validly-registered* author Y
+  signs, with Y's own real key, a predicate whose `runtime_author_id`
+  names victim X. `verify_with_registry` MUST reject — the envelope
+  contains no `keyid_for(X)` signature, so the mandatory-presence step
+  fails even though every signature present verifies. This is the
+  exact author-binding-bypass case; a vacuous "all runtime-claiming
+  keyids match" implementation would wrongly accept.
+- `prop_enforcement_receipt_runtime_signature_must_be_present`: an
+  envelope carrying only witness signatures (no runtime keyid) fails
+  `verify_with_registry`.
 - `prop_enforcement_receipt_empty_subject_rejects`: a predicate with
-  zero input digests is rejected at build time.
+  zero input digests is rejected at build time **and** at
+  verification.
 - `prop_enforcement_receipt_witness_cosignature_roundtrip`: adding a
-  witness signature via `add_witness_signature` yields an envelope
-  where both the runtime's and the witness's keyids verify.
+  witness signature via `add_witness_signature` (with the witness's
+  own `witness_version`) yields an envelope where the runtime keyid
+  verifies at `receipt_version` and the witness keyid verifies at
+  `witness_version`.
+- `prop_enforcement_receipt_witness_version_resolves_independently`:
+  a witness whose key rotated on its own timeline verifies iff its
+  `witness_version` (not `receipt_version`) lands in the correct
+  witness epoch window.
+- `prop_enforcement_receipt_unresolvable_approval_hard_fails`
+  (**guards HIGH-3**): under
+  `verify_with_registry_and_approvals`, an `ApprovalRef` whose digest
+  is absent from the `AttestationStore` (or resolves to an
+  invalid/wrong-signer attestation) yields `Err(UnresolvedApproval)`;
+  the same receipt passes plain `verify_with_registry`, proving the
+  base path deliberately does not verify approvals.
 - `prop_enforcement_receipt_log_entry_kind_is_stable`: appending a
   receipt to a `TransparencyLog` always uses
   `LogEntryKind::EnforcementReceipt`, and its inclusion proof
@@ -652,8 +788,11 @@ canonicalization the same way the RFC-0023/0024 vector tests do.
 ### Phase A (this RFC, first PR)
 
 1. `src/enforcement_receipt.rs` with `EnforcementPredicate`,
-   `EnforcementReceiptBuilder`, `EnforcementReceipt`, and
-   `verify_with_registry`.
+   `EnforcementReceiptBuilder`, `EnforcementReceipt`,
+   `verify_with_registry` (with the mandatory runtime-signature-
+   presence step), `verify_with_registry_and_approvals` + the
+   `AttestationStore` trait, and the per-witness `witness_version`
+   resolution path.
 2. `LogEntryKind::EnforcementReceipt` added to
    `src/transparency_log.rs` (additive; existing proofs unaffected
    per RFC-0025's own extensibility note).
@@ -739,14 +878,31 @@ Honestly, more of these remain open than closed:
    unwitnessed receipts for high-stakes decisions, rather than
    relying on human policy to notice the absence of a second
    signature? Leaning toward yes, not yet designed.
-6. **Approval-reference integrity.** `ApprovalRef.attestation_digest`
-   points at an RFC-0021 attestation by hash but the receipt does
-   not require the verifier to have that attestation in hand to
-   verify the receipt itself. Is that the right layering (receipt
-   verification is local; approval verification is a separate,
-   optional deeper check), or should `verify_with_registry` take an
-   optional attestation store and hard-fail if a referenced approval
-   cannot be resolved and independently verified?
+6. **Approval-reference integrity — resolved to opt-in, but is
+   opt-in enough?** Base `verify_with_registry` binds approval
+   references without resolving them; the
+   `verify_with_registry_and_approvals(&AttestationStore)` variant
+   resolves and hard-fails. The open part: should a policy be able to
+   *mark itself* as approval-gated such that the base verifier refuses
+   to render a verdict at all (forcing callers onto the approval
+   variant), rather than relying on each caller to pick the right
+   function for a high-stakes `Allow`? That needs a policy-side flag
+   this RFC does not define.
+7. **Setting `effective_from_version` at compromise time is hard at
+   receipt frequency.** RFC-0028's revocation model assumes the
+   revoker knows the compromised author's current version. That is
+   cheap for policy versions (rare, human-driven) but fraught for a
+   runtime emitting tens of thousands of `receipt_version`s per day —
+   the compromised runtime is exactly the party whose self-reported
+   counter cannot be trusted at the moment you need it. The likely
+   answer is to set the revocation boundary from the **transparency
+   log's `seq`** at compromise-discovery time (an external, non-forgeable
+   ordering) rather than the runtime's self-reported `receipt_version`,
+   but that requires receipts to be logged (they are optional today)
+   and a defined `seq → receipt_version` mapping this RFC does not yet
+   specify. Named here rather than hidden; it is a real operational
+   gap in reusing RFC-0028's mechanism at this frequency and under the
+   Byzantine conditions `.claude/rules/distributed.md` requires.
 
 ## References
 
@@ -764,7 +920,16 @@ Honestly, more of these remain open than closed:
 - RFC-0033 — Post-audit carryovers (§C10 sanitized-error precedent;
   §C6 DSSE all-or-nothing dedup precedent).
 - RFC-0034 — Registry-aware verify rollout (the `_with_registry`
-  call-shape this RFC reuses verbatim).
+  call-shape this RFC reuses). **Doc-drift note for implementers:**
+  the real shipped `dsse::verify_envelope` is the registry-aware
+  `(envelope, registry, at_version)` form in `src/dsse.rs`, not the
+  closure-based `key_for` signature still shown in RFC-0023's "Public
+  API" section — implement against the source, not RFC-0023's stale
+  prose. RFC-0034's algorithm text says `==` for the public-key
+  compare, but the merged code correctly uses `subtle::ConstantTimeEq`
+  (`src/signature_chain.rs`); this RFC's step 4 mandates `ct_eq`. A
+  follow-up doc-fix PR against RFC-0023/0034 is warranted but out of
+  scope here.
 - `.claude/rules/crypto.md` — author-binding rule; the structural
   basis for separating policy and runtime trust roots.
 - `.claude/rules/distributed.md` — version-number-authoritative
@@ -822,8 +987,9 @@ receipt
 
 let sealed = receipt.seal(&runtime_signing_key)?;
 
-// Optional: independent witness co-signs the same envelope.
-sealed.add_witness_signature(AuthorId::new(70_001), &witness_key)?;
+// Optional: independent witness co-signs the same envelope, bound to
+// the witness's OWN version space (not the runtime's receipt_version).
+sealed.add_witness_signature(AuthorId::new(70_001), 12, &witness_key)?;
 
 // Optional: anchor in the transparency log.
 enforcement_receipt::log_receipt(&sealed, &mut log, current_aion_version)?;
