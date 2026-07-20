@@ -43,7 +43,7 @@
 //! use aion_context::crypto::SigningKey;
 //!
 //! // Generate a new signing key
-//! let signing_key = SigningKey::generate();
+//! let signing_key = SigningKey::generate().unwrap();
 //! let message = b"Version 1: Updated fraud rules";
 //!
 //! // Sign a message
@@ -60,7 +60,7 @@
 //! use aion_context::crypto::{generate_nonce, encrypt, decrypt};
 //!
 //! let key = [0u8; 32];  // In production, use proper key derivation
-//! let nonce = generate_nonce();
+//! let nonce = generate_nonce().unwrap();
 //! let plaintext = b"sensitive rules data";
 //! let aad = b"version metadata";
 //!
@@ -103,8 +103,23 @@
 
 use crate::{AionError, Result};
 use ed25519_dalek::{Signature as Ed25519Signature, Signer, Verifier};
-use rand::RngCore;
 use zeroize::Zeroizing;
+
+/// Fill `dest` with cryptographically secure OS entropy (RFC-0037).
+///
+/// `getrandom::fill` is the fallible OS RNG primitive (`rand`'s
+/// infallible `OsRng` was removed in 0.10). A failure here means the
+/// platform's CSPRNG is unavailable — surfaced as
+/// [`AionError::EntropyUnavailable`], never a panic.
+///
+/// # Errors
+///
+/// Returns [`AionError::EntropyUnavailable`] if the OS RNG fails.
+pub(crate) fn fill_os_entropy(dest: &mut [u8]) -> Result<()> {
+    getrandom::fill(dest).map_err(|e| AionError::EntropyUnavailable {
+        reason: e.to_string(),
+    })
+}
 
 // Re-export commonly used types
 pub use ed25519_dalek::{SigningKey as Ed25519SigningKey, VerifyingKey as Ed25519VerifyingKey};
@@ -126,7 +141,7 @@ pub use ed25519_dalek::{SigningKey as Ed25519SigningKey, VerifyingKey as Ed25519
 /// ```
 /// use aion_context::crypto::SigningKey;
 ///
-/// let key = SigningKey::generate();
+/// let key = SigningKey::generate().unwrap();
 /// let message = b"test message";
 /// let signature = key.sign(message);
 /// ```
@@ -136,12 +151,17 @@ pub struct SigningKey(Zeroizing<[u8; 32]>);
 impl SigningKey {
     /// Generate a new random signing key using OS entropy
     ///
-    /// Uses the operating system's cryptographically secure random number
-    /// generator (`/dev/urandom` on Unix, `CryptGenRandom` on Windows).
-    #[must_use]
-    pub fn generate() -> Self {
-        let key = Ed25519SigningKey::generate(&mut rand::rngs::OsRng);
-        Self(Zeroizing::new(key.to_bytes()))
+    /// Fills a 32-byte Ed25519 seed from the OS CSPRNG (`/dev/urandom`
+    /// on Unix, `BCryptGenRandom` on Windows) via [`fill_os_entropy`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AionError::EntropyUnavailable`] if the OS RNG fails
+    /// (RFC-0037 — the OS source is fallible; this never panics).
+    pub fn generate() -> Result<Self> {
+        let mut seed = Zeroizing::new([0u8; 32]);
+        fill_os_entropy(seed.as_mut_slice())?;
+        Ok(Self(seed))
     }
 
     /// Create a signing key from bytes
@@ -182,7 +202,7 @@ impl SigningKey {
     /// ```
     /// use aion_context::crypto::SigningKey;
     ///
-    /// let key = SigningKey::generate();
+    /// let key = SigningKey::generate().unwrap();
     /// let signature = key.sign(b"message");
     /// assert_eq!(signature.len(), 64);
     /// ```
@@ -209,7 +229,7 @@ impl SigningKey {
 /// ```
 /// use aion_context::crypto::{SigningKey, VerifyingKey};
 ///
-/// let signing_key = SigningKey::generate();
+/// let signing_key = SigningKey::generate().unwrap();
 /// let verifying_key = signing_key.verifying_key();
 ///
 /// let message = b"test";
@@ -362,7 +382,7 @@ pub fn derive_key(ikm: &[u8], salt: &[u8], info: &[u8], output: &mut [u8]) -> Re
 ///
 /// # Security
 ///
-/// **CRITICAL**: Never reuse a nonce with the same key. Use `generate_nonce()` for each encryption.
+/// **CRITICAL**: Never reuse a nonce with the same key. Use `generate_nonce().unwrap()` for each encryption.
 pub fn encrypt(key: &[u8; 32], nonce: &[u8; 12], plaintext: &[u8], aad: &[u8]) -> Result<Vec<u8>> {
     use chacha20poly1305::{
         aead::{Aead, KeyInit, Payload},
@@ -429,14 +449,17 @@ pub fn decrypt(key: &[u8; 32], nonce: &[u8; 12], ciphertext: &[u8], aad: &[u8]) 
 /// ```
 /// use aion_context::crypto::generate_nonce;
 ///
-/// let nonce = generate_nonce();
+/// let nonce = generate_nonce().unwrap();
 /// assert_eq!(nonce.len(), 12);
 /// ```
-#[must_use]
-pub fn generate_nonce() -> [u8; 12] {
+///
+/// # Errors
+///
+/// Returns [`AionError::EntropyUnavailable`] if the OS RNG fails.
+pub fn generate_nonce() -> Result<[u8; 12]> {
     let mut nonce = [0u8; 12];
-    rand::rngs::OsRng.fill_bytes(&mut nonce);
-    nonce
+    fill_os_entropy(&mut nonce)?;
+    Ok(nonce)
 }
 
 #[cfg(test)]
@@ -449,14 +472,14 @@ mod tests {
 
         #[test]
         fn should_generate_signing_key() {
-            let key = SigningKey::generate();
+            let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let bytes = key.to_bytes();
             assert_eq!(bytes.len(), 32);
         }
 
         #[test]
         fn should_create_signing_key_from_bytes() {
-            let original = SigningKey::generate();
+            let original = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let bytes = *original.to_bytes();
 
             let restored = SigningKey::from_bytes(&bytes).unwrap();
@@ -471,14 +494,14 @@ mod tests {
 
         #[test]
         fn should_sign_message() {
-            let key = SigningKey::generate();
+            let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let signature = key.sign(b"test message");
             assert_eq!(signature.len(), 64);
         }
 
         #[test]
         fn should_verify_valid_signature() {
-            let key = SigningKey::generate();
+            let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let message = b"test message";
             let signature = key.sign(message);
 
@@ -488,7 +511,7 @@ mod tests {
 
         #[test]
         fn should_reject_invalid_signature() {
-            let key = SigningKey::generate();
+            let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let message = b"test message";
             let mut signature = key.sign(message);
 
@@ -501,7 +524,7 @@ mod tests {
 
         #[test]
         fn should_reject_wrong_message() {
-            let key = SigningKey::generate();
+            let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let signature = key.sign(b"original message");
 
             let verifying_key = key.verifying_key();
@@ -512,7 +535,7 @@ mod tests {
 
         #[test]
         fn should_serialize_verifying_key() {
-            let key = SigningKey::generate();
+            let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let verifying_key = key.verifying_key();
             let bytes = verifying_key.to_bytes();
             assert_eq!(bytes.len(), 32);
@@ -612,7 +635,7 @@ mod tests {
         #[test]
         fn should_encrypt_and_decrypt() {
             let key = [0u8; 32];
-            let nonce = generate_nonce();
+            let nonce = generate_nonce().unwrap_or_else(|_| std::process::abort());
             let plaintext = b"secret message";
             let aad = b"additional data";
 
@@ -626,7 +649,7 @@ mod tests {
         #[test]
         fn should_reject_tampered_ciphertext() {
             let key = [0u8; 32];
-            let nonce = generate_nonce();
+            let nonce = generate_nonce().unwrap_or_else(|_| std::process::abort());
             let plaintext = b"secret message";
             let aad = b"additional data";
 
@@ -644,7 +667,7 @@ mod tests {
         #[test]
         fn should_reject_wrong_aad() {
             let key = [0u8; 32];
-            let nonce = generate_nonce();
+            let nonce = generate_nonce().unwrap_or_else(|_| std::process::abort());
             let plaintext = b"secret message";
 
             let ciphertext = encrypt(&key, &nonce, plaintext, b"aad1").unwrap();
@@ -657,7 +680,7 @@ mod tests {
         fn should_reject_wrong_key() {
             let key1 = [0u8; 32];
             let key2 = [1u8; 32];
-            let nonce = generate_nonce();
+            let nonce = generate_nonce().unwrap_or_else(|_| std::process::abort());
             let plaintext = b"secret message";
             let aad = b"additional data";
 
@@ -669,8 +692,8 @@ mod tests {
 
         #[test]
         fn should_generate_unique_nonces() {
-            let nonce1 = generate_nonce();
-            let nonce2 = generate_nonce();
+            let nonce1 = generate_nonce().unwrap_or_else(|_| std::process::abort());
+            let nonce2 = generate_nonce().unwrap_or_else(|_| std::process::abort());
             assert_ne!(nonce1, nonce2);
         }
     }
@@ -682,7 +705,7 @@ mod tests {
         #[hegel::test]
         fn prop_sign_verify_roundtrip(tc: hegel::TestCase) {
             let message = tc.draw(gs::binary().max_size(4096));
-            let key = SigningKey::generate();
+            let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let signature = key.sign(&message);
             let verifying_key = key.verifying_key();
             assert!(verifying_key.verify(&message, &signature).is_ok());
@@ -691,8 +714,8 @@ mod tests {
         #[hegel::test]
         fn prop_verify_rejects_wrong_key(tc: hegel::TestCase) {
             let message = tc.draw(gs::binary().max_size(4096));
-            let signer = SigningKey::generate();
-            let other = SigningKey::generate();
+            let signer = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+            let other = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let signature = signer.sign(&message);
             assert!(other.verifying_key().verify(&message, &signature).is_err());
         }
@@ -700,7 +723,7 @@ mod tests {
         #[hegel::test]
         fn prop_verify_rejects_tampered_message(tc: hegel::TestCase) {
             let mut message = tc.draw(gs::binary().min_size(1).max_size(4096));
-            let key = SigningKey::generate();
+            let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let signature = key.sign(&message);
             let max = message
                 .len()
@@ -722,7 +745,7 @@ mod tests {
         #[hegel::test]
         fn prop_verifying_key_roundtrip_verifies(tc: hegel::TestCase) {
             let message = tc.draw(gs::binary().max_size(4096));
-            let signer = SigningKey::generate();
+            let signer = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let original = signer.verifying_key();
             let restored = VerifyingKey::from_bytes(&original.to_bytes())
                 .unwrap_or_else(|_| std::process::abort());

@@ -67,9 +67,9 @@ impl Party {
         Self {
             role,
             author: AuthorId::new(author_id),
-            master: SigningKey::generate(),
-            operational: SigningKey::generate(),
-            hybrid: HybridSigningKey::generate(),
+            master: SigningKey::generate().unwrap_or_else(|_| std::process::abort()),
+            operational: SigningKey::generate().unwrap_or_else(|_| std::process::abort()),
+            hybrid: HybridSigningKey::generate().unwrap_or_else(|_| std::process::abort()),
         }
     }
 }
@@ -196,7 +196,7 @@ fn main() {
     // ---------- Act II: AI-Safety leaves; rotate at v10 --------------
     banner("Act II — Staff departure at v10 → rotate AI-Safety's op key");
     step(&format!("{} leaves the consortium on day 90", safety.role));
-    let safety_new_op = SigningKey::generate();
+    let safety_new_op = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
     let rotation = sign_rotation_record(
         safety.author,
         0,

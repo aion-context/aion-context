@@ -171,6 +171,16 @@ pub enum AionError {
         reason: String,
     },
 
+    /// The operating-system entropy source failed (RFC-0037). Raised
+    /// when `getrandom` cannot supply randomness for key, nonce, or
+    /// salt material. The `reason` is the OS error's bounded
+    /// description — never secret or high-cardinality data.
+    #[error("OS entropy source unavailable: {reason}")]
+    EntropyUnavailable {
+        /// Bounded description of the OS RNG failure.
+        reason: String,
+    },
+
     /// A commit was attempted by a signer the registry has no active
     /// epoch for at the target version (issue #25). The write was
     /// refused before any bytes were emitted.

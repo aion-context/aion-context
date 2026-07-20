@@ -44,7 +44,7 @@
 //! let version_hash = compute_version_hash(&version);
 //!
 //! // Sign the version
-//! let signing_key = SigningKey::generate();
+//! let signing_key = SigningKey::generate().unwrap();
 //! let signature_entry = sign_version(&version, &signing_key);
 //! ```
 
@@ -178,7 +178,7 @@ pub fn compute_version_hash(version: &VersionEntry) -> [u8; 32] {
 ///     0,
 /// );
 ///
-/// let signing_key = SigningKey::generate();
+/// let signing_key = SigningKey::generate().unwrap();
 /// let signature_entry = sign_version(&version, &signing_key);
 ///
 /// assert_eq!(signature_entry.author_id, 50001);
@@ -222,8 +222,8 @@ pub fn sign_version(version: &VersionEntry, signing_key: &SigningKey) -> Signatu
 /// use aion_context::types::{AuthorId, VersionNumber};
 ///
 /// let author = AuthorId::new(50001);
-/// let master = SigningKey::generate();
-/// let signing_key = SigningKey::generate();
+/// let master = SigningKey::generate().unwrap();
+/// let signing_key = SigningKey::generate().unwrap();
 /// let mut registry = KeyRegistry::new();
 /// registry
 ///     .register_author(author, master.verifying_key(), signing_key.verifying_key(), 0)
@@ -649,7 +649,7 @@ mod tests {
     /// throwaway since these tests don't exercise rotation.
     fn reg_pinning(author_id: u64, signing_key: &SigningKey) -> KeyRegistry {
         let mut reg = KeyRegistry::new();
-        let master = SigningKey::generate();
+        let master = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
         reg.register_author(
             AuthorId::new(author_id),
             master.verifying_key(),
@@ -1292,7 +1292,7 @@ mod tests {
             let rules_hash = draw_hash(&tc);
             let version =
                 create_genesis_version(rules_hash, author, 1_700_000_000_000_000_000, 0, 0);
-            let key = SigningKey::generate();
+            let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let mut sig = sign_version(&version, &key);
             sig.author_id = author.as_u64();
             let reg = reg_pinning(author.as_u64(), &key);
@@ -1317,7 +1317,7 @@ mod tests {
                 0,
                 0,
             );
-            let key = SigningKey::generate();
+            let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let att = sign_attestation(&version, signer, &key);
             let reg = reg_pinning(signer.as_u64(), &key);
             assert!(verify_attestation(&version, &att, &reg).is_ok());
@@ -1336,7 +1336,7 @@ mod tests {
                 0,
                 0,
             );
-            let key = SigningKey::generate();
+            let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let mut att = sign_attestation(&version, real_signer, &key);
             // Tamper with signer identity after signing.
             att.author_id = fake_signer.as_u64();
@@ -1355,7 +1355,7 @@ mod tests {
             let mut v2 = v1;
             // Different rules content -> different canonical message.
             v2.rules_hash[0] ^= 0x01;
-            let key = SigningKey::generate();
+            let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let att = sign_attestation(&v1, signer, &key);
             let reg = reg_pinning(signer.as_u64(), &key);
             assert!(verify_attestation(&v2, &att, &reg).is_err());
@@ -1370,7 +1370,7 @@ mod tests {
             let author = AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1)));
             let version =
                 create_genesis_version(draw_hash(&tc), author, 1_700_000_000_000_000_000, 0, 0);
-            let key = SigningKey::generate();
+            let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let mut version_sig = sign_version(&version, &key);
             version_sig.author_id = author.as_u64();
             let reg = reg_pinning(author.as_u64(), &key);
@@ -1401,8 +1401,8 @@ mod tests {
         fn prop_registry_verify_accepts_active_epoch_signature(tc: hegel::TestCase) {
             let author_id = tc.draw(gs::integers::<u64>().min_value(1));
             let author = AuthorId::new(author_id);
-            let master = SigningKey::generate();
-            let op0 = SigningKey::generate();
+            let master = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+            let op0 = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let mut reg = KeyRegistry::new();
             reg.register_author(author, master.verifying_key(), op0.verifying_key(), 0)
                 .unwrap_or_else(|_| std::process::abort());
@@ -1418,9 +1418,9 @@ mod tests {
         fn prop_registry_verify_rejects_sig_after_rotation_with_old_key(tc: hegel::TestCase) {
             let author_id = tc.draw(gs::integers::<u64>().min_value(1));
             let author = AuthorId::new(author_id);
-            let master = SigningKey::generate();
-            let op0 = SigningKey::generate();
-            let op1 = SigningKey::generate();
+            let master = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+            let op0 = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+            let op1 = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let mut reg = KeyRegistry::new();
             reg.register_author(author, master.verifying_key(), op0.verifying_key(), 0)
                 .unwrap_or_else(|_| std::process::abort());
@@ -1452,8 +1452,8 @@ mod tests {
         fn prop_registry_verify_rejects_revoked_key(tc: hegel::TestCase) {
             let author_id = tc.draw(gs::integers::<u64>().min_value(1));
             let author = AuthorId::new(author_id);
-            let master = SigningKey::generate();
-            let op0 = SigningKey::generate();
+            let master = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+            let op0 = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let mut reg = KeyRegistry::new();
             reg.register_author(author, master.verifying_key(), op0.verifying_key(), 0)
                 .unwrap_or_else(|_| std::process::abort());
@@ -1483,9 +1483,9 @@ mod tests {
         fn prop_registry_verify_rejects_pubkey_substitution(tc: hegel::TestCase) {
             let author_id = tc.draw(gs::integers::<u64>().min_value(1));
             let author = AuthorId::new(author_id);
-            let master = SigningKey::generate();
-            let op0 = SigningKey::generate();
-            let attacker = SigningKey::generate();
+            let master = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+            let op0 = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+            let attacker = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let mut reg = KeyRegistry::new();
             reg.register_author(author, master.verifying_key(), op0.verifying_key(), 0)
                 .unwrap_or_else(|_| std::process::abort());

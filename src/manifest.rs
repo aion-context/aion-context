@@ -35,8 +35,8 @@
 //! manifest.verify_artifact("model.bin", &weights).unwrap();
 //!
 //! let signer = AuthorId::new(1001);
-//! let master = SigningKey::generate();
-//! let key = SigningKey::generate();
+//! let master = SigningKey::generate().unwrap();
+//! let key = SigningKey::generate().unwrap();
 //! let mut registry = KeyRegistry::new();
 //! registry.register_author(signer, master.verifying_key(), key.verifying_key(), 0).unwrap();
 //!
@@ -617,7 +617,7 @@ mod tests {
     /// Minimal test fixture: pin `key` as the active op key for `author` at epoch 0.
     fn reg_pinning(author: AuthorId, key: &SigningKey) -> KeyRegistry {
         let mut reg = KeyRegistry::new();
-        let master = SigningKey::generate();
+        let master = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
         reg.register_author(author, master.verifying_key(), key.verifying_key(), 0)
             .unwrap_or_else(|_| std::process::abort());
         reg
@@ -630,7 +630,7 @@ mod tests {
         let _ = b.add("b", b"beta");
         let m = b.build();
         let signer = AuthorId::new(42);
-        let key = SigningKey::generate();
+        let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
         let sig = sign_manifest(&m, signer, &key);
         let reg = reg_pinning(signer, &key);
         assert!(verify_manifest_signature(&m, &sig, &reg, 1).is_ok());
@@ -638,7 +638,7 @@ mod tests {
 
     #[test]
     fn should_reject_signature_for_different_manifest() {
-        let key = SigningKey::generate();
+        let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
         let signer = AuthorId::new(7);
 
         let mut b1 = ArtifactManifestBuilder::new();
@@ -788,7 +788,7 @@ mod tests {
             let pairs = draw_artifacts(&tc);
             let manifest = build_manifest(&pairs);
             let signer = AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1)));
-            let key = SigningKey::generate();
+            let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let sig = sign_manifest(&manifest, signer, &key);
             let reg = reg_pinning(signer, &key);
             assert!(verify_manifest_signature(&manifest, &sig, &reg, 1).is_ok());
@@ -809,7 +809,7 @@ mod tests {
             let _ = b2.add("__tamper__", &extra_bytes);
             let m2 = b2.build();
             let signer = AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1)));
-            let key = SigningKey::generate();
+            let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let sig = sign_manifest(&m1, signer, &key);
             let reg = reg_pinning(signer, &key);
             assert!(verify_manifest_signature(&m2, &sig, &reg, 1).is_err());
@@ -822,7 +822,7 @@ mod tests {
             let real_signer =
                 AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1).max_value(u64::MAX / 2)));
             let fake_signer = AuthorId::new(real_signer.as_u64().saturating_add(1));
-            let key = SigningKey::generate();
+            let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let mut sig = sign_manifest(&m, real_signer, &key);
             sig.author_id = fake_signer.as_u64();
             // Pin the real_signer; tamper claims fake_signer; not in registry → reject.
@@ -841,7 +841,7 @@ mod tests {
             let m = build_manifest(&pairs);
             let signer =
                 AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1).max_value(u64::MAX / 2)));
-            let key = SigningKey::generate();
+            let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let raw_signature = key.sign(m.manifest_id());
             let entry = SignatureEntry::new(signer, key.verifying_key().to_bytes(), raw_signature);
             let reg = reg_pinning(signer, &key);
@@ -855,8 +855,8 @@ mod tests {
             let m = build_manifest(&pairs);
             let signer =
                 AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1).max_value(1 << 32)));
-            let master = SigningKey::generate();
-            let op = SigningKey::generate();
+            let master = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+            let op = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let mut reg = KeyRegistry::new();
             reg.register_author(signer, master.verifying_key(), op.verifying_key(), 0)
                 .unwrap_or_else(|_| std::process::abort());
@@ -873,9 +873,9 @@ mod tests {
             let m = build_manifest(&pairs);
             let signer =
                 AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1).max_value(1 << 32)));
-            let master = SigningKey::generate();
-            let op0 = SigningKey::generate();
-            let op1 = SigningKey::generate();
+            let master = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+            let op0 = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+            let op1 = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let mut reg = KeyRegistry::new();
             reg.register_author(signer, master.verifying_key(), op0.verifying_key(), 0)
                 .unwrap_or_else(|_| std::process::abort());
@@ -903,13 +903,13 @@ mod tests {
             let m = build_manifest(&pairs);
             let signer =
                 AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1).max_value(1 << 32)));
-            let master = SigningKey::generate();
-            let op = SigningKey::generate();
+            let master = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+            let op = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let mut reg = KeyRegistry::new();
             reg.register_author(signer, master.verifying_key(), op.verifying_key(), 0)
                 .unwrap_or_else(|_| std::process::abort());
             // Attacker mints a valid-shaped key and signs under the target AuthorId.
-            let attacker = SigningKey::generate();
+            let attacker = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let sig = sign_manifest(&m, signer, &attacker);
             let at = tc.draw(gs::integers::<u64>().min_value(1).max_value(1 << 20));
             // With only the registry-aware API remaining (Phase E), this

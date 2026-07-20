@@ -294,7 +294,7 @@ fn main() {
         .try_init();
 
     let path = std::env::temp_dir().join("aion_policy_loop_demo.aion");
-    let key = SigningKey::generate();
+    let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
     let author = AuthorId::new(OPERATOR_AUTHOR);
 
     banner("policy_loop — tight-loop agent over a signed .aion policy");

@@ -594,7 +594,7 @@ fn main() -> ExitCode {
     };
 
     let path = std::env::temp_dir().join("aion_llm_policy_demo.aion");
-    let key = SigningKey::generate();
+    let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
     let author = AuthorId::new(OPERATOR_AUTHOR);
     let decision_log = args.decision_log.clone().map(DecisionLog::new);
 

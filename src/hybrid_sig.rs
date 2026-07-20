@@ -24,7 +24,7 @@
 //! use aion_context::hybrid_sig::HybridSigningKey;
 //!
 //! # fn run() -> aion_context::Result<()> {
-//! let key = HybridSigningKey::generate();
+//! let key = HybridSigningKey::generate().unwrap();
 //! let vk = key.verifying_key();
 //! let payload = b"attested bytes";
 //! let sig = key.sign(payload)?;
@@ -125,16 +125,20 @@ pub fn canonical_hybrid_message(payload: &[u8]) -> Vec<u8> {
 
 impl HybridSigningKey {
     /// Generate a fresh hybrid keypair (Ed25519 + ML-DSA-65).
-    #[must_use]
-    pub fn generate() -> Self {
-        let classical = ClassicalSigningKey::generate();
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AionError::EntropyUnavailable`](crate::AionError::EntropyUnavailable)
+    /// if the OS RNG fails while generating the classical half (RFC-0037).
+    pub fn generate() -> Result<Self> {
+        let classical = ClassicalSigningKey::generate()?;
         let (pq_public, pq_secret) = mldsa65::keypair();
         let pq_secret_bytes = zeroize::Zeroizing::new(pq_secret.as_bytes().to_vec());
-        Self {
+        Ok(Self {
             classical,
             pq_secret_bytes,
             pq_public,
-        }
+        })
     }
 
     /// Build a hybrid key whose classical half is `classical` and
@@ -282,7 +286,7 @@ mod tests {
 
     #[test]
     fn sign_verify_round_trip() {
-        let key = HybridSigningKey::generate();
+        let key = HybridSigningKey::generate().unwrap_or_else(|_| std::process::abort());
         let vk = key.verifying_key();
         let sig = key.sign(b"hello hybrid").unwrap();
         vk.verify(b"hello hybrid", &sig).unwrap();
@@ -290,7 +294,7 @@ mod tests {
 
     #[test]
     fn tampered_payload_rejects() {
-        let key = HybridSigningKey::generate();
+        let key = HybridSigningKey::generate().unwrap_or_else(|_| std::process::abort());
         let vk = key.verifying_key();
         let sig = key.sign(b"hello hybrid").unwrap();
         assert!(vk.verify(b"hello HYBRID", &sig).is_err());
@@ -298,7 +302,7 @@ mod tests {
 
     #[test]
     fn corrupted_classical_sig_rejects() {
-        let key = HybridSigningKey::generate();
+        let key = HybridSigningKey::generate().unwrap_or_else(|_| std::process::abort());
         let vk = key.verifying_key();
         let mut sig = key.sign(b"payload").unwrap();
         sig.classical[0] ^= 0x01;
@@ -307,7 +311,7 @@ mod tests {
 
     #[test]
     fn corrupted_pq_sig_rejects() {
-        let key = HybridSigningKey::generate();
+        let key = HybridSigningKey::generate().unwrap_or_else(|_| std::process::abort());
         let vk = key.verifying_key();
         let mut sig = key.sign(b"payload").unwrap();
         sig.pq[0] ^= 0x01;
@@ -322,7 +326,7 @@ mod tests {
 
     #[test]
     fn from_classical_preserves_ed25519_identity() {
-        let classical = ClassicalSigningKey::generate();
+        let classical = ClassicalSigningKey::generate().unwrap_or_else(|_| std::process::abort());
         let original_pk = classical.verifying_key().to_bytes();
         let key = HybridSigningKey::from_classical(classical);
         assert_eq!(key.verifying_key().classical.to_bytes(), original_pk);
@@ -335,7 +339,7 @@ mod tests {
         #[hegel::test]
         fn prop_hybrid_sign_verify_roundtrip(tc: hegel::TestCase) {
             let payload = tc.draw(gs::binary().max_size(512));
-            let key = HybridSigningKey::generate();
+            let key = HybridSigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let vk = key.verifying_key();
             let sig = key.sign(&payload).unwrap();
             vk.verify(&payload, &sig)
@@ -345,7 +349,7 @@ mod tests {
         #[hegel::test]
         fn prop_hybrid_tampered_payload_rejects(tc: hegel::TestCase) {
             let payload = tc.draw(gs::binary().min_size(1).max_size(512));
-            let key = HybridSigningKey::generate();
+            let key = HybridSigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let vk = key.verifying_key();
             let sig = key.sign(&payload).unwrap();
             let mut tampered = payload;
@@ -359,11 +363,12 @@ mod tests {
         #[hegel::test]
         fn prop_hybrid_wrong_classical_key_rejects(tc: hegel::TestCase) {
             let payload = tc.draw(gs::binary().max_size(512));
-            let key = HybridSigningKey::generate();
+            let key = HybridSigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let sig = key.sign(&payload).unwrap();
             // Build a verifying key whose classical half is from a
             // fresh keypair — PQ half still matches `key`.
-            let impostor_classical = ClassicalSigningKey::generate();
+            let impostor_classical =
+                ClassicalSigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let wrong_vk = HybridVerifyingKey {
                 classical: impostor_classical.verifying_key(),
                 algorithm: PqAlgorithm::MlDsa65,
@@ -375,7 +380,7 @@ mod tests {
         #[hegel::test]
         fn prop_hybrid_wrong_pq_key_rejects(tc: hegel::TestCase) {
             let payload = tc.draw(gs::binary().max_size(512));
-            let key = HybridSigningKey::generate();
+            let key = HybridSigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let sig = key.sign(&payload).unwrap();
             // Build a verifying key whose PQ half is from a fresh
             // keypair — classical half still matches `key`.
@@ -391,7 +396,7 @@ mod tests {
         #[hegel::test]
         fn prop_hybrid_corrupted_classical_sig_rejects(tc: hegel::TestCase) {
             let payload = tc.draw(gs::binary().max_size(512));
-            let key = HybridSigningKey::generate();
+            let key = HybridSigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let vk = key.verifying_key();
             let mut sig = key.sign(&payload).unwrap();
             let idx = tc.draw(gs::integers::<usize>().max_value(sig.classical.len() - 1));
@@ -404,7 +409,7 @@ mod tests {
         #[hegel::test]
         fn prop_hybrid_corrupted_pq_sig_rejects(tc: hegel::TestCase) {
             let payload = tc.draw(gs::binary().max_size(512));
-            let key = HybridSigningKey::generate();
+            let key = HybridSigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let vk = key.verifying_key();
             let mut sig = key.sign(&payload).unwrap();
             // PQ signature is long — flipping any byte should break
@@ -422,7 +427,7 @@ mod tests {
             // prefix) must NOT verify when plugged into a
             // HybridSignature. This guards the domain separator.
             let payload = tc.draw(gs::binary().max_size(512));
-            let key = HybridSigningKey::generate();
+            let key = HybridSigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let vk = key.verifying_key();
             // Sign the raw payload (no domain) with the classical key.
             let classical_only = key.classical.sign(&payload);
@@ -446,7 +451,7 @@ mod tests {
             // Today there's only MlDsa65, so we synthesize a
             // mismatch by flipping the discriminant.
             let payload = tc.draw(gs::binary().max_size(256));
-            let key = HybridSigningKey::generate();
+            let key = HybridSigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let vk = key.verifying_key();
             let mut sig = key.sign(&payload).unwrap();
             // Invent a discriminant the enum doesn't recognize by

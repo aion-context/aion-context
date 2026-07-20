@@ -15,7 +15,7 @@ categories = ["cryptography", "command-line-utilities", "filesystem", "encoding"
 
 [dependencies]
 # Cryptography - pinned versions for security
-ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+ed25519-dalek = "3.0"
 chacha20poly1305 = "0.11"
 blake3 = "1.8"
 hkdf = "0.12"
@@ -56,7 +56,11 @@ argon2 = "0.5"   # Password hashing for key export/import
 clap = { version = "4.5", features = ["derive", "cargo"] }
 
 # Random number generation
-rand = "0.8"
+rand = "0.10"
+# OS entropy source (RFC-0037): getrandom's fill() is the fallible OS
+# RNG primitive used for all key/nonce/salt material. rand's own OsRng
+# was removed in 0.10 in favour of this fallible interface.
+getrandom = "0.3"
 serde_yaml = "0.9.34"
 
 # Parallel processing

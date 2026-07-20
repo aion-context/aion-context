@@ -90,8 +90,8 @@ impl Signer {
         Self {
             role,
             author: AuthorId::new(author_id),
-            master: SigningKey::generate(),
-            operational: SigningKey::generate(),
+            master: SigningKey::generate().unwrap_or_else(|_| std::process::abort()),
+            operational: SigningKey::generate().unwrap_or_else(|_| std::process::abort()),
             kind,
         }
     }

@@ -106,7 +106,7 @@ impl TestKeyPair {
     /// Generate a random test keypair
     #[must_use]
     pub fn generate() -> Self {
-        let signing = SigningKey::generate();
+        let signing = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
         let verifying = signing.verifying_key();
         Self { signing, verifying }
     }
@@ -126,7 +126,7 @@ impl TestKeyPair {
     pub fn from_seed(seed: u64) -> crate::Result<Self> {
         let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
         let mut key_bytes = [0u8; 32];
-        rand::RngCore::fill_bytes(&mut rng, &mut key_bytes);
+        rand::Rng::fill_bytes(&mut rng, &mut key_bytes);
 
         let signing = SigningKey::from_bytes(&key_bytes)?;
         let verifying = signing.verifying_key();
@@ -192,16 +192,15 @@ pub const fn test_version_with_value(value: u64) -> VersionNumber {
 pub fn test_data(seed: u64, size: usize) -> Vec<u8> {
     let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
     let mut data = vec![0u8; size];
-    rand::RngCore::fill_bytes(&mut rng, &mut data);
+    rand::Rng::fill_bytes(&mut rng, &mut data);
     data
 }
 
 /// Generate random test data
 #[must_use]
 pub fn random_test_data(size: usize) -> Vec<u8> {
-    use rand::RngCore;
     let mut data = vec![0u8; size];
-    rand::rngs::OsRng.fill_bytes(&mut data);
+    crate::crypto::fill_os_entropy(&mut data).unwrap_or_else(|_| std::process::abort());
     data
 }
 
@@ -317,8 +316,8 @@ pub const fn test_timestamp_with_offset(offset_ms: u64) -> u64 {
 /// use aion_context::crypto::SigningKey;
 /// use aion_context::test_helpers::TestRegistry;
 ///
-/// let master = SigningKey::generate();
-/// let op = SigningKey::generate();
+/// let master = SigningKey::generate().unwrap();
+/// let op = SigningKey::generate().unwrap();
 /// let mut reg = TestRegistry::new();
 /// let author = reg.pin(&master, &op).unwrap();
 /// // `reg.as_registry()` is the same `&KeyRegistry` every
@@ -358,7 +357,7 @@ impl TestRegistry {
     /// # #[cfg(feature = "test-helpers")] {
     /// # use aion_context::crypto::SigningKey;
     /// # use aion_context::test_helpers::TestRegistry;
-    /// let (m, op) = (SigningKey::generate(), SigningKey::generate());
+    /// let (m, op) = (SigningKey::generate().unwrap(), SigningKey::generate().unwrap());
     /// let mut reg = TestRegistry::new();
     /// let author = reg.pin(&m, &op).unwrap();
     /// assert_ne!(author.as_u64(), 0);
@@ -391,7 +390,7 @@ impl TestRegistry {
     /// # use aion_context::crypto::SigningKey;
     /// # use aion_context::test_helpers::TestRegistry;
     /// # use aion_context::types::AuthorId;
-    /// let (m, op) = (SigningKey::generate(), SigningKey::generate());
+    /// let (m, op) = (SigningKey::generate().unwrap(), SigningKey::generate().unwrap());
     /// let mut reg = TestRegistry::new();
     /// reg.pin_with_id(AuthorId::new(50001), &m, &op).unwrap();
     /// # }
@@ -432,9 +431,9 @@ impl TestRegistry {
     /// # use aion_context::crypto::SigningKey;
     /// # use aion_context::test_helpers::TestRegistry;
     /// let (master, op0, op1) = (
-    ///     SigningKey::generate(),
-    ///     SigningKey::generate(),
-    ///     SigningKey::generate(),
+    ///     SigningKey::generate().unwrap(),
+    ///     SigningKey::generate().unwrap(),
+    ///     SigningKey::generate().unwrap(),
     /// );
     /// let mut reg = TestRegistry::new();
     /// let author = reg.pin(&master, &op0).unwrap();
@@ -486,7 +485,7 @@ impl TestRegistry {
     /// # use aion_context::crypto::SigningKey;
     /// # use aion_context::test_helpers::TestRegistry;
     /// # use aion_context::key_registry::RevocationReason;
-    /// let (master, op) = (SigningKey::generate(), SigningKey::generate());
+    /// let (master, op) = (SigningKey::generate().unwrap(), SigningKey::generate().unwrap());
     /// let mut reg = TestRegistry::new();
     /// let author = reg.pin(&master, &op).unwrap();
     /// reg.revoke(author, &master, RevocationReason::Compromised, 50).unwrap();
@@ -690,7 +689,10 @@ mod tests {
 
         #[test]
         fn pin_returns_registry_with_active_epoch_for_new_author() {
-            let (master, op) = (SigningKey::generate(), SigningKey::generate());
+            let (master, op) = (
+                SigningKey::generate().unwrap_or_else(|_| std::process::abort()),
+                SigningKey::generate().unwrap_or_else(|_| std::process::abort()),
+            );
             let mut reg = TestRegistry::new();
             let author = reg.pin(&master, &op).unwrap();
             assert!(reg.as_registry().active_epoch_at(author, 1).is_some());
@@ -699,8 +701,14 @@ mod tests {
         #[test]
         fn pin_allocates_sequential_ids() {
             let mut reg = TestRegistry::new();
-            let (ma, opa) = (SigningKey::generate(), SigningKey::generate());
-            let (mb, opb) = (SigningKey::generate(), SigningKey::generate());
+            let (ma, opa) = (
+                SigningKey::generate().unwrap_or_else(|_| std::process::abort()),
+                SigningKey::generate().unwrap_or_else(|_| std::process::abort()),
+            );
+            let (mb, opb) = (
+                SigningKey::generate().unwrap_or_else(|_| std::process::abort()),
+                SigningKey::generate().unwrap_or_else(|_| std::process::abort()),
+            );
             let a = reg.pin(&ma, &opa).unwrap();
             let b = reg.pin(&mb, &opb).unwrap();
             assert_ne!(a, b);
@@ -709,7 +717,10 @@ mod tests {
 
         #[test]
         fn pin_with_id_uses_the_supplied_id() {
-            let (m, op) = (SigningKey::generate(), SigningKey::generate());
+            let (m, op) = (
+                SigningKey::generate().unwrap_or_else(|_| std::process::abort()),
+                SigningKey::generate().unwrap_or_else(|_| std::process::abort()),
+            );
             let mut reg = TestRegistry::new();
             let chosen = AuthorId::new(50_001);
             reg.pin_with_id(chosen, &m, &op).unwrap();
@@ -718,7 +729,10 @@ mod tests {
 
         #[test]
         fn pinned_registry_accepts_signature_made_with_the_pinned_key() {
-            let (master, op) = (SigningKey::generate(), SigningKey::generate());
+            let (master, op) = (
+                SigningKey::generate().unwrap_or_else(|_| std::process::abort()),
+                SigningKey::generate().unwrap_or_else(|_| std::process::abort()),
+            );
             let mut reg = TestRegistry::new();
             let author = reg.pin(&master, &op).unwrap();
             let version = make_version(author, 7);
@@ -729,9 +743,9 @@ mod tests {
         #[test]
         fn rotate_rejects_signatures_made_with_the_rotated_out_key() {
             let (master, op0, op1) = (
-                SigningKey::generate(),
-                SigningKey::generate(),
-                SigningKey::generate(),
+                SigningKey::generate().unwrap_or_else(|_| std::process::abort()),
+                SigningKey::generate().unwrap_or_else(|_| std::process::abort()),
+                SigningKey::generate().unwrap_or_else(|_| std::process::abort()),
             );
             let mut reg = TestRegistry::new();
             let author = reg.pin(&master, &op0).unwrap();
@@ -746,9 +760,9 @@ mod tests {
         #[test]
         fn rotate_accepts_signatures_made_with_the_new_key_after_effective_version() {
             let (master, op0, op1) = (
-                SigningKey::generate(),
-                SigningKey::generate(),
-                SigningKey::generate(),
+                SigningKey::generate().unwrap_or_else(|_| std::process::abort()),
+                SigningKey::generate().unwrap_or_else(|_| std::process::abort()),
+                SigningKey::generate().unwrap_or_else(|_| std::process::abort()),
             );
             let mut reg = TestRegistry::new();
             let author = reg.pin(&master, &op0).unwrap();
@@ -760,7 +774,10 @@ mod tests {
 
         #[test]
         fn revoke_rejects_signatures_after_effective_version() {
-            let (master, op) = (SigningKey::generate(), SigningKey::generate());
+            let (master, op) = (
+                SigningKey::generate().unwrap_or_else(|_| std::process::abort()),
+                SigningKey::generate().unwrap_or_else(|_| std::process::abort()),
+            );
             let mut reg = TestRegistry::new();
             let author = reg.pin(&master, &op).unwrap();
             reg.revoke(author, &master, RevocationReason::Compromised, 50)
@@ -772,7 +789,10 @@ mod tests {
 
         #[test]
         fn revoke_preserves_signatures_before_effective_version() {
-            let (master, op) = (SigningKey::generate(), SigningKey::generate());
+            let (master, op) = (
+                SigningKey::generate().unwrap_or_else(|_| std::process::abort()),
+                SigningKey::generate().unwrap_or_else(|_| std::process::abort()),
+            );
             let mut reg = TestRegistry::new();
             let author = reg.pin(&master, &op).unwrap();
             reg.revoke(author, &master, RevocationReason::Superseded, 100)
@@ -785,7 +805,10 @@ mod tests {
 
         #[test]
         fn as_ref_matches_as_registry() {
-            let (m, op) = (SigningKey::generate(), SigningKey::generate());
+            let (m, op) = (
+                SigningKey::generate().unwrap_or_else(|_| std::process::abort()),
+                SigningKey::generate().unwrap_or_else(|_| std::process::abort()),
+            );
             let mut reg = TestRegistry::new();
             reg.pin(&m, &op).unwrap();
             let via_method = reg.as_registry() as *const KeyRegistry;

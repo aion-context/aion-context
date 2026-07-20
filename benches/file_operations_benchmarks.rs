@@ -29,7 +29,7 @@ fn create_temp_dir() -> TempDir {
 }
 
 fn create_test_key() -> SigningKey {
-    SigningKey::generate()
+    SigningKey::generate().unwrap_or_else(|_| std::process::abort())
 }
 
 fn create_test_rules(size: usize) -> Vec<u8> {
@@ -37,7 +37,7 @@ fn create_test_rules(size: usize) -> Vec<u8> {
 }
 
 fn bench_registry(author_ids: &[u64], signing_key: &SigningKey) -> KeyRegistry {
-    let master = SigningKey::generate();
+    let master = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
     let mut registry = KeyRegistry::new();
     for &id in author_ids {
         registry

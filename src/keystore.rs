@@ -35,7 +35,6 @@
 use crate::crypto::{decrypt, encrypt, generate_nonce, SigningKey, VerifyingKey};
 use crate::types::AuthorId;
 use crate::{AionError, Result};
-use rand::RngCore;
 use std::path::PathBuf;
 
 /// Service name for keyring entries
@@ -124,7 +123,7 @@ impl KeyStore {
     ///
     /// Returns error if keyring access fails
     pub fn generate_keypair(&self, author_id: AuthorId) -> Result<(SigningKey, VerifyingKey)> {
-        let signing_key = SigningKey::generate();
+        let signing_key = SigningKey::generate()?;
         let verifying_key = signing_key.verifying_key();
 
         self.store_signing_key(author_id, &signing_key)?;
@@ -402,13 +401,13 @@ impl KeyStore {
         let signing_key = self.load_signing_key(author_id)?;
 
         // Generate random salt for Argon2
-        let salt = generate_salt();
+        let salt = generate_salt()?;
 
         // Derive encryption key from password using Argon2id
         let encryption_key = derive_key_from_password(password, &salt)?;
 
         // Encrypt the key bytes
-        let nonce = generate_nonce();
+        let nonce = generate_nonce()?;
         let aad = author_id.as_u64().to_le_bytes();
         let ciphertext = encrypt(&encryption_key, &nonce, signing_key.to_bytes(), &aad)?;
 
@@ -525,10 +524,14 @@ fn parse_encrypted_key_blob(encrypted_data: &[u8]) -> Result<ParsedEncryptedKey<
 }
 
 /// Generate a random salt for Argon2 key derivation
-fn generate_salt() -> [u8; SALT_SIZE] {
+///
+/// # Errors
+///
+/// Returns [`AionError::EntropyUnavailable`] if the OS RNG fails.
+fn generate_salt() -> Result<[u8; SALT_SIZE]> {
     let mut salt = [0u8; SALT_SIZE];
-    rand::rngs::OsRng.fill_bytes(&mut salt);
-    salt
+    crate::crypto::fill_os_entropy(&mut salt)?;
+    Ok(salt)
 }
 
 /// Derive encryption key from password using Argon2id
@@ -642,7 +645,7 @@ fn encrypt_key_for_storage(author_id: AuthorId, key: &SigningKey) -> Result<Vec<
     // Note: This is weaker than OS keyring but provides obfuscation
     let machine_key = derive_machine_key(&FILE_STORAGE_SALT)?;
 
-    let nonce = generate_nonce();
+    let nonce = generate_nonce()?;
     let aad = author_id.as_u64().to_le_bytes();
     let ciphertext = encrypt(&machine_key, &nonce, key.to_bytes(), &aad)?;
 
@@ -797,8 +800,8 @@ mod tests {
 
         #[test]
         fn should_generate_unique_salts() {
-            let salt1 = generate_salt();
-            let salt2 = generate_salt();
+            let salt1 = generate_salt().unwrap_or_else(|_| std::process::abort());
+            let salt2 = generate_salt().unwrap_or_else(|_| std::process::abort());
             assert_ne!(salt1, salt2);
         }
     }
@@ -813,14 +816,14 @@ mod tests {
 
         #[test]
         fn should_encrypt_and_decrypt_key() {
-            let signing_key = SigningKey::generate();
+            let signing_key = SigningKey::generate().unwrap();
             let author_id = AuthorId::new(50001);
             let password = "test-password-123";
 
             // Generate salt and derive key
-            let salt = generate_salt();
+            let salt = generate_salt().unwrap();
             let encryption_key = derive_key_from_password(password, &salt).unwrap();
-            let nonce = generate_nonce();
+            let nonce = generate_nonce().unwrap();
             let aad = author_id.as_u64().to_le_bytes();
             let ciphertext =
                 encrypt(&encryption_key, &nonce, signing_key.to_bytes(), &aad).unwrap();
@@ -855,13 +858,13 @@ mod tests {
 
         #[test]
         fn should_reject_wrong_password() {
-            let signing_key = SigningKey::generate();
+            let signing_key = SigningKey::generate().unwrap();
             let author_id = AuthorId::new(50001);
 
             // Encrypt with one password
-            let salt = generate_salt();
+            let salt = generate_salt().unwrap();
             let encryption_key = derive_key_from_password("correct-password", &salt).unwrap();
-            let nonce = generate_nonce();
+            let nonce = generate_nonce().unwrap();
             let aad = author_id.as_u64().to_le_bytes();
             let ciphertext =
                 encrypt(&encryption_key, &nonce, signing_key.to_bytes(), &aad).unwrap();

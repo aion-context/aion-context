@@ -342,7 +342,7 @@ fn test_deterministic_signing() {
 /// Test signature with maximum length message
 #[test]
 fn test_signature_large_message() {
-    let signing_key = SigningKey::generate();
+    let signing_key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
     let verifying_key = signing_key.verifying_key();
 
     // 1MB message
@@ -467,7 +467,7 @@ fn test_blake3_collision_resistance() {
 /// Test signature with null byte in message
 #[test]
 fn test_signature_null_bytes() {
-    let signing_key = SigningKey::generate();
+    let signing_key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
     let verifying_key = signing_key.verifying_key();
 
     let messages = vec![
@@ -494,7 +494,7 @@ fn test_signature_null_bytes() {
 /// Test that public key can be reconstructed correctly
 #[test]
 fn test_public_key_serialization_roundtrip() {
-    let signing_key = SigningKey::generate();
+    let signing_key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
     let verifying_key = signing_key.verifying_key();
 
     // Serialize
@@ -572,7 +572,7 @@ fn test_encryption_interoperability() {
 /// Test that single-bit signature modifications are detected
 #[test]
 fn test_signature_single_bit_tampering() {
-    let signing_key = SigningKey::generate();
+    let signing_key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
     let verifying_key = signing_key.verifying_key();
     let message = b"tamper test message";
 
@@ -596,7 +596,7 @@ fn test_signature_single_bit_tampering() {
 /// Test that single-bit message modifications are detected
 #[test]
 fn test_message_single_bit_tampering() {
-    let signing_key = SigningKey::generate();
+    let signing_key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
     let verifying_key = signing_key.verifying_key();
     let message = b"original message for tampering test";
 
@@ -718,8 +718,8 @@ fn test_truncated_ciphertext_detection() {
 /// Test signature with wrong public key is rejected
 #[test]
 fn test_wrong_public_key_rejection() {
-    let signing_key1 = SigningKey::generate();
-    let signing_key2 = SigningKey::generate();
+    let signing_key1 = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+    let signing_key2 = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
 
     let verifying_key2 = signing_key2.verifying_key();
 
