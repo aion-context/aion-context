@@ -76,15 +76,21 @@ error[E0433]: failed to resolve: could not find `OsRng` in `rngs`
   --> src/test_helpers.rs:204:5
 ```
 
-**Bumping both together resolves it.** `ed25519-dalek` 3.0.0 and
-`rand` 0.10.2 converge on the same `rand_core` major (0.9+, `rand`
-0.10.2 itself resolving `rand_core = 0.10.1`), which is the only
-version line where `rand`'s `OsRng` satisfies `ed25519-dalek`'s
-`CryptoRng` bound. This is the central finding of this RFC: **the
+**Bumping both together aligns `rand_core`** — `ed25519-dalek` 3.0.0
+and `rand` 0.10.2 converge on `rand_core = 0.10.1`, collapsing the
+duplicate-major split. This is the central finding of this RFC: **the
 two dependency bumps must be reviewed, migrated, and merged as one
 PR**, not as two independently-approved dependabot PRs, or the
 crate does not build in the intermediate state either PR alone
 produces.
+
+Alignment is necessary but **not sufficient**: a migration prototype
+found that `rand` 0.10.2 removes `OsRng` in favour of the *fallible*
+`rand::rngs::SysRng`, which does not satisfy `ed25519-dalek` 3.0.0's
+infallible `CryptoRng` bound directly. Under this crate's zero-panic
+rule, reconciling that is a design decision (fallible public API vs. a
+documented panic exception), detailed in Unresolved Questions — it is
+the gate that must clear before implementation.
 
 ### RUSTSEC status
 
@@ -372,14 +378,41 @@ to `.claude/rules/property-testing.md`.
 
 ## Unresolved Questions
 
-- **Exact `rand` 0.10 API for an OS-backed `CryptoRng` source.**
-  Whether the correct post-migration call is
-  `rand_core::OsRng`, `rand::rngs::OsRng` re-exported under a new
-  path, or a direct `getrandom`-backed construction is not pinned by
-  this RFC — `rand` 0.9/0.10's `OsRng` relocation has moved more than
-  once across pre-release versions upstream, and the exact path
-  needs to be confirmed against the `rand` 0.10.2 docs at
-  implementation time, not guessed here.
+- **RESOLVED by prototype — and it forces a bigger decision than a path swap.**
+  A throwaway migration prototype (deps bumped, build attempted)
+  established the concrete facts: `rand` 0.10.2 **removes `OsRng`
+  entirely**. The OS entropy source is now `rand::rngs::SysRng`
+  (re-exported from `getrandom`), and it is **fallible** —
+  `rand_core` 0.10.1 splits infallible (`RngCore: Rng`,
+  `CryptoRng: Rng + TryCryptoRng<Error = Infallible>`) from fallible
+  (`TryRngCore: TryRng`, with `try_fill_bytes -> Result`), and the OS
+  source implements only the fallible set because `getrandom` can
+  fail. `ed25519-dalek` 3.0.0's `SigningKey::generate<R: CryptoRng>`
+  requires the **infallible** `CryptoRng`, which the fallible
+  `SysRng` does not satisfy directly. Because this crate bans
+  `panic!`/`unwrap`/`expect` in library code (Tiger Style, compiler-
+  enforced), the usual `UnwrapErr(SysRng)` / `.expect()` bridge is
+  **not available**. The migration therefore forces a choice the
+  reviewers must make before implementation:
+  - **(A) Make the RNG-consuming functions fallible.**
+    `crypto::SigningKey::generate`, `crypto::generate_nonce`, and
+    `keystore::generate_salt` return `Result<_, AionError>` (new
+    `AionError` variant for OS-RNG failure), propagating
+    `try_fill_bytes` / `try_generate_from_rng` errors. Correct and
+    panic-free, but **`SigningKey::generate`'s signature is public
+    API** — this is a semver-major break against the 1.0.0 stability
+    promise (`book/src/architecture/stability.md`), rippling to every
+    caller and the `test_helpers`.
+  - **(B) A narrowly-scoped, documented panic exception.** Treat OS-
+    RNG failure as an unrecoverable abort (`std::process::abort()` or
+    a single `#[allow]`-ed `expect`) with a written rationale in
+    `Cargo.toml` / `.claude/rules/crypto.md`. Keeps signatures
+    infallible but **violates the zero-panic invariant** and needs
+    explicit sign-off.
+  - **(C) Stay pinned** (the do-nothing alternative below) — no CVE
+    forces the bump today.
+  This RFC does **not** pick between (A) and (B); that is the
+  gating decision. Implementation must not start until it is made.
 - **Direct `rand_core` dependency vs. transitive-only.** Rationale
   above leans against adding `rand_core` as an explicit
   `[dependencies]` entry, but a reviewer favoring "explicit over
