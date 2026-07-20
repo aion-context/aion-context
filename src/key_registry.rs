@@ -23,9 +23,9 @@
 //! use aion_context::types::AuthorId;
 //!
 //! let author = AuthorId::new(42);
-//! let master = SigningKey::generate();
-//! let op0 = SigningKey::generate();
-//! let op1 = SigningKey::generate();
+//! let master = SigningKey::generate().unwrap();
+//! let op0 = SigningKey::generate().unwrap();
+//! let op1 = SigningKey::generate().unwrap();
 //!
 //! let mut reg = KeyRegistry::new();
 //! reg.register_author(author, master.verifying_key(), op0.verifying_key(), 0).unwrap();
@@ -855,8 +855,8 @@ mod tests {
 
     fn setup() -> (AuthorId, SigningKey, SigningKey, KeyRegistry) {
         let author = AuthorId::new(42);
-        let master = SigningKey::generate();
-        let op0 = SigningKey::generate();
+        let master = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+        let op0 = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
         let mut reg = KeyRegistry::new();
         reg.register_author(author, master.verifying_key(), op0.verifying_key(), 0)
             .unwrap();
@@ -881,7 +881,7 @@ mod tests {
     #[test]
     fn should_apply_rotation_and_track_boundaries() {
         let (author, master, _op0, mut reg) = setup();
-        let op1 = SigningKey::generate();
+        let op1 = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
         let rec = sign_rotation_record(author, 0, 1, op1.verifying_key().to_bytes(), 10, &master);
         reg.apply_rotation(&rec).unwrap();
 
@@ -895,7 +895,7 @@ mod tests {
     #[test]
     fn should_reject_rotation_with_wrong_from_epoch() {
         let (author, master, _op0, mut reg) = setup();
-        let op1 = SigningKey::generate();
+        let op1 = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
         let rec = sign_rotation_record(
             author,
             5, // wrong: active is 0
@@ -910,8 +910,8 @@ mod tests {
     #[test]
     fn should_reject_rotation_with_wrong_master_signature() {
         let (author, _master, _op0, mut reg) = setup();
-        let other_master = SigningKey::generate();
-        let op1 = SigningKey::generate();
+        let other_master = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+        let op1 = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
         let rec = sign_rotation_record(
             author,
             0,
@@ -970,8 +970,8 @@ mod tests {
             tc: &hegel::TestCase,
         ) -> (AuthorId, SigningKey, SigningKey, KeyRegistry) {
             let author = AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1)));
-            let master = SigningKey::generate();
-            let op0 = SigningKey::generate();
+            let master = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+            let op0 = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let mut reg = KeyRegistry::new();
             reg.register_author(author, master.verifying_key(), op0.verifying_key(), 0)
                 .unwrap_or_else(|_| std::process::abort());
@@ -992,7 +992,7 @@ mod tests {
         #[hegel::test]
         fn prop_sig_before_rotation_verifies(tc: hegel::TestCase) {
             let (author, master, _op0, mut reg) = register_author(&tc);
-            let op1 = SigningKey::generate();
+            let op1 = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let effective = tc.draw(gs::integers::<u64>().min_value(1).max_value(1 << 30));
             let rec = sign_rotation_record(
                 author,
@@ -1015,7 +1015,7 @@ mod tests {
         #[hegel::test]
         fn prop_sig_after_rotation_switches_to_new_epoch(tc: hegel::TestCase) {
             let (author, master, _op0, mut reg) = register_author(&tc);
-            let op1 = SigningKey::generate();
+            let op1 = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let effective = tc.draw(gs::integers::<u64>().min_value(1).max_value(1 << 30));
             let rec = sign_rotation_record(
                 author,
@@ -1066,7 +1066,7 @@ mod tests {
         #[hegel::test]
         fn prop_rotation_requires_valid_master_sig(tc: hegel::TestCase) {
             let (author, master, _op0, mut reg) = register_author(&tc);
-            let op1 = SigningKey::generate();
+            let op1 = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let mut rec =
                 sign_rotation_record(author, 0, 1, op1.verifying_key().to_bytes(), 5, &master);
             // Flip a byte in the master signature → rejection.
@@ -1085,7 +1085,7 @@ mod tests {
             for i in 0..n {
                 effective = effective
                     .saturating_add(tc.draw(gs::integers::<u64>().min_value(1).max_value(10_000)));
-                let new_op = SigningKey::generate();
+                let new_op = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
                 let rec = sign_rotation_record(
                     author,
                     i,
@@ -1108,8 +1108,8 @@ mod tests {
         fn prop_multi_hop_rotation_tracks_correctly(tc: hegel::TestCase) {
             // Three-epoch chain: op0 -> op1 at v_a -> op2 at v_b.
             let (author, master, op0, mut reg) = register_author(&tc);
-            let op1 = SigningKey::generate();
-            let op2 = SigningKey::generate();
+            let op1 = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+            let op2 = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let v_a = tc.draw(gs::integers::<u64>().min_value(1).max_value(1 << 20));
             let v_b =
                 v_a.saturating_add(tc.draw(gs::integers::<u64>().min_value(1).max_value(1 << 20)));
@@ -1186,8 +1186,8 @@ mod tests {
 
         #[test]
         fn loads_single_author_single_epoch() {
-            let master = SigningKey::generate();
-            let op = SigningKey::generate();
+            let master = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+            let op = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let json = format!(
                 r#"{{"version":1,"authors":[{{
                     "author_id": 7,
@@ -1209,9 +1209,9 @@ mod tests {
 
         #[test]
         fn loads_multi_epoch_with_revocation() {
-            let master = SigningKey::generate();
-            let op0 = SigningKey::generate();
-            let op1 = SigningKey::generate();
+            let master = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+            let op0 = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+            let op1 = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let json = format!(
                 r#"{{"version":1,"authors":[{{
                     "author_id": 11,
@@ -1288,9 +1288,9 @@ mod tests {
 
         fn build_two_epoch_rotated_registry() -> KeyRegistry {
             let author = AuthorId::new(11);
-            let master = SigningKey::generate();
-            let op0 = SigningKey::generate();
-            let op1 = SigningKey::generate();
+            let master = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+            let op0 = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+            let op1 = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let mut reg = KeyRegistry::new();
             reg.register_author(author, master.verifying_key(), op0.verifying_key(), 0)
                 .unwrap();
@@ -1318,8 +1318,8 @@ mod tests {
         #[test]
         fn serialized_json_marks_revoked_epoch() {
             let author = AuthorId::new(12);
-            let master = SigningKey::generate();
-            let op = SigningKey::generate();
+            let master = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+            let op = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let mut reg = KeyRegistry::new();
             reg.register_author(author, master.verifying_key(), op.verifying_key(), 0)
                 .unwrap();
@@ -1339,9 +1339,9 @@ mod tests {
             // The JSON below predates the status field. It must
             // still parse, with status reconstructed from epoch
             // ordering and the revocations array.
-            let master = SigningKey::generate();
-            let op0 = SigningKey::generate();
-            let op1 = SigningKey::generate();
+            let master = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+            let op0 = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+            let op1 = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let json = format!(
                 r#"{{"version":1,"authors":[{{
                     "author_id": 13,

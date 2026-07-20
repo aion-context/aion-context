@@ -35,7 +35,7 @@
 //! let aibom = b.build();
 //!
 //! let signer = AuthorId::new(1001);
-//! let key = SigningKey::generate();
+//! let key = SigningKey::generate().unwrap();
 //! let env = aion_context::aibom::wrap_aibom_dsse(&aibom, signer, &key).unwrap();
 //! let back = aion_context::aibom::unwrap_aibom_dsse(&env).unwrap();
 //! assert_eq!(back, aibom);
@@ -446,7 +446,7 @@ mod tests {
     /// Pin `signer` with `key` as the active op pubkey at epoch 0.
     fn reg_pinning(signer: AuthorId, key: &SigningKey) -> KeyRegistry {
         let mut reg = KeyRegistry::new();
-        let master = SigningKey::generate();
+        let master = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
         reg.register_author(signer, master.verifying_key(), key.verifying_key(), 0)
             .unwrap();
         reg
@@ -518,7 +518,7 @@ mod tests {
     fn dsse_wrap_and_verify_round_trip() {
         let aibom = sample_aibom();
         let signer = AuthorId::new(1001);
-        let key = SigningKey::generate();
+        let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
         let env = wrap_aibom_dsse(&aibom, signer, &key).unwrap();
         assert_eq!(env.payload_type, AIBOM_PAYLOAD_TYPE);
         let reg = reg_pinning(signer, &key);
@@ -530,7 +530,7 @@ mod tests {
 
     #[test]
     fn unwrap_rejects_wrong_payload_type() {
-        let key = SigningKey::generate();
+        let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
         let env = dsse::sign_envelope(b"not aibom", "text/plain", AuthorId::new(1), &key);
         assert!(unwrap_aibom_dsse(&env).is_err());
     }
@@ -618,7 +618,7 @@ mod tests {
         fn prop_aibom_dsse_roundtrip(tc: hegel::TestCase) {
             let aibom = draw_aibom(&tc);
             let signer = AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1)));
-            let key = SigningKey::generate();
+            let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let env =
                 wrap_aibom_dsse(&aibom, signer, &key).unwrap_or_else(|_| std::process::abort());
             let reg = reg_pinning(signer, &key);
@@ -632,7 +632,7 @@ mod tests {
         fn prop_aibom_tampered_json_rejects(tc: hegel::TestCase) {
             let aibom = draw_aibom(&tc);
             let signer = AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1)));
-            let key = SigningKey::generate();
+            let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let mut env =
                 wrap_aibom_dsse(&aibom, signer, &key).unwrap_or_else(|_| std::process::abort());
             let max_idx = env.payload.len().saturating_sub(1);
@@ -649,18 +649,18 @@ mod tests {
             let aibom = draw_aibom(&tc);
             let s1 = (
                 AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1).max_value(1 << 20))),
-                SigningKey::generate(),
+                SigningKey::generate().unwrap_or_else(|_| std::process::abort()),
             );
             let s2 = (
                 AuthorId::new(s1.0.as_u64().saturating_add(1)),
-                SigningKey::generate(),
+                SigningKey::generate().unwrap_or_else(|_| std::process::abort()),
             );
             let mut env =
                 wrap_aibom_dsse(&aibom, s1.0, &s1.1).unwrap_or_else(|_| std::process::abort());
             dsse::add_signature(&mut env, s2.0, &s2.1);
             let mut reg = KeyRegistry::new();
             for (signer, key) in [(s1.0, &s1.1), (s2.0, &s2.1)] {
-                let master = SigningKey::generate();
+                let master = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
                 reg.register_author(signer, master.verifying_key(), key.verifying_key(), 0)
                     .unwrap_or_else(|_| std::process::abort());
             }
@@ -672,7 +672,7 @@ mod tests {
         fn prop_aibom_payload_type_is_aion_aibom(tc: hegel::TestCase) {
             let aibom = draw_aibom(&tc);
             let signer = AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1)));
-            let key = SigningKey::generate();
+            let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let env =
                 wrap_aibom_dsse(&aibom, signer, &key).unwrap_or_else(|_| std::process::abort());
             assert_eq!(env.payload_type, AIBOM_PAYLOAD_TYPE);

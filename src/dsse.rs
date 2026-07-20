@@ -21,8 +21,8 @@
 //!
 //! let payload = br#"{"_type":"https://aion-context.dev/attestation/v1"}"#;
 //! let signer = AuthorId::new(50001);
-//! let master = SigningKey::generate();
-//! let key = SigningKey::generate();
+//! let master = SigningKey::generate().unwrap();
+//! let key = SigningKey::generate().unwrap();
 //! let mut registry = KeyRegistry::new();
 //! registry
 //!     .register_author(signer, master.verifying_key(), key.verifying_key(), 0)
@@ -374,7 +374,7 @@ mod tests {
     /// operational pubkey. Master key is throwaway.
     fn reg_pinning(signer: AuthorId, key: &SigningKey) -> KeyRegistry {
         let mut reg = KeyRegistry::new();
-        let master = SigningKey::generate();
+        let master = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
         reg.register_author(signer, master.verifying_key(), key.verifying_key(), 0)
             .unwrap_or_else(|_| std::process::abort());
         reg
@@ -384,7 +384,7 @@ mod tests {
     fn reg_pinning_multi(pairs: &[(AuthorId, SigningKey)]) -> KeyRegistry {
         let mut reg = KeyRegistry::new();
         for (signer, key) in pairs {
-            let master = SigningKey::generate();
+            let master = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             reg.register_author(*signer, master.verifying_key(), key.verifying_key(), 0)
                 .unwrap_or_else(|_| std::process::abort());
         }
@@ -421,7 +421,7 @@ mod tests {
 
     #[test]
     fn sign_verify_roundtrip() {
-        let key = SigningKey::generate();
+        let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
         let signer = AuthorId::new(7);
         let envelope = sign_envelope(b"hello world", "text/plain", signer, &key);
         let reg = reg_pinning(signer, &key);
@@ -431,7 +431,7 @@ mod tests {
 
     #[test]
     fn tampered_payload_fails_verification() {
-        let key = SigningKey::generate();
+        let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
         let signer = AuthorId::new(7);
         let mut envelope = sign_envelope(b"hello", "text/plain", signer, &key);
         envelope.payload[0] ^= 0x01;
@@ -441,8 +441,8 @@ mod tests {
 
     #[test]
     fn multi_signature_all_verify() {
-        let k1 = SigningKey::generate();
-        let k2 = SigningKey::generate();
+        let k1 = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+        let k2 = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
         let s1 = AuthorId::new(1);
         let s2 = AuthorId::new(2);
         let mut env = sign_envelope(b"payload", "text/plain", s1, &k1);
@@ -465,7 +465,7 @@ mod tests {
 
     #[test]
     fn json_roundtrip_preserves_envelope() {
-        let key = SigningKey::generate();
+        let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
         let signer = AuthorId::new(3);
         let env = sign_envelope(b"abc", "text/plain", signer, &key);
         let json = env.to_json().unwrap();
@@ -475,7 +475,7 @@ mod tests {
 
     #[test]
     fn json_payload_field_uses_base64() {
-        let key = SigningKey::generate();
+        let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
         let signer = AuthorId::new(3);
         let env = sign_envelope(b"\xff\x00\x7f", "text/plain", signer, &key);
         let json = env.to_json().unwrap();
@@ -492,7 +492,7 @@ mod tests {
             let payload = tc.draw(gs::binary().max_size(1024));
             let ptype = tc.draw(gs::text().min_size(1).max_size(64));
             let signer = AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1)));
-            let key = SigningKey::generate();
+            let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let env = sign_envelope(&payload, &ptype, signer, &key);
             let reg = reg_pinning(signer, &key);
             let verified = verify_envelope(&env, &reg, 1).unwrap_or_else(|_| std::process::abort());
@@ -504,7 +504,7 @@ mod tests {
             let payload = tc.draw(gs::binary().min_size(1).max_size(1024));
             let ptype = tc.draw(gs::text().min_size(1).max_size(64));
             let signer = AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1)));
-            let key = SigningKey::generate();
+            let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let mut env = sign_envelope(&payload, &ptype, signer, &key);
             let max_idx = env.payload.len().saturating_sub(1);
             let idx = tc.draw(gs::integers::<usize>().max_value(max_idx));
@@ -520,7 +520,7 @@ mod tests {
             let payload = tc.draw(gs::binary().max_size(1024));
             let ptype = tc.draw(gs::text().min_size(1).max_size(64));
             let signer = AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1)));
-            let key = SigningKey::generate();
+            let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let mut env = sign_envelope(&payload, &ptype, signer, &key);
             env.payload_type.push('!');
             let reg = reg_pinning(signer, &key);
@@ -532,8 +532,8 @@ mod tests {
             let payload = tc.draw(gs::binary().max_size(1024));
             let ptype = tc.draw(gs::text().min_size(1).max_size(64));
             let signer = AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1)));
-            let real_key = SigningKey::generate();
-            let fake_key = SigningKey::generate();
+            let real_key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+            let fake_key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let env = sign_envelope(&payload, &ptype, signer, &real_key);
             // Pin the WRONG key for the signer — registry check rejects.
             let reg = reg_pinning(signer, &fake_key);
@@ -545,7 +545,7 @@ mod tests {
             let payload = tc.draw(gs::binary().max_size(1024));
             let ptype = tc.draw(gs::text().min_size(1).max_size(64));
             let signer = AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1)));
-            let key = SigningKey::generate();
+            let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let env = sign_envelope(&payload, &ptype, signer, &key);
             let json = env.to_json().unwrap_or_else(|_| std::process::abort());
             let parsed = DsseEnvelope::from_json(&json).unwrap_or_else(|_| std::process::abort());
@@ -559,7 +559,12 @@ mod tests {
             let ptype = tc.draw(gs::text().min_size(1).max_size(32));
             // Build N distinct (author, key) pairs.
             let signers: Vec<(AuthorId, SigningKey)> = (0..n)
-                .map(|i| (AuthorId::new(1_000 + u64::from(i)), SigningKey::generate()))
+                .map(|i| {
+                    (
+                        AuthorId::new(1_000 + u64::from(i)),
+                        SigningKey::generate().unwrap_or_else(|_| std::process::abort()),
+                    )
+                })
                 .collect();
             // Start an envelope with signer 0, then add 1..n.
             let first = signers.first().unwrap_or_else(|| std::process::abort());
@@ -580,7 +585,7 @@ mod tests {
             let ptype = tc.draw(gs::text().min_size(1).max_size(32));
             let signer = AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1)));
             let extra = tc.draw(gs::integers::<usize>().min_value(1).max_value(4));
-            let key = SigningKey::generate();
+            let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let mut env = sign_envelope(&payload, &ptype, signer, &key);
             for _ in 0..extra {
                 add_signature(&mut env, signer, &key);
@@ -614,8 +619,8 @@ mod tests {
             let ptype = tc.draw(gs::text().min_size(1).max_size(32));
             let signer =
                 AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1).max_value(1 << 32)));
-            let master = SigningKey::generate();
-            let op = SigningKey::generate();
+            let master = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+            let op = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let mut reg = KeyRegistry::new();
             reg.register_author(signer, master.verifying_key(), op.verifying_key(), 0)
                 .unwrap_or_else(|_| std::process::abort());
@@ -634,7 +639,7 @@ mod tests {
             let ptype = tc.draw(gs::text().min_size(1).max_size(32));
             let signer =
                 AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1).max_value(1 << 32)));
-            let op = SigningKey::generate();
+            let op = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             // Registry is empty — `signer` is not registered.
             let reg = KeyRegistry::new();
             let env = sign_envelope(&payload, &ptype, signer, &op);
@@ -649,8 +654,8 @@ mod tests {
             let ptype = tc.draw(gs::text().min_size(1).max_size(32));
             let signer =
                 AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1).max_value(1 << 32)));
-            let master = SigningKey::generate();
-            let op = SigningKey::generate();
+            let master = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+            let op = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let mut reg = KeyRegistry::new();
             reg.register_author(signer, master.verifying_key(), op.verifying_key(), 0)
                 .unwrap_or_else(|_| std::process::abort());

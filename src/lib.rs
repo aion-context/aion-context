@@ -21,7 +21,7 @@
 //! use std::path::Path;
 //!
 //! fn main() -> anyhow::Result<()> {
-//!     let key = SigningKey::generate();
+//!     let key = SigningKey::generate().unwrap();
 //!     let author = AuthorId::new(1);
 //!     let mut registry = KeyRegistry::new();
 //!     registry.register_author(author, key.verifying_key(), key.verifying_key(), 0)?;

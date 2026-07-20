@@ -32,7 +32,7 @@
 //!     log.root_hash(),
 //! ).unwrap();
 //!
-//! let operator = SigningKey::generate();
+//! let operator = SigningKey::generate().unwrap();
 //! log.set_operator(operator.verifying_key());
 //! let sth = log.sign_tree_head(&operator);
 //! assert!(log.verify_tree_head(&sth).is_ok());
@@ -667,7 +667,7 @@ mod tests {
     #[test]
     fn sth_round_trip_verifies() {
         let mut log = TransparencyLog::new();
-        let operator = SigningKey::generate();
+        let operator = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
         log.set_operator(operator.verifying_key());
         log.append(LogEntryKind::VersionAttestation, b"x", 1)
             .unwrap();
@@ -678,7 +678,7 @@ mod tests {
     #[test]
     fn sth_with_tampered_root_rejects() {
         let mut log = TransparencyLog::new();
-        let operator = SigningKey::generate();
+        let operator = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
         log.set_operator(operator.verifying_key());
         log.append(LogEntryKind::VersionAttestation, b"x", 1)
             .unwrap();
@@ -692,7 +692,7 @@ mod tests {
         let mut log = TransparencyLog::new();
         log.append(LogEntryKind::VersionAttestation, b"x", 1)
             .unwrap();
-        let operator = SigningKey::generate();
+        let operator = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
         let sth = log.sign_tree_head(&operator);
         assert!(log.verify_tree_head(&sth).is_err());
     }
@@ -923,7 +923,7 @@ mod tests {
         fn prop_sth_sign_verify_roundtrip(tc: hegel::TestCase) {
             let payloads = draw_payloads(&tc);
             let mut log = build_log(&payloads);
-            let operator = SigningKey::generate();
+            let operator = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             log.set_operator(operator.verifying_key());
             let sth = log.sign_tree_head(&operator);
             assert!(log.verify_tree_head(&sth).is_ok());
@@ -933,7 +933,7 @@ mod tests {
         fn prop_forged_sth_rejects(tc: hegel::TestCase) {
             let payloads = draw_payloads(&tc);
             let mut log = build_log(&payloads);
-            let operator = SigningKey::generate();
+            let operator = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             log.set_operator(operator.verifying_key());
             let mut sth = log.sign_tree_head(&operator);
             // Mutate one byte of the signed root after signing.

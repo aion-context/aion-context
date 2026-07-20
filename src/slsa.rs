@@ -32,8 +32,8 @@
 //! let statement = b.build().unwrap();
 //!
 //! let signer = AuthorId::new(42);
-//! let master = SigningKey::generate();
-//! let key = SigningKey::generate();
+//! let master = SigningKey::generate().unwrap();
+//! let key = SigningKey::generate().unwrap();
 //! let mut registry = KeyRegistry::new();
 //! registry
 //!     .register_author(signer, master.verifying_key(), key.verifying_key(), 0)
@@ -449,7 +449,7 @@ mod tests {
     /// Pin `signer` with `key` as the active op pubkey at epoch 0.
     fn reg_pinning(signer: AuthorId, key: &SigningKey) -> KeyRegistry {
         let mut reg = KeyRegistry::new();
-        let master = SigningKey::generate();
+        let master = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
         reg.register_author(signer, master.verifying_key(), key.verifying_key(), 0)
             .unwrap();
         reg
@@ -511,7 +511,7 @@ mod tests {
         b.add_all_subjects_from_manifest(&manifest).unwrap();
         let statement = b.build().unwrap();
         let signer = AuthorId::new(42);
-        let key = SigningKey::generate();
+        let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
         let env = wrap_statement_dsse(&statement, signer, &key).unwrap();
         assert_eq!(env.payload_type, IN_TOTO_PAYLOAD_TYPE);
         let reg = reg_pinning(signer, &key);
@@ -523,7 +523,7 @@ mod tests {
 
     #[test]
     fn should_reject_unwrap_with_wrong_payload_type() {
-        let key = SigningKey::generate();
+        let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
         let signer = AuthorId::new(1);
         let env = dsse::sign_envelope(b"not a statement", "text/plain", signer, &key);
         assert!(unwrap_statement_dsse(&env).is_err());
@@ -571,7 +571,7 @@ mod tests {
                 .unwrap_or_else(|_| std::process::abort());
             let statement = builder.build().unwrap_or_else(|_| std::process::abort());
             let signer = AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1)));
-            let key = SigningKey::generate();
+            let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let env = wrap_statement_dsse(&statement, signer, &key)
                 .unwrap_or_else(|_| std::process::abort());
             let reg = reg_pinning(signer, &key);
@@ -615,7 +615,7 @@ mod tests {
                 .unwrap_or_else(|_| std::process::abort());
             let statement = builder.build().unwrap_or_else(|_| std::process::abort());
             let signer = AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1)));
-            let key = SigningKey::generate();
+            let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let mut env = wrap_statement_dsse(&statement, signer, &key)
                 .unwrap_or_else(|_| std::process::abort());
             // Flip a byte in the payload (the JSON body) → verification fails.
@@ -638,7 +638,7 @@ mod tests {
                 .unwrap_or_else(|_| std::process::abort());
             let statement = builder.build().unwrap_or_else(|_| std::process::abort());
             let signer = AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1)));
-            let key = SigningKey::generate();
+            let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let env = wrap_statement_dsse(&statement, signer, &key)
                 .unwrap_or_else(|_| std::process::abort());
             assert_eq!(env.payload_type, IN_TOTO_PAYLOAD_TYPE);
