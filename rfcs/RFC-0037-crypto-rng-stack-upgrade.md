@@ -1,9 +1,10 @@
 # RFC 0037: Crypto/RNG Stack Upgrade (ed25519-dalek 3.0 + rand 0.10)
 
 - **Author:** copyleftdev
-- **Status:** DRAFT
+- **Status:** IMPLEMENTED
 - **Created:** 2026-07-20
 - **Updated:** 2026-07-20
+- **Implemented in:** #165 (decision A — fallible RNG constructors)
 - **Depends on:** RFC-0003 (cryptography), RFC-0004 (key management)
 
 ## Abstract
