@@ -25,6 +25,7 @@
 - [Crypto Primitives](./architecture/crypto.md)
 - [Sealed Releases](./architecture/release.md)
 - [Transparency Log](./architecture/transparency-log.md)
+- [Enforcement Receipt](./architecture/enforcement-receipt.md)
 - [Observability](./architecture/observability.md)
 - [Stability](./architecture/stability.md)
 

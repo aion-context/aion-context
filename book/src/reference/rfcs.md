@@ -40,6 +40,7 @@ deliberation history; this page is the table of contents.
 | 0033 | Post-Audit Carryovers | Tracked findings from prior audit cycles |
 | 0034 | Registry-Aware Verify Rollout | The Phase-A through Phase-E migration that removed raw-key verify_* |
 | 0035 | Chain Architecture Guide | Per-file genesis vs growing-chain |
+| 0036 | Enforcement Receipt | Signed proof a runtime applied a policy |
 
 ## Status legend (where present in each RFC)
 
