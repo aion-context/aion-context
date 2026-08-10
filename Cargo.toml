@@ -41,7 +41,7 @@ serde_jcs = "0.2"
 
 # Encoding
 hex = "0.4"
-base64 = "0.22"
+base64 = "0.23"
 
 # Zero-copy parsing
 zerocopy = { version = "0.7", features = ["derive"] }
