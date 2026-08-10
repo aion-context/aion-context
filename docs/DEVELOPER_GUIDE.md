@@ -147,6 +147,38 @@ let result = commit_version(Path::new("policy.aion"), &new_rules, &options)?;
 println!("Committed version: {}", result.version_number);
 ```
 
+#### `commit_version_with_signer`
+
+Append through a KMS/HSM or isolated signer without loading its private key
+into the caller. Implement `VersionSigner::public_key` and
+`VersionSigner::sign_version_message`, then provide that adapter through
+`ExternalCommitOptions`:
+
+```rust
+use aion_context::operations::{
+    commit_version_with_signer, ExternalCommitOptions, VersionSigner,
+};
+
+let options = ExternalCommitOptions {
+    author_id: AuthorId::new(1001),
+    signer: &district_hsm,
+    message: "Approved district policy release",
+    timestamp: None,
+};
+
+let result = commit_version_with_signer(
+    Path::new("policy.aion"),
+    &new_rules,
+    &options,
+    &trusted_registry,
+)?;
+```
+
+The core resolves the target version and canonical message, verifies the
+provider public key against the active registry epoch, verifies the returned
+Ed25519 signature, and performs the atomic write. The provider never needs to
+parse or serialize the AION format.
+
 #### `verify_file`
 
 Verify cryptographic integrity.

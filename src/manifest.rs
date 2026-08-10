@@ -44,6 +44,7 @@
 //! assert!(verify_manifest_signature(&manifest, &sig, &registry, 1).is_ok());
 //! ```
 
+use subtle::ConstantTimeEq;
 use zerocopy::AsBytes;
 
 use crate::crypto::{hash, SigningKey, VerifyingKey};
@@ -553,7 +554,7 @@ pub fn verify_manifest_signature(
             author: signer,
         },
     )?;
-    if signature.public_key != epoch.public_key {
+    if !bool::from(signature.public_key.ct_eq(&epoch.public_key)) {
         return Err(crate::AionError::SignatureVerificationFailed {
             version: at_version,
             author: signer,

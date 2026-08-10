@@ -181,6 +181,13 @@ pub enum AionError {
         reason: String,
     },
 
+    /// An external version signer could not produce a signature.
+    #[error("Version signing failed: {reason}")]
+    SigningFailed {
+        /// Provider-safe description of the signing failure.
+        reason: String,
+    },
+
     /// A commit was attempted by a signer the registry has no active
     /// epoch for at the target version (issue #25). The write was
     /// refused before any bytes were emitted.
@@ -543,6 +550,17 @@ mod tests {
                 reason: "wrong length".to_string(),
             };
             assert_eq!(format!("{err}"), "Invalid signature: wrong length");
+        }
+
+        #[test]
+        fn signing_failed_should_display_reason() {
+            let err = AionError::SigningFailed {
+                reason: "hardware provider unavailable".to_string(),
+            };
+            assert_eq!(
+                format!("{err}"),
+                "Version signing failed: hardware provider unavailable"
+            );
         }
 
         #[test]

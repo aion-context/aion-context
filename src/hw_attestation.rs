@@ -46,6 +46,7 @@
 use crate::crypto::{hash, SigningKey, VerifyingKey};
 use crate::types::AuthorId;
 use crate::{AionError, Result};
+use subtle::ConstantTimeEq;
 
 /// Domain separator for hardware-attestation binding messages.
 pub const HW_ATTESTATION_DOMAIN: &[u8] = b"AION_V2_KEY_ATTESTATION_V1";
@@ -313,7 +314,7 @@ pub fn verify_binding<V: EvidenceVerifier>(
             author: signer,
         },
     )?;
-    if binding.public_key != epoch.public_key || binding.epoch != epoch.epoch {
+    if !bool::from(binding.public_key.ct_eq(&epoch.public_key)) || binding.epoch != epoch.epoch {
         return Err(AionError::SignatureVerificationFailed {
             version: at_version,
             author: signer,

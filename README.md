@@ -117,10 +117,20 @@ aion --help
 | Layer | What you get |
 |---|---|
 | **CLI** (`aion`) | `init` / `commit` / `verify` / `inspect` / `registry rotate \| revoke` / `release seal \| verify` / `archive verify` / `key generate` |
-| **Library** | `init_file` / `commit_version` / `verify_file` / `KeyRegistry` / `verify_multisig` (RFC-0021) / sealed releases (RFC-0032) / hardware attestation (RFC-0026) / hybrid PQC (RFC-0027) / transparency log (RFC-0025) |
+| **Library** | `init_file` / `commit_version` / hardware-backed `commit_version_with_signer` / `verify_file` / `KeyRegistry` / `verify_multisig` (RFC-0021) / sealed releases (RFC-0032) / hardware attestation (RFC-0026) / hybrid PQC (RFC-0027) / transparency log (RFC-0025) |
 | **Format** | Zero-copy binary layout. One header, one chained signature history, one encrypted_rules section, one trailing integrity hash. The latest payload is always inline; historical payloads are addressed by their `rules_hash` for external archival. |
 | **Tracing** | `AION_LOG=info` produces structured per-event lines (`event=file_verified`, `event=signature_rejected reason=...`, etc.). `AION_LOG_FORMAT=json` for log-store ingest. |
 | **Examples** | `policy_loop`, `llm_policy_agent` (Claude as proposer + `.aion` as gate), `aegis_consortium` (5-party PQC quorum), `federation_hw_attest` (cross-domain TEE keys), `corpus_to_aion` (any git history → signed chain) |
+
+### Hardware-backed commits
+
+Implement `operations::VersionSigner` for a KMS, HSM, hardware token, or
+isolated signing process, then pass it through `ExternalCommitOptions` to
+`commit_version_with_signer`. The provider receives only AION's canonical
+version message. The core retains ownership of chain verification, registry
+authorization, payload encryption, artifact assembly, returned-signature
+verification, and atomic writes. A provider error, wrong key, or invalid
+signature leaves the original artifact unchanged.
 
 ## Standards and protocols
 

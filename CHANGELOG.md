@@ -33,6 +33,30 @@ and the project follows [Semantic Versioning].
   `EnforcementReceipt::from_envelope` / `from_json`.
 - **`AionError::UnresolvedApproval`** — bounded failure for
   unresolvable or invalid approval references in the receipt path.
+- **RFC-0038 Hardware-backed version commits** — `VersionSigner`,
+  `ExternalCommitOptions`, and `commit_version_with_signer` let KMS/HSM
+  adapters sign the canonical version message without exporting private key
+  material or reimplementing AION artifact assembly. The core checks the
+  provider public key against the active registry epoch, verifies the returned
+  Ed25519 signature, and writes atomically only after every check succeeds.
+  The provider is asked for exactly one signature per commit, and only after
+  authorization passes.
+- **`AionError::SigningFailed`** — provider-safe failure propagation for
+  external signing adapters.
+
+### Changed
+
+- `commit_version` and the software-keystore CLI path now use the same internal
+  signer abstraction as hardware-backed commits. Existing public call sites
+  remain source-compatible.
+
+### Fixed
+
+- **Constant-time public-key comparison** — `hw_attestation::verify_binding`,
+  `manifest::verify_manifest_signature`, and
+  `signature_chain::{verify_signature, verify_attestation}` compared pinned
+  public keys with `==` / `!=`, against the hard rule in
+  `.claude/rules/crypto.md`. All four now use `subtle::ConstantTimeEq`.
 
 ## [1.0.0] — 2026-04-25
 

@@ -52,6 +52,7 @@ use crate::crypto::{hash, SigningKey, VerifyingKey};
 use crate::serializer::{SignatureEntry, VersionEntry};
 use crate::types::AuthorId;
 use crate::Result;
+use subtle::ConstantTimeEq;
 
 /// Domain separator for version signatures
 ///
@@ -267,7 +268,7 @@ pub fn verify_signature(
                 author: signer,
             }
         })?;
-    if signature.public_key != epoch.public_key {
+    if !bool::from(signature.public_key.ct_eq(&epoch.public_key)) {
         emit_sig_rejected(version.version_number, signer, "pubkey_substitution");
         return Err(crate::AionError::SignatureVerificationFailed {
             version: version.version_number,
@@ -359,7 +360,7 @@ pub fn verify_attestation(
                 author: signer,
             }
         })?;
-    if signature.public_key != epoch.public_key {
+    if !bool::from(signature.public_key.ct_eq(&epoch.public_key)) {
         emit_sig_rejected(version.version_number, signer, "pubkey_substitution");
         return Err(crate::AionError::SignatureVerificationFailed {
             version: version.version_number,
