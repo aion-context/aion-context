@@ -60,7 +60,7 @@ rand = "0.10"
 # OS entropy source (RFC-0037): getrandom's fill() is the fallible OS
 # RNG primitive used for all key/nonce/salt material. rand's own OsRng
 # was removed in 0.10 in favour of this fallible interface.
-getrandom = "0.3"
+getrandom = "0.4"
 serde_yaml = "0.9.34"
 
 # Parallel processing
