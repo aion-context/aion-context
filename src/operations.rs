@@ -40,8 +40,8 @@ use crate::parser::AionParser;
 use crate::serializer::{AionFile, AionSerializer, SignatureEntry, VersionEntry};
 #[allow(deprecated)] // RFC-0034 Phase D: verify_signature kept for legacy verify_file path
 use crate::signature_chain::{
-    compute_version_hash, create_genesis_version, sign_version, verify_hash_chain,
-    verify_signature, verify_signatures_batch,
+    canonical_version_message, compute_version_hash, create_genesis_version, sign_version,
+    verify_hash_chain, verify_signature, verify_signatures_batch,
 };
 use crate::types::{AuthorId, FileId, VersionNumber};
 use crate::{AionError, Result};
@@ -222,6 +222,42 @@ pub struct CommitOptions<'a> {
     pub timestamp: Option<u64>,
 }
 
+/// Provider boundary for signing canonical AION version messages.
+///
+/// Implementations may delegate to an HSM, KMS, hardware token, or isolated
+/// signing process. Private key material never crosses this interface. The
+/// returned public key and signature are checked against the active registry
+/// epoch before the artifact is written.
+pub trait VersionSigner {
+    /// Return the Ed25519 public key corresponding to the operational key.
+    fn public_key(&self) -> Result<[u8; 32]>;
+
+    /// Sign the exact canonical message supplied by `aion-context`.
+    fn sign_version_message(&self, canonical_message: &[u8]) -> Result<[u8; 64]>;
+}
+
+impl VersionSigner for SigningKey {
+    fn public_key(&self) -> Result<[u8; 32]> {
+        Ok(self.verifying_key().to_bytes())
+    }
+
+    fn sign_version_message(&self, canonical_message: &[u8]) -> Result<[u8; 64]> {
+        Ok(Self::sign(self, canonical_message))
+    }
+}
+
+/// Options for committing through an external or hardware-backed signer.
+pub struct ExternalCommitOptions<'a> {
+    /// Author ID for the new version.
+    pub author_id: AuthorId,
+    /// External provider that signs the canonical version message.
+    pub signer: &'a dyn VersionSigner,
+    /// Commit message describing changes.
+    pub message: &'a str,
+    /// Optional timestamp in nanoseconds since the Unix epoch.
+    pub timestamp: Option<u64>,
+}
+
 /// Result of a successful commit operation
 #[derive(Debug)]
 pub struct CommitResult {
@@ -294,7 +330,36 @@ pub fn commit_version(
     options: &CommitOptions<'_>,
     registry: &crate::key_registry::KeyRegistry,
 ) -> Result<CommitResult> {
-    commit_version_inner(path, new_rules, options, registry, true)
+    let external = ExternalCommitOptions {
+        author_id: options.author_id,
+        signer: options.signing_key,
+        message: options.message,
+        timestamp: options.timestamp,
+    };
+    commit_version_with_signer_inner(path, new_rules, &external, registry, true)
+}
+
+/// Commit a new version using an external or hardware-backed signer.
+///
+/// The core verifies the existing artifact, checks the provider's public key
+/// against the active registry epoch, constructs the canonical version
+/// message, requests one signature, verifies the returned signature, and only
+/// then serializes the updated artifact atomically. Implementations never need
+/// access to AION's binary layout or encryption internals.
+///
+/// # Errors
+///
+/// Returns an error without modifying `path` when the existing chain is
+/// invalid, the signer is not authorized for the target version, the provider
+/// fails, or its returned signature does not verify.
+#[must_use = "the CommitResult carries the externally signed version identity"]
+pub fn commit_version_with_signer(
+    path: &Path,
+    new_rules: &[u8],
+    options: &ExternalCommitOptions<'_>,
+    registry: &crate::key_registry::KeyRegistry,
+) -> Result<CommitResult> {
+    commit_version_with_signer_inner(path, new_rules, options, registry, true)
 }
 
 /// Commit bypassing the registry authz pre-check (issue #25
@@ -320,13 +385,19 @@ pub fn commit_version_force_unregistered(
     options: &CommitOptions<'_>,
     registry: &crate::key_registry::KeyRegistry,
 ) -> Result<CommitResult> {
-    commit_version_inner(path, new_rules, options, registry, false)
+    let external = ExternalCommitOptions {
+        author_id: options.author_id,
+        signer: options.signing_key,
+        message: options.message,
+        timestamp: options.timestamp,
+    };
+    commit_version_with_signer_inner(path, new_rules, &external, registry, false)
 }
 
-fn commit_version_inner(
+fn commit_version_with_signer_inner(
     path: &Path,
     new_rules: &[u8],
-    options: &CommitOptions<'_>,
+    options: &ExternalCommitOptions<'_>,
     registry: &crate::key_registry::KeyRegistry,
     enforce_registry: bool,
 ) -> Result<CommitResult> {
@@ -358,9 +429,10 @@ fn commit_version_inner(
     verify_head_signature(&parser, registry)?;
 
     let new_version = VersionNumber(header.current_version).next()?;
+    let public_key = options.signer.public_key()?;
 
     if enforce_registry {
-        preflight_registry_authz(options, new_version, registry)?;
+        preflight_registry_public_key(options.author_id, &public_key, new_version, registry)?;
     }
 
     let timestamp = options.timestamp.unwrap_or_else(current_timestamp_nanos);
@@ -376,7 +448,11 @@ fn commit_version_inner(
         timestamp,
         message_offset,
         options,
-    );
+        public_key,
+    )?;
+    if enforce_registry {
+        verify_signature(&new_version_entry, &signature_entry, registry)?;
+    }
 
     let updated_file = build_updated_file(
         &parser,
@@ -411,26 +487,36 @@ fn commit_version_inner(
 /// Pre-write authz check (issue #25): the signer must have an
 /// active epoch at the target version, and the supplied signing
 /// key must match that epoch's pinned operational key.
+#[cfg(test)]
 fn preflight_registry_authz(
     options: &CommitOptions<'_>,
     new_version: VersionNumber,
     registry: &crate::key_registry::KeyRegistry,
 ) -> Result<()> {
+    let public_key = options.signing_key.verifying_key().to_bytes();
+    preflight_registry_public_key(options.author_id, &public_key, new_version, registry)
+}
+
+fn preflight_registry_public_key(
+    author_id: AuthorId,
+    public_key: &[u8; 32],
+    new_version: VersionNumber,
+    registry: &crate::key_registry::KeyRegistry,
+) -> Result<()> {
     use subtle::ConstantTimeEq;
-    let Some(epoch) = registry.active_epoch_at(options.author_id, new_version.as_u64()) else {
+    let Some(epoch) = registry.active_epoch_at(author_id, new_version.as_u64()) else {
         return Err(AionError::UnauthorizedSigner {
-            author: options.author_id,
+            author: author_id,
             version: new_version.as_u64(),
         });
     };
-    let supplied_pk = options.signing_key.verifying_key().to_bytes();
     // Constant-time comparison — never `==` on key-shaped bytes.
     // See .claude/rules/crypto.md and the audit verdict on issue
     // (audit, 2026-04-25): `!=` here is a hard rule violation
     // even though public keys aren't strictly secret.
-    if !bool::from(supplied_pk.ct_eq(&epoch.public_key)) {
+    if !bool::from(public_key.ct_eq(&epoch.public_key)) {
         return Err(AionError::KeyMismatch {
-            author: options.author_id,
+            author: author_id,
             epoch: epoch.epoch,
         });
     }
@@ -444,8 +530,9 @@ fn build_new_version_and_signature(
     rules_hash: [u8; 32],
     timestamp: u64,
     message_offset: u64,
-    options: &CommitOptions<'_>,
-) -> (VersionEntry, SignatureEntry) {
+    options: &ExternalCommitOptions<'_>,
+    public_key: [u8; 32],
+) -> Result<(VersionEntry, SignatureEntry)> {
     let new_version_entry = VersionEntry::new(
         new_version,
         parent_hash,
@@ -455,8 +542,10 @@ fn build_new_version_and_signature(
         message_offset,
         options.message.len() as u32,
     );
-    let signature_entry = sign_version(&new_version_entry, options.signing_key);
-    (new_version_entry, signature_entry)
+    let message = canonical_version_message(&new_version_entry);
+    let signature = options.signer.sign_version_message(&message)?;
+    let signature_entry = SignatureEntry::new(options.author_id, public_key, signature);
+    Ok((new_version_entry, signature_entry))
 }
 
 /// Verify only the head (most recent) signature against the pinned
@@ -1702,6 +1791,53 @@ mod tests {
 
     mod commit_version_tests {
         use super::*;
+        use std::cell::{Cell, RefCell};
+        use subtle::ConstantTimeEq;
+        use zerocopy::AsBytes;
+
+        struct RecordingSigner<'a> {
+            key: &'a SigningKey,
+            calls: Cell<u32>,
+            message: RefCell<Vec<u8>>,
+        }
+
+        impl VersionSigner for RecordingSigner<'_> {
+            fn public_key(&self) -> Result<[u8; 32]> {
+                Ok(self.key.verifying_key().to_bytes())
+            }
+
+            fn sign_version_message(&self, canonical_message: &[u8]) -> Result<[u8; 64]> {
+                self.calls.set(self.calls.get().saturating_add(1));
+                self.message.replace(canonical_message.to_vec());
+                Ok(self.key.sign(canonical_message))
+            }
+        }
+
+        struct InvalidSignatureSigner<'a>(&'a SigningKey);
+
+        impl VersionSigner for InvalidSignatureSigner<'_> {
+            fn public_key(&self) -> Result<[u8; 32]> {
+                Ok(self.0.verifying_key().to_bytes())
+            }
+
+            fn sign_version_message(&self, _canonical_message: &[u8]) -> Result<[u8; 64]> {
+                Ok([0u8; 64])
+            }
+        }
+
+        struct FailingSigner<'a>(&'a SigningKey);
+
+        impl VersionSigner for FailingSigner<'_> {
+            fn public_key(&self) -> Result<[u8; 32]> {
+                Ok(self.0.verifying_key().to_bytes())
+            }
+
+            fn sign_version_message(&self, _canonical_message: &[u8]) -> Result<[u8; 64]> {
+                Err(AionError::SigningFailed {
+                    reason: "injected provider failure".to_string(),
+                })
+            }
+        }
 
         #[test]
         fn should_commit_new_version() {
@@ -1732,6 +1868,194 @@ mod tests {
 
             assert_eq!(result.version.as_u64(), 2);
             assert_ne!(result.rules_hash, [0u8; 32]);
+        }
+
+        /// Seed `path` with a genesis artifact signed by `key`.
+        fn seed(path: &std::path::Path, key: &SigningKey, author: AuthorId) -> Vec<u8> {
+            let bytes = create_test_file(key, author);
+            std::fs::write(path, &bytes).unwrap_or_else(|_| std::process::abort());
+            bytes
+        }
+
+        fn read_bytes(path: &std::path::Path) -> Vec<u8> {
+            std::fs::read(path).unwrap_or_else(|_| std::process::abort())
+        }
+
+        /// Parse `bytes` and return the version and signature entries at
+        /// `index`.
+        fn entries_at(bytes: &[u8], index: usize) -> (VersionEntry, SignatureEntry) {
+            let parser = AionParser::new(bytes).unwrap_or_else(|_| std::process::abort());
+            let version = parser
+                .get_version_entry(index)
+                .unwrap_or_else(|_| std::process::abort());
+            let signature = parser
+                .get_signature_entry(index)
+                .unwrap_or_else(|_| std::process::abort());
+            (version, signature)
+        }
+
+        #[test]
+        fn external_signer_matches_the_software_commit_protocol() {
+            let temp_dir = TempDir::new().unwrap_or_else(|_| std::process::abort());
+            let software_path = temp_dir.path().join("software.aion");
+            let external_path = temp_dir.path().join("external.aion");
+            let signing_key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+            let author_id = AuthorId::new(50_010);
+            let registry = test_reg(author_id, &signing_key);
+            let timestamp = Some(1_700_000_001_000_000_000);
+            seed(&software_path, &signing_key, author_id);
+            seed(&external_path, &signing_key, author_id);
+
+            commit_version(
+                &software_path,
+                b"externally signed rules",
+                &CommitOptions {
+                    author_id,
+                    signing_key: &signing_key,
+                    message: "hardware-backed release",
+                    timestamp,
+                },
+                &registry,
+            )
+            .unwrap_or_else(|_| std::process::abort());
+
+            let signer = RecordingSigner {
+                key: &signing_key,
+                calls: Cell::new(0),
+                message: RefCell::new(Vec::new()),
+            };
+            commit_version_with_signer(
+                &external_path,
+                b"externally signed rules",
+                &ExternalCommitOptions {
+                    author_id,
+                    signer: &signer,
+                    message: "hardware-backed release",
+                    timestamp,
+                },
+                &registry,
+            )
+            .unwrap_or_else(|_| std::process::abort());
+
+            assert_eq!(signer.calls.get(), 1);
+            let (software_version, software_signature) = entries_at(&read_bytes(&software_path), 1);
+            let (external_version, external_signature) = entries_at(&read_bytes(&external_path), 1);
+            assert_eq!(software_version.as_bytes(), external_version.as_bytes());
+            assert_eq!(
+                *signer.message.borrow(),
+                canonical_version_message(&external_version)
+            );
+            assert!(bool::from(
+                software_signature
+                    .public_key
+                    .ct_eq(&external_signature.public_key)
+            ));
+            assert!(bool::from(
+                software_signature
+                    .signature
+                    .ct_eq(&external_signature.signature)
+            ));
+            assert!(
+                verify_file(&software_path, &registry)
+                    .unwrap_or_else(|_| std::process::abort())
+                    .is_valid
+            );
+            assert!(
+                verify_file(&external_path, &registry)
+                    .unwrap_or_else(|_| std::process::abort())
+                    .is_valid
+            );
+        }
+
+        #[test]
+        fn external_signer_output_is_verified_before_any_write() {
+            let temp_dir = TempDir::new().unwrap_or_else(|_| std::process::abort());
+            let file_path = temp_dir.path().join("invalid-external.aion");
+            let signing_key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+            let author_id = AuthorId::new(50_011);
+            let initial_bytes = create_test_file(&signing_key, author_id);
+            std::fs::write(&file_path, &initial_bytes).unwrap_or_else(|_| std::process::abort());
+            let registry = test_reg(author_id, &signing_key);
+
+            let result = commit_version_with_signer(
+                &file_path,
+                b"must not be written",
+                &ExternalCommitOptions {
+                    author_id,
+                    signer: &InvalidSignatureSigner(&signing_key),
+                    message: "invalid provider output",
+                    timestamp: Some(1_700_000_001_000_000_000),
+                },
+                &registry,
+            );
+            assert!(matches!(result, Err(AionError::InvalidSignature { .. })));
+            assert_eq!(
+                std::fs::read(&file_path).unwrap_or_else(|_| std::process::abort()),
+                initial_bytes
+            );
+        }
+
+        #[test]
+        fn external_provider_failure_leaves_the_artifact_unchanged() {
+            let temp_dir = TempDir::new().unwrap_or_else(|_| std::process::abort());
+            let file_path = temp_dir.path().join("failed-external.aion");
+            let signing_key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+            let author_id = AuthorId::new(50_012);
+            let initial_bytes = create_test_file(&signing_key, author_id);
+            std::fs::write(&file_path, &initial_bytes).unwrap_or_else(|_| std::process::abort());
+            let registry = test_reg(author_id, &signing_key);
+
+            let result = commit_version_with_signer(
+                &file_path,
+                b"must not be written",
+                &ExternalCommitOptions {
+                    author_id,
+                    signer: &FailingSigner(&signing_key),
+                    message: "provider outage",
+                    timestamp: Some(1_700_000_001_000_000_000),
+                },
+                &registry,
+            );
+            assert!(matches!(result, Err(AionError::SigningFailed { .. })));
+            assert_eq!(
+                std::fs::read(&file_path).unwrap_or_else(|_| std::process::abort()),
+                initial_bytes
+            );
+        }
+
+        #[test]
+        fn external_signer_key_mismatch_is_rejected_before_signing() {
+            let temp_dir = TempDir::new().unwrap_or_else(|_| std::process::abort());
+            let file_path = temp_dir.path().join("wrong-external-key.aion");
+            let pinned_key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+            let wrong_key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+            let author_id = AuthorId::new(50_013);
+            let initial_bytes = create_test_file(&pinned_key, author_id);
+            std::fs::write(&file_path, &initial_bytes).unwrap_or_else(|_| std::process::abort());
+            let registry = test_reg(author_id, &pinned_key);
+            let signer = RecordingSigner {
+                key: &wrong_key,
+                calls: Cell::new(0),
+                message: RefCell::new(Vec::new()),
+            };
+
+            let result = commit_version_with_signer(
+                &file_path,
+                b"must not be signed",
+                &ExternalCommitOptions {
+                    author_id,
+                    signer: &signer,
+                    message: "wrong provider key",
+                    timestamp: Some(1_700_000_001_000_000_000),
+                },
+                &registry,
+            );
+            assert!(matches!(result, Err(AionError::KeyMismatch { .. })));
+            assert_eq!(signer.calls.get(), 0);
+            assert_eq!(
+                std::fs::read(&file_path).unwrap_or_else(|_| std::process::abort()),
+                initial_bytes
+            );
         }
 
         // Regression test for issue #141: the audit-trail hash chain
@@ -1958,6 +2282,274 @@ mod tests {
             let version2 = parser.get_version_entry(1).unwrap();
 
             assert_eq!(version2.parent_hash, genesis_hash);
+        }
+
+        /// RFC-0038 — the external signer boundary. Each trial builds a
+        /// real `.aion` file and drives a real commit, so generators are
+        /// deliberately small; the contract under test is the protocol,
+        /// not the payload size.
+        mod properties {
+            use super::*;
+            use hegel::generators as gs;
+
+            /// Returns a caller-supplied 64-byte value instead of a real
+            /// signature, modelling a buggy or hostile provider.
+            struct FixedSignatureSigner<'a> {
+                key: &'a SigningKey,
+                signature: [u8; 64],
+            }
+
+            impl VersionSigner for FixedSignatureSigner<'_> {
+                fn public_key(&self) -> Result<[u8; 32]> {
+                    Ok(self.key.verifying_key().to_bytes())
+                }
+
+                fn sign_version_message(&self, _canonical_message: &[u8]) -> Result<[u8; 64]> {
+                    Ok(self.signature)
+                }
+            }
+
+            /// Fails with a caller-supplied bounded reason.
+            struct ReasonSigner<'a> {
+                key: &'a SigningKey,
+                reason: String,
+            }
+
+            impl VersionSigner for ReasonSigner<'_> {
+                fn public_key(&self) -> Result<[u8; 32]> {
+                    Ok(self.key.verifying_key().to_bytes())
+                }
+
+                fn sign_version_message(&self, _canonical_message: &[u8]) -> Result<[u8; 64]> {
+                    Err(AionError::SigningFailed {
+                        reason: self.reason.clone(),
+                    })
+                }
+            }
+
+            const TRIAL_TIMESTAMP: u64 = 1_700_000_001_000_000_000;
+
+            /// Seed a temp file with a genesis artifact and pin its author.
+            fn seeded_artifact(
+                dir: &TempDir,
+                name: &str,
+                key: &SigningKey,
+                author: AuthorId,
+            ) -> (std::path::PathBuf, Vec<u8>) {
+                let path = dir.path().join(name);
+                let bytes = create_test_file(key, author);
+                std::fs::write(&path, &bytes).unwrap_or_else(|_| std::process::abort());
+                (path, bytes)
+            }
+
+            fn read(path: &std::path::Path) -> Vec<u8> {
+                std::fs::read(path).unwrap_or_else(|_| std::process::abort())
+            }
+
+            /// Both entry points must produce the same signed material:
+            /// identical version entries and identical signature entries.
+            /// The encrypted payload differs by its random nonce, exactly
+            /// as two software commits of the same rules do.
+            #[hegel::test]
+            fn prop_external_commit_matches_software_commit(tc: hegel::TestCase) {
+                let rules = tc.draw(gs::binary().max_size(512));
+                let message = tc.draw(gs::text().max_size(64));
+                let author = AuthorId::new(60_001);
+                let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+                let registry = test_reg(author, &key);
+                let dir = TempDir::new().unwrap_or_else(|_| std::process::abort());
+                let (software_path, _) = seeded_artifact(&dir, "software.aion", &key, author);
+                let (external_path, _) = seeded_artifact(&dir, "external.aion", &key, author);
+
+                if commit_version(
+                    &software_path,
+                    &rules,
+                    &CommitOptions {
+                        author_id: author,
+                        signing_key: &key,
+                        message: &message,
+                        timestamp: Some(TRIAL_TIMESTAMP),
+                    },
+                    &registry,
+                )
+                .is_err()
+                {
+                    std::process::abort();
+                }
+
+                let signer = RecordingSigner {
+                    key: &key,
+                    calls: Cell::new(0),
+                    message: RefCell::new(Vec::new()),
+                };
+                if commit_version_with_signer(
+                    &external_path,
+                    &rules,
+                    &ExternalCommitOptions {
+                        author_id: author,
+                        signer: &signer,
+                        message: &message,
+                        timestamp: Some(TRIAL_TIMESTAMP),
+                    },
+                    &registry,
+                )
+                .is_err()
+                {
+                    std::process::abort();
+                }
+
+                let software_bytes = read(&software_path);
+                let external_bytes = read(&external_path);
+                let software =
+                    AionParser::new(&software_bytes).unwrap_or_else(|_| std::process::abort());
+                let external =
+                    AionParser::new(&external_bytes).unwrap_or_else(|_| std::process::abort());
+                let software_version = software
+                    .get_version_entry(1)
+                    .unwrap_or_else(|_| std::process::abort());
+                let external_version = external
+                    .get_version_entry(1)
+                    .unwrap_or_else(|_| std::process::abort());
+                if software_version.as_bytes() != external_version.as_bytes() {
+                    std::process::abort();
+                }
+
+                let software_signature = software
+                    .get_signature_entry(1)
+                    .unwrap_or_else(|_| std::process::abort());
+                let external_signature = external
+                    .get_signature_entry(1)
+                    .unwrap_or_else(|_| std::process::abort());
+                if !bool::from(
+                    software_signature
+                        .public_key
+                        .ct_eq(&external_signature.public_key),
+                ) || !bool::from(
+                    software_signature
+                        .signature
+                        .ct_eq(&external_signature.signature),
+                ) {
+                    std::process::abort();
+                }
+            }
+
+            /// The provider is asked for exactly one signature, over the
+            /// canonical message of the entry that actually lands on disk.
+            #[hegel::test]
+            fn prop_external_commit_calls_provider_exactly_once(tc: hegel::TestCase) {
+                let rules = tc.draw(gs::binary().max_size(512));
+                let message = tc.draw(gs::text().max_size(64));
+                let author = AuthorId::new(60_002);
+                let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+                let registry = test_reg(author, &key);
+                let dir = TempDir::new().unwrap_or_else(|_| std::process::abort());
+                let (path, _) = seeded_artifact(&dir, "once.aion", &key, author);
+
+                let signer = RecordingSigner {
+                    key: &key,
+                    calls: Cell::new(0),
+                    message: RefCell::new(Vec::new()),
+                };
+                if commit_version_with_signer(
+                    &path,
+                    &rules,
+                    &ExternalCommitOptions {
+                        author_id: author,
+                        signer: &signer,
+                        message: &message,
+                        timestamp: Some(TRIAL_TIMESTAMP),
+                    },
+                    &registry,
+                )
+                .is_err()
+                {
+                    std::process::abort();
+                }
+
+                if signer.calls.get() != 1 {
+                    std::process::abort();
+                }
+                let bytes = read(&path);
+                let parser = AionParser::new(&bytes).unwrap_or_else(|_| std::process::abort());
+                let committed = parser
+                    .get_version_entry(1)
+                    .unwrap_or_else(|_| std::process::abort());
+                if *signer.message.borrow() != canonical_version_message(&committed) {
+                    std::process::abort();
+                }
+            }
+
+            /// A provider that fails leaves the artifact byte-identical,
+            /// whatever reason it reports.
+            #[hegel::test]
+            fn prop_failing_provider_never_mutates_artifact(tc: hegel::TestCase) {
+                let rules = tc.draw(gs::binary().max_size(512));
+                let reason = tc.draw(gs::text().max_size(64));
+                let author = AuthorId::new(60_003);
+                let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+                let registry = test_reg(author, &key);
+                let dir = TempDir::new().unwrap_or_else(|_| std::process::abort());
+                let (path, before) = seeded_artifact(&dir, "failing.aion", &key, author);
+
+                let result = commit_version_with_signer(
+                    &path,
+                    &rules,
+                    &ExternalCommitOptions {
+                        author_id: author,
+                        signer: &ReasonSigner {
+                            key: &key,
+                            reason: reason.clone(),
+                        },
+                        message: "provider failure",
+                        timestamp: Some(TRIAL_TIMESTAMP),
+                    },
+                    &registry,
+                );
+                match result {
+                    Err(AionError::SigningFailed { reason: got }) if got == reason => {}
+                    _ => std::process::abort(),
+                }
+                if read(&path) != before {
+                    std::process::abort();
+                }
+            }
+
+            /// Arbitrary provider output is rejected before any write.
+            /// A drawn 64-byte value colliding with the real signature is
+            /// a 2^-512 event, so no filtering is needed.
+            #[hegel::test]
+            fn prop_invalid_provider_signature_always_rejected(tc: hegel::TestCase) {
+                let rules = tc.draw(gs::binary().max_size(512));
+                let raw = tc.draw(gs::binary().min_size(64).max_size(64));
+                let mut signature = [0u8; 64];
+                signature.copy_from_slice(raw.get(..64).unwrap_or(&[0u8; 64]));
+                let author = AuthorId::new(60_004);
+                let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+                let registry = test_reg(author, &key);
+                let dir = TempDir::new().unwrap_or_else(|_| std::process::abort());
+                let (path, before) = seeded_artifact(&dir, "invalid.aion", &key, author);
+
+                let result = commit_version_with_signer(
+                    &path,
+                    &rules,
+                    &ExternalCommitOptions {
+                        author_id: author,
+                        signer: &FixedSignatureSigner {
+                            key: &key,
+                            signature,
+                        },
+                        message: "invalid provider output",
+                        timestamp: Some(TRIAL_TIMESTAMP),
+                    },
+                    &registry,
+                );
+                if result.is_ok() {
+                    std::process::abort();
+                }
+                if read(&path) != before {
+                    std::process::abort();
+                }
+            }
         }
     }
 

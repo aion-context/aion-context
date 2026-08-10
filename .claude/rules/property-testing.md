@@ -192,6 +192,10 @@ blocks on a drop.
 | `src/enforcement_receipt.rs`    | RFC-0036 unresolvable approval ⇒ `_and_approvals` hard-fails, base passes |
 | `src/enforcement_receipt.rs`    | RFC-0036 witness co-signature resolves at its own version      |
 | `src/enforcement_receipt.rs`    | RFC-0036 statement JSON round-trip preserves the predicate     |
+| `src/operations.rs`             | RFC-0038 external and software commits agree on signed material |
+| `src/operations.rs`             | RFC-0038 the provider is called exactly once, on the committed entry's canonical message |
+| `src/operations.rs`             | RFC-0038 provider failure leaves the artifact byte-identical  |
+| `src/operations.rs`             | RFC-0038 arbitrary provider signature bytes ⇒ rejected, nothing written |
 
 ## Tier 3 (model / stateful — required once the audit chain is stable)
 
