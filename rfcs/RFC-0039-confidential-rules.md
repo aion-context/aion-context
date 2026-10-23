@@ -1093,6 +1093,10 @@ Four PRs, each reviewed by `crypto-auditor` and `api-reviewer`:
   stanzas with every bound, canonical order, and identity
   de-duplication above. No new dependency. A `fuzz_confidential_envelope`
   target and Tier-1 parser properties.
+  - *Implementation note:* the `envelope` module. `Envelope::parse`
+    is zero-copy and accepts only the canonical encoding, so
+    `parse(b)?.to_bytes() == b`. The writer-side encoder is
+    crate-internal and re-parses its own output.
 - **B2, key schedule and stanzas.** DEK, `K_enc`, `dek_commitment`, the
   content AEAD, and HPKE seal/open for kinds `0x01` and `0x03`, with
   the known-answer tests above.

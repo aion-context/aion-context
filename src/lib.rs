@@ -75,6 +75,7 @@ pub mod conflict; // Issue #30: Conflict resolution
 pub mod crypto; // Issue #4: Cryptography
 pub mod dsse; // RFC-0023: DSSE envelope support
 pub mod enforcement_receipt; // RFC-0036: Enforcement receipt
+pub mod envelope; // RFC-0039: Confidential envelope codec
 pub mod error; // Issue #3: Error handling
 pub mod export; // Issue #31: Export/Import formats
 pub mod format; // RFC-0039: Format-v3 primitives

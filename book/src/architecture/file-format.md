@@ -118,9 +118,15 @@ registry pinning one fixed fuzz-only key. The signed v3 seeds in
 the rules-commitment, framing, and mode-byte checks that run after
 signature verification:
 
+The confidential envelope parser (RFC-0039 Phase B1) has its own
+target, `fuzz_confidential_envelope`. It also asserts that every
+accepted envelope re-serializes to exactly the input bytes.
+
 ```bash
 cd fuzz
 # corpus/ is gitignored scratch; seeds/ is the committed starting set.
+cargo +nightly fuzz run fuzz_confidential_envelope \
+  corpus/fuzz_confidential_envelope seeds/fuzz_confidential_envelope
 cargo +nightly fuzz run fuzz_verify_chain \
   corpus/fuzz_verify_chain seeds/fuzz_verify_chain
 cargo +nightly fuzz run fuzz_file_parser \
