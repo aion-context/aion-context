@@ -207,6 +207,8 @@ blocks on a drop.
 | `src/signature_chain.rs`        | RFC-0039 v3 version hash ≠ v2 version hash; v3 version vs attestation domain-separated |
 | `src/signature_chain.rs`        | RFC-0039 v3 signature verifies, and fails under another `file_id` |
 | `src/signature_chain.rs`        | RFC-0039 invalid mode byte or non-zero reserved byte ⇒ v3 message/hash rejects |
+| `src/operations.rs`             | RFC-0039 v3 public file: build → `verify_file` → `show_current_rules` round-trip |
+| `src/operations.rs`             | RFC-0039 any byte flip in a v3 rules section (either mode) ⇒ `verify_file` rejects |
 
 ## Tier 3 (model / stateful — required once the audit chain is stable)
 

@@ -78,7 +78,10 @@ use zerocopy::{AsBytes, FromBytes, FromZeroes};
 /// Magic number for AION v2 files: "AION" (0x41494F4E)
 pub const MAGIC: [u8; 4] = [0x41, 0x49, 0x4F, 0x4E];
 
-/// Current file format version
+/// File format version this crate writes by default
+///
+/// Readers accept every [`crate::format::FormatVersion`]; see
+/// [`FileHeader::format`].
 pub const FORMAT_VERSION: u16 = 2;
 
 /// Header size in bytes (fixed)
@@ -245,6 +248,31 @@ impl FileHeader {
         crate::types::VersionNumber(self.current_version)
     }
 
+    /// The file's on-disk format (RFC-0039).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AionError::UnsupportedVersion`] for an unknown version.
+    pub fn format(&self) -> Result<crate::format::FormatVersion> {
+        crate::format::FormatVersion::from_u16(self.version)
+    }
+
+    /// The signing context version messages in this file bind (RFC-0039).
+    ///
+    /// Cannot fail for a header returned by [`AionParser`], which has
+    /// already validated the version; a hand-built header can hold any
+    /// value, hence the `Result`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AionError::UnsupportedVersion`] for an unknown version.
+    pub fn context(&self) -> Result<crate::format::FileContext> {
+        Ok(crate::format::FileContext::new(
+            self.format()?,
+            self.file_id(),
+        ))
+    }
+
     /// Validate header structure
     ///
     /// Checks:
@@ -266,13 +294,7 @@ impl FileHeader {
             });
         }
 
-        // Check version
-        if self.version != FORMAT_VERSION {
-            return Err(AionError::UnsupportedVersion {
-                version: self.version,
-                supported: FORMAT_VERSION.to_string(),
-            });
-        }
+        self.format()?;
 
         // Check reserved bits in flags (bits 1-15 must be 0)
         if (self.flags & !0x0001) != 0 {
@@ -672,21 +694,34 @@ impl<'a> AionParser<'a> {
                     reason: "Invalid message length bytes".to_string(),
                 }
             })?),
-            reserved: {
-                // Reserved fields must be zero (mirrors #40 for
-                // ArtifactEntry). Silently zeroing them on read would
-                // let `commit_version` "launder" a tampered file:
-                // verify_file flags the integrity-hash mismatch, but
-                // the next commit rebuilds the file with reserved
-                // zeroed and the laundered file then passes verify.
-                if entry_bytes[100..152].iter().any(|b| *b != 0) {
+            reserved: Self::version_entry_reserved(header, &entry_bytes[100..152])?,
+        })
+    }
+
+    /// Validate a version entry's reserved bytes for the file's format.
+    ///
+    /// v2 requires all 52 bytes to be zero. v3 stores the rules mode in
+    /// the first byte (RFC-0039) and requires the other 51 to be zero.
+    /// Unknown bytes are rejected rather than zeroed: silently zeroing
+    /// them on read would let `commit_version` "launder" a tampered file
+    /// (mirrors #40 for `ArtifactEntry`).
+    fn version_entry_reserved(header: &FileHeader, bytes: &[u8]) -> Result<[u8; 52]> {
+        let reserved: [u8; 52] = bytes.try_into().map_err(|_| AionError::InvalidFormat {
+            reason: "Invalid version entry reserved bytes".to_string(),
+        })?;
+        match header.format()? {
+            crate::format::FormatVersion::V2 => {
+                if reserved.iter().any(|b| *b != 0) {
                     return Err(AionError::InvalidFormat {
                         reason: "VersionEntry reserved bytes must be all zero".to_string(),
                     });
                 }
-                [0; 52]
-            },
-        })
+            }
+            crate::format::FormatVersion::V3 => {
+                crate::format::RulesMode::from_reserved(&reserved)?;
+            }
+        }
+        Ok(reserved)
     }
 
     /// Get a signature entry by index

@@ -100,6 +100,10 @@ const V3_BOUND_FIELDS_LEN: usize = 2 + 8 + 1 + 100;
 /// Total: 128 bytes + domain separator
 #[must_use]
 #[allow(clippy::arithmetic_side_effects)] // Fixed capacity calculation
+///
+/// **Format v2 only.** For a file that may be format v3, use
+/// [`crate::format::FileContext::canonical_version_message`] with the context from
+/// [`crate::parser::FileHeader::context`].
 pub fn canonical_version_message(version: &VersionEntry) -> Vec<u8> {
     // Capacity: domain(28) + version(8) + parent(32) + rules(32) + author(8) + ts(8) + offset(8) + len(4) = 128
     let mut message = Vec::with_capacity(128 + SIGNATURE_DOMAIN.len());
@@ -156,6 +160,10 @@ pub fn canonical_version_message(version: &VersionEntry) -> Vec<u8> {
 /// let hash = compute_version_hash(&version);
 /// assert_eq!(hash.len(), 32);
 /// ```
+///
+/// **Format v2 only.** For a file that may be format v3, use
+/// [`crate::format::FileContext::version_hash`] with the context from
+/// [`crate::parser::FileHeader::context`].
 #[must_use]
 pub fn compute_version_hash(version: &VersionEntry) -> [u8; 32] {
     // Hash the canonical message (without domain separator for chain linking)
@@ -202,6 +210,10 @@ pub fn compute_version_hash(version: &VersionEntry) -> [u8; 32] {
 ///
 /// assert_eq!(signature_entry.author_id, 50001);
 /// ```
+///
+/// **Format v2 only.** For a file that may be format v3, use
+/// [`crate::format::FileContext::sign_version`] with the context from
+/// [`crate::parser::FileHeader::context`].
 #[must_use]
 pub fn sign_version(version: &VersionEntry, signing_key: &SigningKey) -> SignatureEntry {
     let message = canonical_version_message(version);
@@ -260,10 +272,32 @@ pub fn sign_version(version: &VersionEntry, signing_key: &SigningKey) -> Signatu
 /// let signature_entry = sign_version(&version, &signing_key);
 /// assert!(verify_signature(&version, &signature_entry, &registry).is_ok());
 /// ```
+///
+/// **Format v2 only.** For a file that may be format v3, use
+/// [`crate::format::FileContext::verify_signature`] with the context from
+/// [`crate::parser::FileHeader::context`].
 pub fn verify_signature(
     version: &VersionEntry,
     signature: &SignatureEntry,
     registry: &crate::key_registry::KeyRegistry,
+) -> Result<()> {
+    verify_version_signature_over(
+        version,
+        signature,
+        registry,
+        &canonical_version_message(version),
+    )
+}
+
+/// Registry-pinned check of a version signature over a caller-built
+/// canonical message: author binding, active epoch, constant-time key
+/// match, then Ed25519. Shared by the v2 entry point and
+/// [`crate::format::FileContext::verify_signature`].
+pub(crate) fn verify_version_signature_over(
+    version: &VersionEntry,
+    signature: &SignatureEntry,
+    registry: &crate::key_registry::KeyRegistry,
+    message: &[u8],
 ) -> Result<()> {
     if version.author_id != signature.author_id {
         emit_sig_rejected(
@@ -293,10 +327,9 @@ pub fn verify_signature(
             author: signer,
         });
     }
-    let message = canonical_version_message(version);
     let verifying_key = VerifyingKey::from_bytes(&signature.public_key)?;
     verifying_key
-        .verify(&message, &signature.signature)
+        .verify(message, &signature.signature)
         .inspect_err(|_| {
             emit_sig_rejected(version.version_number, signer, "bad_signature");
         })
@@ -318,6 +351,10 @@ fn emit_sig_rejected(version: u64, author: AuthorId, reason: &'static str) {
 /// prevents signature replay across signers and across protocols.
 #[must_use]
 #[allow(clippy::arithmetic_side_effects)] // capacity calculation over consts
+///
+/// **Format v2 only.** For a file that may be format v3, use
+/// [`crate::format::FileContext::attestation_message`] with the context from
+/// [`crate::parser::FileHeader::context`].
 pub fn canonical_attestation_message(version: &VersionEntry, signer: AuthorId) -> Vec<u8> {
     let mut message = Vec::with_capacity(128 + 8 + ATTESTATION_DOMAIN.len());
     message.extend_from_slice(ATTESTATION_DOMAIN);
@@ -426,6 +463,10 @@ pub(crate) fn canonical_attestation_message_v3(
 /// Unlike [`sign_version`], the signer need not equal `version.author_id`:
 /// attestations are multi-party by design. Returns a `SignatureEntry` whose
 /// `author_id` is the attesting signer's id.
+///
+/// **Format v2 only.** For a file that may be format v3, use
+/// [`crate::format::FileContext::sign_attestation`] with the context from
+/// [`crate::parser::FileHeader::context`].
 #[must_use]
 pub fn sign_attestation(
     version: &VersionEntry,
@@ -451,10 +492,32 @@ pub fn sign_attestation(
 /// attester at `version.version_number`, if the signature's
 /// embedded public key does not match that epoch, or if the
 /// Ed25519 signature does not verify.
+///
+/// **Format v2 only.** For a file that may be format v3, use
+/// [`crate::format::FileContext::verify_attestation`] with the context from
+/// [`crate::parser::FileHeader::context`].
 pub fn verify_attestation(
     version: &VersionEntry,
     signature: &SignatureEntry,
     registry: &crate::key_registry::KeyRegistry,
+) -> Result<()> {
+    let signer = AuthorId::new(signature.author_id);
+    verify_attestation_over(
+        version,
+        signature,
+        registry,
+        &canonical_attestation_message(version, signer),
+    )
+}
+
+/// Registry-pinned check of an attestation signature over a caller-built
+/// canonical message. Shared by the v2 entry point and
+/// [`crate::format::FileContext::verify_attestation`].
+pub(crate) fn verify_attestation_over(
+    version: &VersionEntry,
+    signature: &SignatureEntry,
+    registry: &crate::key_registry::KeyRegistry,
+    message: &[u8],
 ) -> Result<()> {
     let signer = AuthorId::new(signature.author_id);
     let epoch = registry
@@ -473,10 +536,9 @@ pub fn verify_attestation(
             author: signer,
         });
     }
-    let message = canonical_attestation_message(version, signer);
     let verifying_key = VerifyingKey::from_bytes(&signature.public_key)?;
     verifying_key
-        .verify(&message, &signature.signature)
+        .verify(message, &signature.signature)
         .inspect_err(|_| {
             emit_sig_rejected(version.version_number, signer, "bad_attestation");
         })
@@ -496,11 +558,31 @@ pub fn verify_attestation(
 /// - `AionError::SignatureVerificationFailed` on the first pair
 ///   where registry lookup or the Ed25519 verify fails.
 /// - `AionError::InvalidPublicKey` if any embedded public key is malformed.
+///
+/// **Format v2 only.** For a file that may be format v3, use
+/// [`crate::format::FileContext::verify_signatures`] with the context from
+/// [`crate::parser::FileHeader::context`].
 pub fn verify_signatures_batch(
     versions: &[VersionEntry],
     signatures: &[SignatureEntry],
     registry: &crate::key_registry::KeyRegistry,
 ) -> Result<()> {
+    verify_signatures_with(versions, signatures, |version, signature| {
+        verify_signature(version, signature, registry)
+    })
+}
+
+/// Verify every `(version, signature)` pair with `verify_one`, in
+/// parallel for chains longer than 10. Shared by the v2 entry point and
+/// [`crate::format::FileContext::verify_signatures`].
+pub(crate) fn verify_signatures_with<F>(
+    versions: &[VersionEntry],
+    signatures: &[SignatureEntry],
+    verify_one: F,
+) -> Result<()>
+where
+    F: Fn(&VersionEntry, &SignatureEntry) -> Result<()> + Sync,
+{
     if versions.len() != signatures.len() {
         return Err(crate::AionError::InvalidFormat {
             reason: format!(
@@ -515,10 +597,10 @@ pub fn verify_signatures_batch(
         versions
             .par_iter()
             .zip(signatures.par_iter())
-            .try_for_each(|(version, signature)| verify_signature(version, signature, registry))
+            .try_for_each(|(version, signature)| verify_one(version, signature))
     } else {
         for (version, signature) in versions.iter().zip(signatures.iter()) {
-            verify_signature(version, signature, registry)?;
+            verify_one(version, signature)?;
         }
         Ok(())
     }
@@ -688,6 +770,10 @@ pub fn create_child_version(
 /// let versions = vec![genesis, v2];
 /// assert!(verify_hash_chain(&versions).is_ok());
 /// ```
+///
+/// **Format v2 only.** For a file that may be format v3, use
+/// [`crate::format::FileContext::verify_hash_chain`] with the context from
+/// [`crate::parser::FileHeader::context`].
 pub fn verify_hash_chain(versions: &[VersionEntry]) -> Result<()> {
     let genesis = versions
         .first()
@@ -695,7 +781,24 @@ pub fn verify_hash_chain(versions: &[VersionEntry]) -> Result<()> {
             reason: "Version chain is empty".to_string(),
         })?;
     verify_genesis_version(genesis)?;
-    verify_chain_links(versions)
+    verify_chain_links(versions, |parent| Ok(compute_version_hash(parent)))
+}
+
+/// Verify chain structure with a caller-supplied version hash: genesis is
+/// version 1 with a zero parent, versions increase by one, and each
+/// `parent_hash` equals `version_hash(parent)`. Shared by the v2 entry
+/// point and [`crate::format::FileContext::verify_hash_chain`].
+pub(crate) fn verify_hash_chain_with<H>(versions: &[VersionEntry], version_hash: H) -> Result<()>
+where
+    H: Fn(&VersionEntry) -> Result<[u8; 32]>,
+{
+    let genesis = versions
+        .first()
+        .ok_or_else(|| crate::AionError::InvalidFormat {
+            reason: "Version chain is empty".to_string(),
+        })?;
+    verify_genesis_version(genesis)?;
+    verify_chain_links(versions, version_hash)
 }
 
 fn verify_genesis_version(genesis: &VersionEntry) -> Result<()> {
@@ -716,7 +819,10 @@ fn verify_genesis_version(genesis: &VersionEntry) -> Result<()> {
     Ok(())
 }
 
-fn verify_chain_links(versions: &[VersionEntry]) -> Result<()> {
+fn verify_chain_links<H>(versions: &[VersionEntry], version_hash: H) -> Result<()>
+where
+    H: Fn(&VersionEntry) -> Result<[u8; 32]>,
+{
     for pair in versions.windows(2) {
         let [parent, current] = pair else { continue };
         let expected_version =
@@ -732,7 +838,7 @@ fn verify_chain_links(versions: &[VersionEntry]) -> Result<()> {
                 current: expected_version,
             });
         }
-        if current.parent_hash != compute_version_hash(parent) {
+        if current.parent_hash != version_hash(parent)? {
             return Err(crate::AionError::BrokenVersionChain {
                 version: current.version_number,
             });

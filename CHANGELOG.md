@@ -12,6 +12,32 @@ and the project follows [Semantic Versioning].
 
 ### Added
 
+- **RFC-0039 Phase A2a: reading and verifying format-v3 files.** The
+  parser accepts format 2 and 3 (`FileHeader::format`,
+  `FileHeader::context`). For v3 it reads a per-entry rules mode from
+  `reserved[0]` and still rejects any other non-zero reserved byte.
+  `verify_file`, `show_signatures`, and `show_current_rules` handle
+  both formats. For v3, verification is key-free:
+  - the chain is checked with v3 version hashes;
+  - signatures cover the v3 canonical message;
+  - the head's stored section must commit to its signed
+    `rules_hash` under its own mode;
+  - header flag bit 0 must mirror the head's mode;
+  - a public section must be a canonical frame.
+
+  `show_current_rules` returns a public v3 head's plaintext, and
+  returns the new `AionError::RecipientKeyRequired` for a confidential
+  one. New `FileContext` methods are the format-aware signing API:
+  `sign_version`, `verify_signature`, `verify_signatures`,
+  `verify_hash_chain`, `sign_attestation`, `verify_attestation`, and
+  `verify_multisig`, which takes RFC-0021 quorums with v3 attestations.
+  The v2 free functions in `signature_chain` and `multisig` are
+  unchanged and documented as format-v2 only. Readers accept format 2
+  and 3; `parser::FORMAT_VERSION` is now documented as the version
+  written by default. **Breaking:** `AionFile` gains a `format` field
+  and is now `#[non_exhaustive]`. Build files through `AionFile::builder()`. Committing to
+  a v3 file returns `UnsupportedVersion` until the v3 writer lands
+  (Phase A2b). Writers still produce v2.
 - **RFC-0039 Phase A1: format-v3 primitives.** No change to what is
   written yet.
   - A new `format` module with `FormatVersion`, `RulesMode`,
