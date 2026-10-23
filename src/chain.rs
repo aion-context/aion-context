@@ -38,11 +38,10 @@
 //! use aion_context::serializer::VersionEntry;
 //!
 //! fn forge<'a>(chain: &'a VerifiedChain, entry: &'a VersionEntry) -> VerifiedEntry<'a> {
-//!     VerifiedEntry { chain, entry }
+//!     VerifiedEntry { chain, checked: entry }
 //! }
 //! ```
 
-use std::ops::Range;
 use std::path::Path;
 
 use zeroize::Zeroizing;
@@ -54,15 +53,25 @@ use crate::serializer::VersionEntry;
 use crate::types::{AuthorId, VersionNumber};
 use crate::{AionError, Result};
 
-/// A file that passed full verification, holding the exact bytes that
-/// were verified.
-#[derive(Debug, Clone)]
+/// A file that passed full verification, holding the verified entries and
+/// the verified head rules section.
+///
+/// Built only by [`verify_file_chain`] or [`VerifiedChain::from_bytes`].
+/// It is deliberately not `Clone`: the only way to get one is to verify.
+#[derive(Debug)]
 pub struct VerifiedChain {
-    bytes: Vec<u8>,
     context: FileContext,
-    versions: Vec<VersionEntry>,
-    head: VersionEntry,
-    head_section: Range<usize>,
+    entries: Vec<CheckedEntry>,
+    head: CheckedEntry,
+    head_section: Vec<u8>,
+}
+
+/// A version entry together with its rules mode, decoded once during
+/// verification so no accessor ever has to drop a decoding error.
+#[derive(Debug, Clone, Copy)]
+struct CheckedEntry {
+    entry: VersionEntry,
+    mode: Option<RulesMode>,
 }
 
 /// Read and fully verify a file, returning a [`VerifiedChain`] over the
@@ -74,53 +83,94 @@ pub struct VerifiedChain {
 ///
 /// # Errors
 ///
-/// Returns [`AionError::FileReadError`] if the file cannot be read, a
-/// parse error for malformed input, or [`AionError::ChainRejected`] with
-/// a bounded reason if verification fails.
+/// Returns [`AionError::FileReadError`] if the file cannot be read, or
+/// [`AionError::ChainRejected`] with a bounded reason if it fails
+/// verification for any reason, including malformed structure.
+///
+/// # Example
+///
+/// ```no_run
+/// use aion_context::chain::verify_file_chain;
+/// use aion_context::key_registry::KeyRegistry;
+/// use std::path::Path;
+///
+/// # fn example(registry: &KeyRegistry) -> aion_context::Result<()> {
+/// let chain = verify_file_chain(Path::new("policy.aion"), registry)?;
+/// assert!(chain.version_count() >= 1);
+/// # Ok(())
+/// # }
+/// ```
 pub fn verify_file_chain(path: &Path, registry: &KeyRegistry) -> Result<VerifiedChain> {
     let bytes = std::fs::read(path).map_err(|e| AionError::FileReadError {
         path: path.to_path_buf(),
         source: e,
     })?;
-    VerifiedChain::from_bytes(bytes, registry)
+    VerifiedChain::from_bytes(&bytes, registry)
 }
 
 impl VerifiedChain {
-    /// Fully verify bytes already in memory and take ownership of them.
+    /// Fully verify bytes already in memory.
+    ///
+    /// The returned chain keeps the verified entries and an owned copy of
+    /// the verified head section; later reads never consult `bytes` again.
     ///
     /// # Errors
     ///
-    /// Returns a parse error for malformed input, or
-    /// [`AionError::ChainRejected`] if verification fails.
-    pub fn from_bytes(bytes: Vec<u8>, registry: &KeyRegistry) -> Result<Self> {
-        let report = crate::operations::verify_bytes(&bytes, registry)?;
+    /// Returns [`AionError::ChainRejected`] with a bounded reason if the
+    /// bytes fail verification for any reason, including malformed
+    /// structure (`structure_invalid`).
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use aion_context::chain::VerifiedChain;
+    /// use aion_context::key_registry::KeyRegistry;
+    ///
+    /// # fn example(bytes: &[u8], registry: &KeyRegistry) -> aion_context::Result<()> {
+    /// let chain = VerifiedChain::from_bytes(bytes, registry)?;
+    /// println!("head is version {}", chain.head().version().as_u64());
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn from_bytes(bytes: &[u8], registry: &KeyRegistry) -> Result<Self> {
+        let report = crate::operations::verify_bytes(bytes, registry).map_err(|e| {
+            tracing::debug!(event = "chain_structure_rejected", error = %e);
+            AionError::ChainRejected {
+                reason: "structure_invalid",
+            }
+        })?;
         if !report.is_valid {
             return Err(AionError::ChainRejected {
                 reason: crate::operations::classify_verify_failure(&report),
             });
         }
-        let (context, versions, head_section) = Self::index(&bytes)?;
-        let head = *versions.last().ok_or_else(empty_chain)?;
-        Ok(Self {
-            bytes,
-            context,
-            versions,
-            head,
-            head_section,
-        })
+        Self::index(bytes)
     }
 
-    fn index(bytes: &[u8]) -> Result<(FileContext, Vec<VersionEntry>, Range<usize>)> {
+    /// Index bytes that have just passed verification, through the same
+    /// parser accessors the verifier used.
+    fn index(bytes: &[u8]) -> Result<Self> {
         let parser = AionParser::new(bytes)?;
         let header = parser.header();
+        let context = header.context()?;
         let count = usize::try_from(header.version_chain_count).map_err(|_| empty_chain())?;
-        let versions = (0..count)
-            .map(|index| parser.get_version_entry(index))
+        let entries = (0..count)
+            .map(|index| {
+                let entry = parser.get_version_entry(index)?;
+                let mode = match context.format() {
+                    FormatVersion::V2 => None,
+                    FormatVersion::V3 => Some(RulesMode::of(&entry)?),
+                };
+                Ok(CheckedEntry { entry, mode })
+            })
             .collect::<Result<Vec<_>>>()?;
-        let start = usize::try_from(header.encrypted_rules_offset).map_err(|_| bad_section())?;
-        let length = usize::try_from(header.encrypted_rules_length).map_err(|_| bad_section())?;
-        let end = start.checked_add(length).ok_or_else(bad_section)?;
-        Ok((header.context()?, versions, start..end))
+        let head = *entries.last().ok_or_else(empty_chain)?;
+        Ok(Self {
+            context,
+            entries,
+            head,
+            head_section: parser.encrypted_rules_bytes()?.to_vec(),
+        })
     }
 
     /// The file's format and identifier.
@@ -132,7 +182,7 @@ impl VerifiedChain {
     /// Number of versions in the chain (at least 1).
     #[must_use]
     pub fn version_count(&self) -> u64 {
-        self.versions.len() as u64
+        self.entries.len() as u64
     }
 
     /// The latest version.
@@ -140,7 +190,7 @@ impl VerifiedChain {
     pub const fn head(&self) -> VerifiedEntry<'_> {
         VerifiedEntry {
             chain: self,
-            entry: &self.head,
+            checked: &self.head,
         }
     }
 
@@ -148,38 +198,24 @@ impl VerifiedChain {
     #[must_use]
     pub fn entry(&self, version: VersionNumber) -> Option<VerifiedEntry<'_>> {
         let index = usize::try_from(version.as_u64().checked_sub(1)?).ok()?;
-        self.entry_at(index)
+        self.entries.get(index).map(|checked| VerifiedEntry {
+            chain: self,
+            checked,
+        })
     }
 
     /// Every verified entry, oldest first.
     pub fn entries(&self) -> impl Iterator<Item = VerifiedEntry<'_>> {
-        self.versions
-            .iter()
-            .map(move |entry| VerifiedEntry { chain: self, entry })
-    }
-
-    fn entry_at(&self, index: usize) -> Option<VerifiedEntry<'_>> {
-        self.versions
-            .get(index)
-            .map(|entry| VerifiedEntry { chain: self, entry })
-    }
-
-    fn head_section(&self) -> Result<&[u8]> {
-        self.bytes
-            .get(self.head_section.clone())
-            .ok_or_else(bad_section)
+        self.entries.iter().map(move |checked| VerifiedEntry {
+            chain: self,
+            checked,
+        })
     }
 }
 
 fn empty_chain() -> AionError {
     AionError::InvalidFormat {
         reason: "Version chain is empty".to_string(),
-    }
-}
-
-fn bad_section() -> AionError {
-    AionError::InvalidFormat {
-        reason: "rules section lies outside the file".to_string(),
     }
 }
 
@@ -190,43 +226,41 @@ fn bad_section() -> AionError {
 #[derive(Debug, Clone, Copy)]
 pub struct VerifiedEntry<'a> {
     chain: &'a VerifiedChain,
-    entry: &'a VersionEntry,
+    checked: &'a CheckedEntry,
 }
 
 impl VerifiedEntry<'_> {
     /// The version number.
     #[must_use]
     pub const fn version(&self) -> VersionNumber {
-        VersionNumber(self.entry.version_number)
+        VersionNumber(self.checked.entry.version_number)
     }
 
     /// The author who signed this version.
     #[must_use]
     pub const fn author(&self) -> AuthorId {
-        AuthorId::new(self.entry.author_id)
+        AuthorId::new(self.checked.entry.author_id)
     }
 
     /// The signed timestamp, in nanoseconds since the Unix epoch.
     #[must_use]
     pub const fn timestamp(&self) -> u64 {
-        self.entry.timestamp
+        self.checked.entry.timestamp
     }
 
     /// The signed `rules_hash`: the rules commitment in format v3, the
     /// plaintext hash in format v2.
     #[must_use]
     pub const fn rules_commitment(&self) -> [u8; 32] {
-        self.entry.rules_hash
+        self.checked.entry.rules_hash
     }
 
-    /// The signed rules mode, for format v3. `None` for format v2, which
-    /// has no modes.
+    /// The signed rules mode for format v3, decoded during verification.
+    /// `None` means format v2, which has no modes; a v3 entry whose mode
+    /// cannot be decoded never reaches a [`VerifiedChain`].
     #[must_use]
-    pub fn rules_mode(&self) -> Option<RulesMode> {
-        match self.chain.context.format() {
-            FormatVersion::V2 => None,
-            FormatVersion::V3 => RulesMode::of(self.entry).ok(),
-        }
+    pub const fn rules_mode(&self) -> Option<RulesMode> {
+        self.checked.mode
     }
 
     /// The format and identifier of the file this entry belongs to.
@@ -263,11 +297,26 @@ impl RecipientKeys {
 /// Returns [`AionError::RecipientKeyRequired`] for a confidential section
 /// the supplied keys cannot open, or a decoding error for a malformed
 /// section.
+///
+/// # Example
+///
+/// ```no_run
+/// use aion_context::chain::{open_current_rules, verify_file_chain, RecipientKeys};
+/// use aion_context::key_registry::KeyRegistry;
+/// use std::path::Path;
+///
+/// # fn example(registry: &KeyRegistry) -> aion_context::Result<()> {
+/// let chain = verify_file_chain(Path::new("policy.aion"), registry)?;
+/// let rules = open_current_rules(&chain, &RecipientKeys::none())?;
+/// println!("{}", String::from_utf8_lossy(&rules));
+/// # Ok(())
+/// # }
+/// ```
 pub fn open_current_rules(
     chain: &VerifiedChain,
     keys: &RecipientKeys,
 ) -> Result<Zeroizing<Vec<u8>>> {
-    open_rules_section(chain.head_section()?, chain.head(), keys)
+    open_rules_section(&chain.head_section, chain.head(), keys)
 }
 
 /// Open an archived rules section against the verified entry it belongs
@@ -283,6 +332,24 @@ pub fn open_current_rules(
 /// Returns [`AionError::HashMismatch`] if the section does not belong to
 /// `entry`, [`AionError::RecipientKeyRequired`] for a confidential section
 /// the keys cannot open, or a decoding error for a malformed section.
+///
+/// # Example
+///
+/// ```no_run
+/// use aion_context::chain::{open_rules_section, verify_file_chain, RecipientKeys};
+/// use aion_context::key_registry::KeyRegistry;
+/// use aion_context::types::VersionNumber;
+/// use std::path::Path;
+///
+/// # fn example(registry: &KeyRegistry, archived_v1: &[u8]) -> aion_context::Result<()> {
+/// let chain = verify_file_chain(Path::new("policy.aion"), registry)?;
+/// if let Some(v1) = chain.entry(VersionNumber(1)) {
+///     let rules = open_rules_section(archived_v1, v1, &RecipientKeys::none())?;
+///     println!("v1 had {} bytes of rules", rules.len());
+/// }
+/// # Ok(())
+/// # }
+/// ```
 pub fn open_rules_section(
     section: &[u8],
     entry: VerifiedEntry<'_>,
@@ -305,7 +372,9 @@ fn open_v3_section(
     entry: VerifiedEntry<'_>,
     keys: &RecipientKeys,
 ) -> Result<Zeroizing<Vec<u8>>> {
-    let mode = RulesMode::of(entry.entry)?;
+    let mode = entry.rules_mode().ok_or_else(|| AionError::InvalidFormat {
+        reason: "format-v3 entry without a rules mode".to_string(),
+    })?;
     let commitment = rules_commitment(mode, section);
     if commitment != entry.rules_commitment() {
         return Err(AionError::HashMismatch {
@@ -412,9 +481,49 @@ mod tests {
         let last = bytes.len().saturating_sub(1);
         bytes[last] ^= 0x01;
         assert!(matches!(
-            VerifiedChain::from_bytes(bytes, &registry),
+            VerifiedChain::from_bytes(&bytes, &registry),
             Err(AionError::ChainRejected {
                 reason: "integrity_hash_mismatch"
+            })
+        ));
+    }
+
+    #[test]
+    fn swapped_section_with_recomputed_integrity_hash_yields_no_chain() {
+        let dir = ok(TempDir::new());
+        let path = dir.path().join("swapped-section.aion");
+        let key = ok(SigningKey::generate());
+        let registry = grow_v3(&path, &key, AuthorId::new(90_008), &[b"refund_limit: 100"]);
+        let mut bytes = ok(std::fs::read(&path));
+        let (offset, length) = {
+            let parser = ok(AionParser::new(&bytes));
+            let header = parser.header();
+            (
+                header.encrypted_rules_offset as usize,
+                header.encrypted_rules_length as usize,
+            )
+        };
+        let forged = ok(frame_rules(b"refund_limit: 999"));
+        assert_eq!(forged.len(), length);
+        bytes[offset..offset.saturating_add(length)].copy_from_slice(&forged);
+        let body = bytes.len().saturating_sub(32);
+        let integrity = hash(&bytes[..body]);
+        bytes[body..].copy_from_slice(&integrity);
+        assert!(matches!(
+            VerifiedChain::from_bytes(&bytes, &registry),
+            Err(AionError::ChainRejected {
+                reason: "hash_chain_broken"
+            })
+        ));
+    }
+
+    #[test]
+    fn malformed_bytes_are_rejected_as_structure_invalid() {
+        let registry = KeyRegistry::new();
+        assert!(matches!(
+            VerifiedChain::from_bytes(b"not an aion file", &registry),
+            Err(AionError::ChainRejected {
+                reason: "structure_invalid"
             })
         ));
     }

@@ -14,15 +14,21 @@ and the project follows [Semantic Versioning].
 
 - **RFC-0039 Phase A3: verified chains** (`chain` module).
   - `verify_file_chain(path, &registry)` and
-    `VerifiedChain::from_bytes` run exactly `verify_file`'s checks.
-    They return a `VerifiedChain` that owns the bytes it verified, or
+    `VerifiedChain::from_bytes(&bytes, &registry)` run exactly
+    `verify_file`'s checks. They return a `VerifiedChain` (not
+    `Clone`) that holds the verified entries, with modes decoded once,
+    and an owned copy of the verified head section. On any failure,
+    malformed structure included, they return
     `AionError::ChainRejected { reason }` with the bounded
-    `file_rejected` reason.
+    `file_rejected` reason (`structure_invalid` for parse failures).
   - `VerifiedEntry` exposes the signed version, author, timestamp,
     rules commitment, and mode. It can only be obtained from a
     `VerifiedChain`; a `compile_fail` doctest pins this.
   - `open_current_rules(&chain, &RecipientKeys)` reads the head's rules
-    from the verified bytes, never from the path.
+    from the verified bytes, never from the path. It and
+    `open_rules_section` return `zeroize::Zeroizing<Vec<u8>>`, so
+    plaintext rules are wiped on drop. `zeroize` is already part of the
+    public API through `crypto`.
   - `open_rules_section(section, entry, &keys)` opens an archived
     historical section after binding it to that entry's signed
     commitment.
