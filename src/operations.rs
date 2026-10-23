@@ -135,7 +135,7 @@ pub fn init_file(path: &Path, initial_rules: &[u8], options: &InitOptions) -> Re
             path: path.to_path_buf(),
         });
     }
-    let context = FileContext::new(FormatVersion::V3, FileId::random());
+    let context = FileContext::new(FormatVersion::V4, FileId::random());
     let file_id = context.file_id();
     let timestamp = options.timestamp.unwrap_or_else(current_timestamp_nanos);
     let encoded = encode_rules(
@@ -173,14 +173,6 @@ fn build_genesis_file(
     let (string_table, offsets) = AionSerializer::build_string_table(&[options.message]);
     let message_offset = offsets.first().copied().unwrap_or(0);
 
-    let genesis_version = encoded.apply_mode(create_genesis_version(
-        encoded.rules_hash,
-        options.author_id,
-        timestamp,
-        message_offset,
-        options.message.len() as u32,
-    ));
-    let signature = context.sign_version(&genesis_version, options.signing_key)?;
     let audit_entry = AuditEntry::new(
         timestamp,
         options.author_id,
@@ -189,6 +181,23 @@ fn build_genesis_file(
         0,
         [0u8; 32],
     );
+    let mut genesis_version = encoded.apply_mode(create_genesis_version(
+        encoded.rules_hash,
+        options.author_id,
+        timestamp,
+        message_offset,
+        options.message.len() as u32,
+    ));
+    if context.format().signs_metadata() {
+        let audit_hash = crate::metadata::audit_hash_v4(&audit_entry, &[])?;
+        let commitment = crate::format::metadata_commitment(
+            VersionNumber::GENESIS.as_u64(),
+            options.message.as_bytes(),
+            &audit_hash,
+        )?;
+        genesis_version = genesis_version.with_metadata_commitment(commitment);
+    }
+    let signature = context.sign_version(&genesis_version, options.signing_key)?;
 
     AionFile::builder()
         .format(context.format())
@@ -444,7 +453,12 @@ fn commit_version_with_signer_inner(
     let rules_hash = encoded.rules_hash;
     let parent_hash = context.version_hash(&get_last_version_entry(&parser)?)?;
     let (string_table, message_offset) = build_string_table_with_message(options.message, &parser)?;
-    let new_entry = encoded.new_entry(new_version, parent_hash, options, timestamp, message_offset);
+    let (new_entry, new_audit) = new_entry_and_audit(
+        &parser,
+        &context,
+        encoded.new_entry(new_version, parent_hash, options, timestamp, message_offset),
+        options,
+    )?;
     let signature_entry = sign_new_entry(&context, &new_entry, options, public_key)?;
     if enforce_registry {
         context.verify_signature(&new_entry, &signature_entry, registry)?;
@@ -460,7 +474,7 @@ fn commit_version_with_signer_inner(
         signature_entry,
         string_table,
         timestamp,
-        options.author_id,
+        new_audit,
     )?;
     AionSerializer::write_atomic(&updated_file, path)?;
 
@@ -618,10 +632,10 @@ fn encode_rules(
         (FormatVersion::V2, RulesProtection::Confidential { .. }) => {
             return Err(AionError::ConfidentialityUnsupported)
         }
-        (FormatVersion::V3, RulesProtection::Public) => {
+        (FormatVersion::V3 | FormatVersion::V4, RulesProtection::Public) => {
             (crate::format::frame_rules(rules)?, RulesMode::Public)
         }
-        (FormatVersion::V3, RulesProtection::Confidential { recipients }) => {
+        (FormatVersion::V3 | FormatVersion::V4, RulesProtection::Confidential { recipients }) => {
             let ctx = crate::confidential::binding_context(context.file_id(), author, version);
             let section = seal_confidential(rules, recipients, &ctx)?;
             (section, RulesMode::Confidential)
@@ -1031,6 +1045,11 @@ pub struct VerificationReport {
     pub audit_chain_valid: bool,
     /// Whether all signatures are valid
     pub signatures_valid: bool,
+    /// Whether this file's format signs its metadata: commit messages and
+    /// the audit trail (RFC-0040). True for format v4; false for v2 and
+    /// v3, whose metadata is unauthenticated (GHSA-69cp-fwrw-82vh). Derived
+    /// from the format, never read from the file.
+    pub metadata_signed: bool,
     /// Overall verification result
     pub is_valid: bool,
     /// Errors encountered during verification (if any)
@@ -1051,6 +1070,7 @@ impl VerificationReport {
             hash_chain_valid: false,
             audit_chain_valid: false,
             signatures_valid: false,
+            metadata_signed: false,
             is_valid: false,
             errors: Vec::new(),
             temporal_warnings: Vec::new(),
@@ -1274,7 +1294,15 @@ pub(crate) fn verify_bytes(
             .push(format!("Signature verification failed: {e}")),
     }
 
-    verify_audit_chain_into_report(&parser, &mut report);
+    report.metadata_signed = context.format().signs_metadata();
+    if report.metadata_signed {
+        match crate::metadata::verify_v4_metadata(&parser, &versions) {
+            Ok(_) => report.audit_chain_valid = true,
+            Err(e) => report.errors.push(e.to_string()),
+        }
+    } else {
+        verify_audit_chain_into_report(&parser, &mut report);
+    }
 
     report.temporal_warnings = check_temporal_ordering(&versions);
     report.is_valid = report.structure_valid
@@ -1309,7 +1337,9 @@ fn verify_content_chain_into_report(
     }
     let payload = match context.format() {
         crate::format::FormatVersion::V2 => verify_rules_payload(parser, versions),
-        crate::format::FormatVersion::V3 => verify_rules_section_v3(parser, versions),
+        crate::format::FormatVersion::V3 | crate::format::FormatVersion::V4 => {
+            verify_rules_section_v3(parser, versions)
+        }
     };
     match payload {
         Ok(()) => report.hash_chain_valid = true,
@@ -1338,7 +1368,7 @@ fn verify_rules_payload(parser: &AionParser<'_>, versions: &[VersionEntry]) -> R
 /// confidential one needs a recipient key.
 fn read_rules_section_v3(parser: &AionParser<'_>, latest: &VersionEntry) -> Result<Vec<u8>> {
     verify_rules_section_v3(parser, std::slice::from_ref(latest))?;
-    match crate::format::RulesMode::of(latest)? {
+    match crate::format::RulesMode::of(latest, parser.header().format()?)? {
         crate::format::RulesMode::Public => {
             Ok(crate::format::unframe_rules(parser.encrypted_rules_bytes()?)?.to_vec())
         }
@@ -1356,7 +1386,7 @@ fn verify_rules_section_v3(parser: &AionParser<'_>, versions: &[VersionEntry]) -
     let latest = versions.last().ok_or_else(|| AionError::InvalidFormat {
         reason: "Version chain is empty".to_string(),
     })?;
-    let mode = crate::format::RulesMode::of(latest)?;
+    let mode = crate::format::RulesMode::of(latest, parser.header().format()?)?;
     if parser.header().is_encrypted() != (mode == crate::format::RulesMode::Confidential) {
         return Err(AionError::InvalidFormat {
             reason: "header rules-mode flag does not match the head version".to_string(),
@@ -1435,6 +1465,8 @@ pub(crate) const fn classify_verify_failure(report: &VerificationReport) -> &'st
         "integrity_hash_mismatch"
     } else if !report.hash_chain_valid {
         "hash_chain_broken"
+    } else if !report.audit_chain_valid && report.metadata_signed {
+        "metadata_invalid"
     } else if !report.audit_chain_valid {
         "audit_chain_broken"
     } else if !report.signatures_valid {
@@ -1616,7 +1648,7 @@ pub fn show_current_rules(path: &Path) -> Result<Vec<u8>> {
     let latest_idx = (version_count - 1) as usize;
     let latest_version = parser.get_version_entry(latest_idx)?;
 
-    if header.format()? == crate::format::FormatVersion::V3 {
+    if header.format()?.has_rules_modes() {
         return read_rules_section_v3(&parser, &latest_version);
     }
 
@@ -1918,12 +1950,13 @@ fn build_updated_file(
     new_signature: SignatureEntry,
     string_table: Vec<u8>,
     timestamp: u64,
-    author_id: AuthorId,
+    new_audit: AuditEntry,
 ) -> Result<AionFile> {
     let versions = collect_existing_plus(parser, header.version_chain_count, new_version_entry)?;
     let signatures =
         collect_existing_plus_signatures(parser, header.signatures_count, new_signature)?;
-    let audit_entries = collect_existing_audit_plus_commit(parser, header, timestamp, author_id)?;
+    let mut audit_entries = collect_audit_entries(parser, header.audit_trail_count)?;
+    audit_entries.push(new_audit);
 
     AionFile::builder()
         .format(context.format())
@@ -1982,29 +2015,84 @@ fn collect_existing_plus_signatures(
 
 #[allow(clippy::cast_possible_truncation)]
 #[allow(clippy::arithmetic_side_effects)]
-fn collect_existing_audit_plus_commit(
-    parser: &AionParser<'_>,
-    header: &crate::parser::FileHeader,
-    timestamp: u64,
-    author_id: AuthorId,
-) -> Result<Vec<AuditEntry>> {
-    let n = header.audit_trail_count as usize;
-    let mut audit_entries = Vec::with_capacity(n + 1);
+fn collect_audit_entries(parser: &AionParser<'_>, count: u64) -> Result<Vec<AuditEntry>> {
+    let n = usize::try_from(count).map_err(|_| AionError::InvalidFormat {
+        reason: "audit trail count overflows usize".to_string(),
+    })?;
+    let mut audit_entries = Vec::with_capacity(n.saturating_add(1));
     for i in 0..n {
         audit_entries.push(parser.get_audit_entry(i)?);
     }
-    let previous_hash = audit_entries
-        .last()
-        .map_or([0u8; 32], AuditEntry::compute_hash);
-    audit_entries.push(AuditEntry::new(
-        timestamp,
-        author_id,
+    Ok(audit_entries)
+}
+
+/// The new commit's audit entry, chained to the last one, and for format
+/// v4 the version entry carrying its signed metadata commitment
+/// (RFC-0040): over the commit message and the new audit entry's v4 hash.
+fn new_entry_and_audit(
+    parser: &AionParser<'_>,
+    context: &FileContext,
+    entry: VersionEntry,
+    options: &ExternalCommitOptions<'_>,
+) -> Result<(VersionEntry, AuditEntry)> {
+    let audit = AuditEntry::new(
+        entry.timestamp,
+        options.author_id,
         ActionCode::CommitVersion,
         0,
         0,
-        previous_hash,
-    ));
-    Ok(audit_entries)
+        last_audit_hash(parser, context)?,
+    );
+    if !context.format().signs_metadata() {
+        return Ok((entry, audit));
+    }
+    let audit_hash = crate::metadata::audit_hash_v4(&audit, &[])?;
+    let commitment = crate::format::metadata_commitment(
+        entry.version_number,
+        options.message.as_bytes(),
+        &audit_hash,
+    )?;
+    Ok((entry.with_metadata_commitment(commitment), audit))
+}
+
+/// Hash of the file's last audit entry as the next entry's
+/// `previous_hash`: the v4 hash with its details for format v4, the
+/// original 80-byte hash before that.
+fn last_audit_hash(parser: &AionParser<'_>, context: &FileContext) -> Result<[u8; 32]> {
+    let count = parser.header().audit_trail_count;
+    let Some(last_index) = count.checked_sub(1) else {
+        return Ok([0u8; 32]);
+    };
+    let index = usize::try_from(last_index).map_err(|_| AionError::InvalidFormat {
+        reason: "audit trail count overflows usize".to_string(),
+    })?;
+    let last = parser.get_audit_entry(index)?;
+    if !context.format().signs_metadata() {
+        return Ok(last.compute_hash());
+    }
+    let details = audit_details(parser, &last)?;
+    crate::metadata::audit_hash_v4(&last, details)
+}
+
+/// The details text an audit entry points at in the string table.
+fn audit_details<'a>(parser: &AionParser<'a>, audit: &AuditEntry) -> Result<&'a [u8]> {
+    if audit.details_length() == 0 {
+        return Ok(&[]);
+    }
+    let table = parser.string_table_bytes()?;
+    let start = usize::try_from(audit.details_offset()).map_err(|_| AionError::InvalidFormat {
+        reason: "audit details offset overflows usize".to_string(),
+    })?;
+    let end = start
+        .checked_add(audit.details_length() as usize)
+        .ok_or_else(|| AionError::InvalidFormat {
+            reason: "audit details range overflows".to_string(),
+        })?;
+    table
+        .get(start..end)
+        .ok_or_else(|| AionError::InvalidFormat {
+            reason: "audit details out of range".to_string(),
+        })
 }
 
 #[cfg(test)]
@@ -2338,7 +2426,7 @@ mod tests {
         }
 
         #[test]
-        fn external_signer_on_a_v3_file_signs_the_v3_message_exactly_once() {
+        fn external_signer_on_a_v4_file_signs_the_v4_message_exactly_once() {
             let temp_dir = TempDir::new().unwrap_or_else(|_| std::process::abort());
             let file_path = temp_dir.path().join("external-v3.aion");
             let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
@@ -2372,7 +2460,7 @@ mod tests {
                 .header()
                 .context()
                 .unwrap_or_else(|_| std::process::abort());
-            assert_eq!(context.format(), FormatVersion::V3);
+            assert_eq!(context.format(), FormatVersion::V4);
             let landed = parser
                 .get_version_entry(1)
                 .unwrap_or_else(|_| std::process::abort());
@@ -4108,10 +4196,10 @@ mod tests {
         #[test]
         fn unknown_format_version_is_rejected() {
             let (mut bytes, _) = fixture(&[(b"rules", RulesMode::Public)]);
-            bytes[4] = 4;
+            bytes[4] = 5;
             assert!(matches!(
                 AionParser::new(&bytes),
-                Err(AionError::UnsupportedVersion { version: 4, .. })
+                Err(AionError::UnsupportedVersion { version: 5, .. })
             ));
         }
 
@@ -4149,7 +4237,14 @@ mod tests {
                 .unwrap_or_else(|_| std::process::abort());
             assert_eq!(head.rules_hash, result.rules_hash);
             assert_eq!(
-                RulesMode::of(&head).unwrap_or_else(|_| std::process::abort()),
+                RulesMode::of(
+                    &head,
+                    parser
+                        .header()
+                        .format()
+                        .unwrap_or_else(|_| std::process::abort())
+                )
+                .unwrap_or_else(|_| std::process::abort()),
                 RulesMode::Public
             );
         }
@@ -4243,7 +4338,14 @@ mod tests {
                         .get_version_entry(index)
                         .unwrap_or_else(|_| std::process::abort());
                     assert_eq!(
-                        RulesMode::of(&entry).unwrap_or_else(|_| std::process::abort()),
+                        RulesMode::of(
+                            &entry,
+                            parser
+                                .header()
+                                .format()
+                                .unwrap_or_else(|_| std::process::abort())
+                        )
+                        .unwrap_or_else(|_| std::process::abort()),
                         RulesMode::Public
                     );
                 }
@@ -4682,7 +4784,7 @@ mod tests {
         }
 
         #[test]
-        fn should_write_public_rules_as_a_v3_frame_in_the_clear() {
+        fn should_write_public_rules_as_a_v4_frame_in_the_clear() {
             let temp_dir = TempDir::new().unwrap_or_else(|_| std::process::abort());
             let file_path = temp_dir.path().join("public.aion");
 
@@ -4703,7 +4805,7 @@ mod tests {
             // the signature (not secrecy) is what protects it.
             let bytes = std::fs::read(&file_path).unwrap_or_else(|_| std::process::abort());
             let parser = AionParser::new(&bytes).unwrap_or_else(|_| std::process::abort());
-            assert_eq!(parser.header().version, 3);
+            assert_eq!(parser.header().version, 4);
             assert!(!parser.header().is_encrypted());
             let section = parser
                 .encrypted_rules_bytes()
@@ -4716,7 +4818,14 @@ mod tests {
                 .get_version_entry(0)
                 .unwrap_or_else(|_| std::process::abort());
             assert_eq!(
-                RulesMode::of(&genesis).unwrap_or_else(|_| std::process::abort()),
+                RulesMode::of(
+                    &genesis,
+                    parser
+                        .header()
+                        .format()
+                        .unwrap_or_else(|_| std::process::abort())
+                )
+                .unwrap_or_else(|_| std::process::abort()),
                 RulesMode::Public
             );
             assert_eq!(

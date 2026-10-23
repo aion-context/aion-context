@@ -167,7 +167,9 @@ impl VerifiedChain {
                 let entry = parser.get_version_entry(index)?;
                 let mode = match context.format() {
                     FormatVersion::V2 => None,
-                    FormatVersion::V3 => Some(RulesMode::of(&entry)?),
+                    format @ (FormatVersion::V3 | FormatVersion::V4) => {
+                        Some(RulesMode::of(&entry, format)?)
+                    }
                 };
                 let version_hash = context.version_hash(&entry)?;
                 Ok(CheckedEntry {
@@ -489,7 +491,7 @@ pub fn open_rules_section(
             entry.rules_commitment(),
         )
         .map(Zeroizing::new),
-        FormatVersion::V3 => open_v3_section(section, entry, keys),
+        FormatVersion::V3 | FormatVersion::V4 => open_v3_section(section, entry, keys),
     }
 }
 
@@ -522,7 +524,7 @@ fn bound_mode(section: &[u8], entry: VerifiedEntry<'_>) -> Result<RulesMode> {
 
 /// A confidential section bound to `entry`, parsed and size-checked.
 fn bound_confidential<'s>(section: &'s [u8], entry: VerifiedEntry<'_>) -> Result<Envelope<'s>> {
-    if entry.context().format() != FormatVersion::V3
+    if !entry.context().format().has_rules_modes()
         || bound_mode(section, entry)? != RulesMode::Confidential
     {
         return Err(AionError::InvalidFormat {
@@ -700,7 +702,7 @@ mod tests {
     }
 
     #[test]
-    fn verified_v3_chain_opens_its_head_rules() {
+    fn verified_v4_chain_opens_its_head_rules() {
         let dir = ok(TempDir::new());
         let path = dir.path().join("chain.aion");
         let key = ok(SigningKey::generate());
@@ -711,7 +713,7 @@ mod tests {
         assert_eq!(chain.version_count(), 3);
         assert_eq!(chain.head().version(), VersionNumber(3));
         assert_eq!(chain.head().author(), author);
-        assert_eq!(chain.context().format(), FormatVersion::V3);
+        assert_eq!(chain.context().format(), FormatVersion::V4);
         assert!(chain
             .entries()
             .all(|entry| entry.rules_mode() == Some(RulesMode::Public)));

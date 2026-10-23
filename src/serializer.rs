@@ -76,17 +76,29 @@ impl VersionEntry {
     /// # Example
     ///
     /// ```
-    /// use aion_context::format::RulesMode;
+    /// use aion_context::format::{FormatVersion, RulesMode};
     /// use aion_context::serializer::VersionEntry;
     /// use aion_context::types::{AuthorId, VersionNumber};
     ///
     /// let entry = VersionEntry::new(VersionNumber::GENESIS, [0; 32], [1; 32], AuthorId::new(1), 0, 0, 0)
     ///     .with_rules_mode(RulesMode::Confidential);
-    /// assert_eq!(RulesMode::of(&entry).ok(), Some(RulesMode::Confidential));
+    /// assert_eq!(RulesMode::of(&entry, FormatVersion::V3).ok(), Some(RulesMode::Confidential));
     /// ```
     #[must_use]
     pub const fn with_rules_mode(mut self, mode: crate::format::RulesMode) -> Self {
         self.reserved[0] = mode.as_u8();
+        self
+    }
+
+    /// Record a v4 metadata commitment in `reserved[1..33]` (RFC-0040).
+    #[must_use]
+    pub fn with_metadata_commitment(mut self, commitment: [u8; 32]) -> Self {
+        if let Some(slot) = self
+            .reserved
+            .get_mut(1..=crate::format::METADATA_COMMITMENT_LEN)
+        {
+            slot.copy_from_slice(&commitment);
+        }
         self
     }
 }

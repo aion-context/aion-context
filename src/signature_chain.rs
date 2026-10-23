@@ -80,6 +80,15 @@ pub const VERSION_HASH_DOMAIN_V3: &[u8] = b"AION_V3_VERSION_HASH_V1\0";
 /// Domain separator for format-v3 attestations (RFC-0021, RFC-0039).
 pub const ATTESTATION_DOMAIN_V3: &[u8] = b"AION_V3_ATTESTATION_V1\0";
 
+/// Domain separator for format-v4 version signatures (RFC-0040).
+pub const SIGNATURE_DOMAIN_V4: &[u8] = b"AION_V4_VERSION_SIGNATURE_V1\0";
+
+/// Domain separator for format-v4 version hashes (RFC-0040).
+pub const VERSION_HASH_DOMAIN_V4: &[u8] = b"AION_V4_VERSION_HASH_V1\0";
+
+/// Domain separator for format-v4 attestations (RFC-0021, RFC-0040).
+pub const ATTESTATION_DOMAIN_V4: &[u8] = b"AION_V4_ATTESTATION_V1\0";
+
 /// Length of the fields a v3 message binds, after its domain:
 /// format version (2), `file_id` (8), mode (1), and the 100 bytes of
 /// version fields that v2 also signs.
@@ -374,11 +383,20 @@ pub fn canonical_attestation_message(version: &VersionEntry, signer: AuthorId) -
 /// parent_hash[32] ‖ rules_commitment[32] ‖ author u64 ‖ timestamp u64 ‖
 /// message_offset u64 ‖ message_length u32`, all little-endian.
 fn v3_bound_fields(version: &VersionEntry, file_id: FileId) -> Result<Vec<u8>> {
-    let mode = RulesMode::of(version)?;
-    let mut fields = Vec::with_capacity(V3_BOUND_FIELDS_LEN);
-    fields.extend_from_slice(&FormatVersion::V3.as_u16().to_le_bytes());
+    bound_fields(version, file_id, FormatVersion::V3)
+}
+
+/// The fields a v3 or v4 message binds. v4 inserts the entry's
+/// `metadata_commitment[32]` after the mode (RFC-0040).
+fn bound_fields(version: &VersionEntry, file_id: FileId, format: FormatVersion) -> Result<Vec<u8>> {
+    let mode = RulesMode::of(version, format)?;
+    let mut fields = Vec::with_capacity(V3_BOUND_FIELDS_LEN.saturating_add(32));
+    fields.extend_from_slice(&format.as_u16().to_le_bytes());
     fields.extend_from_slice(&file_id.as_u64().to_le_bytes());
     fields.push(mode.as_u8());
+    if format == FormatVersion::V4 {
+        fields.extend_from_slice(&crate::format::stored_metadata_commitment(version));
+    }
     fields.extend_from_slice(&version.version_number.to_le_bytes());
     fields.extend_from_slice(&version.parent_hash);
     fields.extend_from_slice(&version.rules_hash);
@@ -453,6 +471,63 @@ pub(crate) fn canonical_attestation_message_v3(
         .saturating_add(8);
     let mut message = Vec::with_capacity(capacity);
     message.extend_from_slice(ATTESTATION_DOMAIN_V3);
+    message.extend_from_slice(&fields);
+    message.extend_from_slice(&signer.as_u64().to_le_bytes());
+    Ok(message)
+}
+
+/// Canonical message a format-v4 version signature covers (RFC-0040):
+/// `SIGNATURE_DOMAIN_V4 ‖ format_version ‖ file_id ‖ rules_mode ‖
+/// metadata_commitment ‖` the v2 version fields.
+///
+/// # Errors
+///
+/// Returns [`crate::AionError::InvalidFormat`] if the entry's rules mode
+/// byte is unknown or a reserved byte that must be zero is not.
+pub(crate) fn canonical_version_message_v4(
+    version: &VersionEntry,
+    file_id: FileId,
+) -> Result<Vec<u8>> {
+    let fields = bound_fields(version, file_id, FormatVersion::V4)?;
+    let mut message = Vec::with_capacity(SIGNATURE_DOMAIN_V4.len().saturating_add(fields.len()));
+    message.extend_from_slice(SIGNATURE_DOMAIN_V4);
+    message.extend_from_slice(&fields);
+    Ok(message)
+}
+
+/// Hash of a format-v4 version entry, the value the next version's
+/// `parent_hash` links to (RFC-0040). Covers the metadata commitment, so a
+/// version's metadata is part of its identity.
+///
+/// # Errors
+///
+/// As [`canonical_version_message_v4`].
+pub(crate) fn compute_version_hash_v4(version: &VersionEntry, file_id: FileId) -> Result<[u8; 32]> {
+    let fields = bound_fields(version, file_id, FormatVersion::V4)?;
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(VERSION_HASH_DOMAIN_V4);
+    hasher.update(&fields);
+    Ok(*hasher.finalize().as_bytes())
+}
+
+/// Canonical message a format-v4 attestation covers (RFC-0021, RFC-0040):
+/// `ATTESTATION_DOMAIN_V4 ‖` the v4 bound fields `‖ signer u64`.
+///
+/// # Errors
+///
+/// As [`canonical_version_message_v4`].
+pub(crate) fn canonical_attestation_message_v4(
+    version: &VersionEntry,
+    file_id: FileId,
+    signer: AuthorId,
+) -> Result<Vec<u8>> {
+    let fields = bound_fields(version, file_id, FormatVersion::V4)?;
+    let capacity = ATTESTATION_DOMAIN_V4
+        .len()
+        .saturating_add(fields.len())
+        .saturating_add(8);
+    let mut message = Vec::with_capacity(capacity);
+    message.extend_from_slice(ATTESTATION_DOMAIN_V4);
     message.extend_from_slice(&fields);
     message.extend_from_slice(&signer.as_u64().to_le_bytes());
     Ok(message)

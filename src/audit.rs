@@ -56,6 +56,10 @@ use crate::crypto::hash;
 use crate::types::AuthorId;
 use crate::{AionError, Result};
 
+/// Domain separator for the format-v4 audit-entry hash (RFC-0040), which
+/// also covers the entry's details text.
+pub const AUDIT_ENTRY_DOMAIN_V4: &[u8] = b"AION_V4_AUDIT_ENTRY_V1\0";
+
 /// Audit trail entry with hash chain integrity
 ///
 /// Fixed 80-byte structure as specified in RFC-0002 Section 5.4.
@@ -437,6 +441,10 @@ pub enum ActionCode {
 
     /// File inspection/audit operation
     Inspect = 4,
+
+    /// Genesis of a file migrated from another (RFC-0040). Its details
+    /// carry the signed migration link.
+    MigratedFrom = 5,
 }
 
 impl ActionCode {
@@ -461,6 +469,7 @@ impl ActionCode {
             2 => Ok(Self::CommitVersion),
             3 => Ok(Self::Verify),
             4 => Ok(Self::Inspect),
+            5 => Ok(Self::MigratedFrom),
             _ => Err(AionError::InvalidActionCode { code: value }),
         }
     }
@@ -482,6 +491,7 @@ impl ActionCode {
             Self::CommitVersion => "Commit new version",
             Self::Verify => "Verify signatures",
             Self::Inspect => "Inspect file",
+            Self::MigratedFrom => "Migrated from another file",
         }
     }
 }
@@ -706,7 +716,7 @@ mod tests {
         #[test]
         fn should_reject_invalid_codes() {
             assert!(ActionCode::from_u16(0).is_err());
-            assert!(ActionCode::from_u16(5).is_err());
+            assert!(ActionCode::from_u16(6).is_err());
             assert!(ActionCode::from_u16(99).is_err());
             assert!(ActionCode::from_u16(100).is_err());
         }
