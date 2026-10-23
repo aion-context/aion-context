@@ -10,11 +10,12 @@ file-based keystore otherwise.
 aion key <SUBCOMMAND>
 
 Subcommands:
-  generate    Create a fresh Ed25519 keypair under a key ID
+  generate    Create a fresh Ed25519 keypair, or with --encryption an encryption identity
+  recipient   Print an encryption identity's recipient string
   list        List every stored key (when the backend supports enumeration)
   export      Export a key to a password-protected file
   import      Import a key from a password-protected file
-  delete      Delete a key from the keystore
+  delete      Delete a key (or with --encryption, an encryption identity)
 ```
 
 ## `aion key generate`
@@ -28,6 +29,28 @@ is used as the AuthorId when this key signs versions.
 
 Output prints the public bytes — operators copy these into
 the registry JSON when pinning.
+
+### Encryption identities (RFC-0039)
+
+```bash
+aion key generate --id <IDENTITY_ID> --encryption [--kem xwing|x25519]
+aion key recipient <IDENTITY_ID> [-o <FILE>]
+aion key delete <IDENTITY_ID> --encryption [--force]
+```
+
+An encryption identity lets its holder read confidential rules. It is
+stored as its KEM kind plus a 32-byte seed, in a namespace separate from
+signing keys: identity `501` and signing key `501` are unrelated.
+`--kem` defaults to `xwing` (ML-KEM-768 + X25519, post-quantum hybrid);
+`x25519` is smaller but not post-quantum.
+
+`aion key recipient` prints the public half as one line,
+`aion-recipient:<kem>:<hex>`, which writers pass to `--recipient`.
+
+Deleting an identity asks for confirmation unless `--force` is given:
+nothing else can read files sealed only to it. `aion key list`,
+`export` and `import` do not cover encryption identities yet, so back
+up the keystore directory if an identity matters.
 
 ## `aion key list`
 

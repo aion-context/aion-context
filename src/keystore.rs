@@ -33,9 +33,10 @@
 //! ```
 
 use crate::crypto::{decrypt, encrypt, generate_nonce, SigningKey, VerifyingKey};
-use crate::types::AuthorId;
+use crate::types::{AuthorId, EncryptionIdentityId};
 use crate::{AionError, Result};
 use std::path::PathBuf;
+use zeroize::Zeroizing;
 
 /// Service name for keyring entries
 const KEYRING_SERVICE: &str = "aion-v2";
@@ -168,25 +169,43 @@ impl KeyStore {
 
     /// Store a key to encrypted file
     fn store_key_to_file(&self, author_id: AuthorId, key: &SigningKey) -> Result<()> {
-        // Ensure keys directory exists
+        let encrypted = encrypt_key_for_storage(author_id, key)?;
+        self.write_secret_file(&self.get_key_file_path(author_id), &encrypted)
+    }
+
+    /// Write an already-sealed secret file atomically, mode 0600 on Unix.
+    fn write_secret_file(&self, file_path: &std::path::Path, encrypted: &[u8]) -> Result<()> {
         std::fs::create_dir_all(&self.storage_dir).map_err(|e| AionError::KeyringError {
             operation: "create_dir".to_string(),
             reason: e.to_string(),
         })?;
 
-        let file_path = self.get_key_file_path(author_id);
-
-        // Encrypt key with machine-specific key
-        let encrypted = encrypt_key_for_storage(author_id, key)?;
-
-        // Write atomically via temp file
+        // Write atomically via a temp file that is 0600 from the moment it
+        // exists, so the secret is never readable by others in between.
         let temp_path = file_path.with_extension("tmp");
-        std::fs::write(&temp_path, &encrypted).map_err(|e| AionError::KeyringError {
-            operation: "write".to_string(),
+        let io_error = |operation: &str, e: std::io::Error| AionError::KeyringError {
+            operation: operation.to_string(),
             reason: e.to_string(),
-        })?;
+        };
+        match std::fs::remove_file(&temp_path) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                return Err(io_error("cleanup", e));
+            }
+            _ => {}
+        }
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut temp = options.open(&temp_path).map_err(|e| io_error("write", e))?;
+        std::io::Write::write_all(&mut temp, encrypted).map_err(|e| io_error("write", e))?;
+        temp.sync_all().map_err(|e| io_error("write", e))?;
+        drop(temp);
 
-        std::fs::rename(&temp_path, &file_path).map_err(|e| AionError::KeyringError {
+        std::fs::rename(&temp_path, file_path).map_err(|e| AionError::KeyringError {
             operation: "rename".to_string(),
             reason: e.to_string(),
         })?;
@@ -196,7 +215,7 @@ impl KeyStore {
         {
             use std::os::unix::fs::PermissionsExt;
             let perms = std::fs::Permissions::from_mode(0o600);
-            std::fs::set_permissions(&file_path, perms).map_err(|e| AionError::KeyringError {
+            std::fs::set_permissions(file_path, perms).map_err(|e| AionError::KeyringError {
                 operation: "chmod".to_string(),
                 reason: e.to_string(),
             })?;
@@ -451,13 +470,177 @@ impl KeyStore {
     /// Get keyring entry for an author
     #[allow(clippy::unused_self)] // Method for API consistency
     fn get_entry(&self, author_id: AuthorId) -> Result<keyring_core::Entry> {
-        ensure_keyring_store();
-        let username = format!("author-{}", author_id.as_u64());
-        keyring_core::Entry::new(KEYRING_SERVICE, &username).map_err(|e| AionError::KeyringError {
-            operation: "access".to_string(),
+        named_entry(&format!("author-{}", author_id.as_u64()))
+    }
+
+    /// Store a new encryption identity (RFC-0039) under `id`, as its KEM
+    /// kind byte followed by its 32-byte seed. Refuses to overwrite: losing
+    /// an identity locks its holder out of every file sealed to it.
+    ///
+    /// # Errors
+    ///
+    /// [`AionError::KeyStoreFailed`] if an identity is already stored under
+    /// `id`, or a keyring or file error.
+    pub fn store_encryption_identity(
+        &self,
+        id: EncryptionIdentityId,
+        identity: &crate::confidential::EncryptionIdentity,
+    ) -> Result<()> {
+        let exists = || AionError::KeyStoreFailed {
+            reason: format!("encryption identity {id} already exists"),
+        };
+        let mut record = Zeroizing::new(Vec::with_capacity(ENCRYPTION_RECORD_LEN));
+        record.push(identity.kind().stanza_kind());
+        record.extend_from_slice(identity.seed().as_ref());
+        if self.use_file_storage {
+            let path = self.encryption_file_path(id);
+            if path.exists() {
+                return Err(exists());
+            }
+            let sealed = seal_for_storage(&encryption_aad(id), &record)?;
+            return self.write_secret_file(&path, &sealed);
+        }
+        let entry = named_entry(&encryption_username(id))?;
+        match entry.get_password() {
+            Ok(_) => return Err(exists()),
+            Err(keyring_core::Error::NoEntry) => {}
+            Err(e) => return Err(keyring_failure("check", &e)),
+        }
+        let hex_record = Zeroizing::new(hex::encode(record.as_slice()));
+        entry
+            .set_password(&hex_record)
+            .map_err(|e| keyring_failure("store", &e))
+    }
+
+    /// Load the encryption identity stored under `id`.
+    ///
+    /// # Errors
+    ///
+    /// [`AionError::IdentityNotFound`] if none is stored,
+    /// [`AionError::InvalidPrivateKey`] for a corrupt record, or a keyring
+    /// or file error.
+    pub fn load_encryption_identity(
+        &self,
+        id: EncryptionIdentityId,
+    ) -> Result<crate::confidential::EncryptionIdentity> {
+        let record = if self.use_file_storage {
+            let sealed = std::fs::read(self.encryption_file_path(id)).map_err(|e| {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    AionError::IdentityNotFound { id }
+                } else {
+                    AionError::KeyringError {
+                        operation: "read".to_string(),
+                        reason: e.to_string(),
+                    }
+                }
+            })?;
+            open_from_storage(&encryption_aad(id), &sealed, ENCRYPTION_RECORD_LEN)?
+        } else {
+            let hex_record = Zeroizing::new(
+                named_entry(&encryption_username(id))?
+                    .get_password()
+                    .map_err(|e| match e {
+                        keyring_core::Error::NoEntry => AionError::IdentityNotFound { id },
+                        other => keyring_failure("load", &other),
+                    })?,
+            );
+            Zeroizing::new(hex::decode(hex_record.as_str()).map_err(|_| corrupt_identity())?)
+        };
+        decode_encryption_record(&record)
+    }
+
+    /// Whether an encryption identity is stored under `id`. A keyring error
+    /// reads as absent; [`KeyStore::store_encryption_identity`] still
+    /// refuses to overwrite.
+    #[must_use]
+    pub fn has_encryption_identity(&self, id: EncryptionIdentityId) -> bool {
+        if self.use_file_storage {
+            return self.encryption_file_path(id).exists();
+        }
+        named_entry(&encryption_username(id)).is_ok_and(|entry| entry.get_password().is_ok())
+    }
+
+    /// Delete the encryption identity stored under `id`.
+    ///
+    /// # Errors
+    ///
+    /// [`AionError::IdentityNotFound`] if none is stored, or a keyring or
+    /// file error.
+    pub fn delete_encryption_identity(&self, id: EncryptionIdentityId) -> Result<()> {
+        if !self.use_file_storage {
+            return named_entry(&encryption_username(id))?
+                .delete_credential()
+                .map_err(|e| match e {
+                    keyring_core::Error::NoEntry => AionError::IdentityNotFound { id },
+                    other => keyring_failure("delete", &other),
+                });
+        }
+        let path = self.encryption_file_path(id);
+        if !path.exists() {
+            return Err(AionError::IdentityNotFound { id });
+        }
+        std::fs::remove_file(&path).map_err(|e| AionError::KeyringError {
+            operation: "delete".to_string(),
             reason: e.to_string(),
         })
     }
+
+    fn encryption_file_path(&self, id: EncryptionIdentityId) -> PathBuf {
+        self.storage_dir
+            .join(format!("{}{KEY_FILE_EXT}", encryption_username(id)))
+    }
+}
+
+/// Length of a stored encryption identity: kind byte plus 32-byte seed.
+const ENCRYPTION_RECORD_LEN: usize = 33;
+
+/// AAD prefix that keeps encryption-identity files apart from signing-key
+/// files, which use the bare author ID.
+const ENCRYPTION_AAD_PREFIX: &[u8] = b"aion-encryption-identity\0";
+
+fn encryption_username(id: EncryptionIdentityId) -> String {
+    format!("encryption-{id}")
+}
+
+fn encryption_aad(id: EncryptionIdentityId) -> Vec<u8> {
+    let mut aad = ENCRYPTION_AAD_PREFIX.to_vec();
+    aad.extend_from_slice(&id.as_u64().to_le_bytes());
+    aad
+}
+
+fn keyring_failure(operation: &str, error: &keyring_core::Error) -> AionError {
+    AionError::KeyringError {
+        operation: operation.to_string(),
+        reason: error.to_string(),
+    }
+}
+
+fn named_entry(username: &str) -> Result<keyring_core::Entry> {
+    ensure_keyring_store();
+    keyring_core::Entry::new(KEYRING_SERVICE, username).map_err(|e| AionError::KeyringError {
+        operation: "access".to_string(),
+        reason: e.to_string(),
+    })
+}
+
+fn corrupt_identity() -> AionError {
+    AionError::InvalidPrivateKey {
+        reason: "stored encryption identity is corrupt".to_string(),
+    }
+}
+
+/// Decode `kind ‖ seed`. The kind is stored with the seed so one seed is
+/// never loaded as another KEM.
+fn decode_encryption_record(record: &[u8]) -> Result<crate::confidential::EncryptionIdentity> {
+    let (kind, seed) = record.split_first().ok_or_else(corrupt_identity)?;
+    let kem =
+        crate::confidential::EncryptionKem::from_stanza_kind(*kind).ok_or_else(corrupt_identity)?;
+    if seed.len() != 32 {
+        return Err(corrupt_identity());
+    }
+    let mut seed_bytes = Zeroizing::new([0u8; 32]);
+    seed_bytes.copy_from_slice(seed);
+    crate::confidential::EncryptionIdentity::from_seed(kem, seed_bytes)
 }
 
 /// Parsed encrypted-key blob layout: magic(4) + version(1) + salt(16) + nonce(12) + ciphertext.
@@ -641,13 +824,20 @@ const FILE_STORAGE_SALT: [u8; SALT_SIZE] = [
 /// Uses a fixed salt with author ID as additional authenticated data.
 /// Security relies on filesystem permissions (0600) for the key files.
 fn encrypt_key_for_storage(author_id: AuthorId, key: &SigningKey) -> Result<Vec<u8>> {
+    seal_for_storage(&author_id.as_u64().to_le_bytes(), key.to_bytes())
+}
+
+/// Seal `secret` for file storage under the machine key, bound to `aad`.
+///
+/// Signing keys use the bare author ID as `aad`; encryption identities use
+/// a distinct prefix, so neither kind of file decrypts as the other.
+fn seal_for_storage(aad: &[u8], secret: &[u8]) -> Result<Vec<u8>> {
     // Derive encryption key from machine-specific data
     // Note: This is weaker than OS keyring but provides obfuscation
     let machine_key = derive_machine_key(&FILE_STORAGE_SALT)?;
 
     let nonce = generate_nonce()?;
-    let aad = author_id.as_u64().to_le_bytes();
-    let ciphertext = encrypt(&machine_key, &nonce, key.to_bytes(), &aad)?;
+    let ciphertext = encrypt(&machine_key, &nonce, secret, aad)?;
 
     // Format: MAGIC (4) + VERSION (1) + NONCE (12) + CIPHERTEXT
     #[allow(clippy::arithmetic_side_effects)] // Fixed-size constants
@@ -663,13 +853,24 @@ fn encrypt_key_for_storage(author_id: AuthorId, key: &SigningKey) -> Result<Vec<
 /// Decrypt a key from file-based storage
 #[allow(clippy::indexing_slicing)] // Bounds checked
 fn decrypt_key_from_storage(author_id: AuthorId, encrypted: &[u8]) -> Result<SigningKey> {
-    // Minimum: MAGIC(4) + VERSION(1) + NONCE(12) + KEY(32) + TAG(16) = 65
-    const MIN_SIZE: usize = 4 + 1 + 12 + 32 + 16;
+    let key_bytes = open_from_storage(&author_id.as_u64().to_le_bytes(), encrypted, 32)?;
+    SigningKey::from_bytes(&key_bytes)
+}
 
-    if encrypted.len() < MIN_SIZE {
+/// Open a [`seal_for_storage`] file that holds a `secret_len`-byte secret.
+#[allow(clippy::indexing_slicing)] // Bounds checked
+fn open_from_storage(
+    aad: &[u8],
+    encrypted: &[u8],
+    secret_len: usize,
+) -> Result<Zeroizing<Vec<u8>>> {
+    // Minimum: MAGIC(4) + VERSION(1) + NONCE(12) + SECRET + TAG(16)
+    let min_size = (4 + 1 + 12 + 16usize).saturating_add(secret_len);
+
+    if encrypted.len() < min_size {
         return Err(AionError::InvalidFormat {
             reason: format!(
-                "encrypted key file too small: {} bytes (minimum: {MIN_SIZE})",
+                "encrypted key file too small: {} bytes (minimum: {min_size})",
                 encrypted.len()
             ),
         });
@@ -699,10 +900,7 @@ fn decrypt_key_from_storage(author_id: AuthorId, encrypted: &[u8]) -> Result<Sig
     let ciphertext = &encrypted[17..];
 
     let machine_key = derive_machine_key(&FILE_STORAGE_SALT)?;
-    let aad = author_id.as_u64().to_le_bytes();
-    let key_bytes = decrypt(&machine_key, &nonce, ciphertext, &aad)?;
-
-    SigningKey::from_bytes(&key_bytes)
+    decrypt(&machine_key, &nonce, ciphertext, aad).map(Zeroizing::new)
 }
 
 /// Derive a machine-specific encryption key
@@ -769,6 +967,123 @@ fn get_machine_identifier() -> String {
 #[allow(clippy::indexing_slicing)]
 mod tests {
     use super::*;
+
+    mod encryption_identities {
+        use super::*;
+        use crate::confidential::{EncryptionIdentity, EncryptionKem};
+
+        fn ok<T>(result: Result<T>) -> T {
+            result.unwrap_or_else(|_| std::process::abort())
+        }
+
+        fn store() -> (tempfile::TempDir, KeyStore) {
+            let dir = tempfile::TempDir::new().unwrap_or_else(|_| std::process::abort());
+            let store = KeyStore::with_storage_dir(dir.path().to_path_buf());
+            (dir, store)
+        }
+
+        const fn id(n: u64) -> EncryptionIdentityId {
+            EncryptionIdentityId::new(n)
+        }
+
+        #[test]
+        fn identities_of_both_kems_round_trip_with_their_kind() {
+            let (_dir, store) = store();
+            for (n, kem) in [(1, EncryptionKem::X25519), (2, EncryptionKem::XWing)] {
+                let identity = ok(EncryptionIdentity::generate(kem));
+                ok(store.store_encryption_identity(id(n), &identity));
+                assert!(store.has_encryption_identity(id(n)));
+                let loaded = ok(store.load_encryption_identity(id(n)));
+                assert_eq!(loaded.kind(), kem);
+                assert_eq!(loaded.recipient(), identity.recipient());
+            }
+        }
+
+        #[test]
+        fn storing_never_overwrites_an_identity() {
+            let (_dir, store) = store();
+            let first = ok(EncryptionIdentity::generate(EncryptionKem::XWing));
+            ok(store.store_encryption_identity(id(3), &first));
+            let second = ok(EncryptionIdentity::generate(EncryptionKem::XWing));
+            assert!(matches!(
+                store.store_encryption_identity(id(3), &second),
+                Err(AionError::KeyStoreFailed { .. })
+            ));
+            assert_eq!(
+                ok(store.load_encryption_identity(id(3))).recipient(),
+                first.recipient()
+            );
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn identity_files_are_private() {
+            use std::os::unix::fs::PermissionsExt;
+            let (_dir, store) = store();
+            let identity = ok(EncryptionIdentity::generate(EncryptionKem::X25519));
+            ok(store.store_encryption_identity(id(4), &identity));
+            let mode = std::fs::metadata(store.encryption_file_path(id(4)))
+                .unwrap_or_else(|_| std::process::abort())
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+
+        #[test]
+        fn signing_keys_and_identities_do_not_collide() {
+            let (_dir, store) = store();
+            let (signing, _) = ok(store.generate_keypair(AuthorId::new(7)));
+            let identity = ok(EncryptionIdentity::generate(EncryptionKem::XWing));
+            ok(store.store_encryption_identity(id(7), &identity));
+            let reloaded = ok(store.load_signing_key(AuthorId::new(7)));
+            assert_eq!(reloaded.to_bytes(), signing.to_bytes());
+            assert_eq!(
+                ok(store.load_encryption_identity(id(7))).recipient(),
+                identity.recipient()
+            );
+
+            let read =
+                |path: PathBuf| std::fs::read(path).unwrap_or_else(|_| std::process::abort());
+            let signing_file = read(store.get_key_file_path(AuthorId::new(7)));
+            assert!(open_from_storage(&encryption_aad(id(7)), &signing_file, 32).is_err());
+            let identity_file = read(store.encryption_file_path(id(7)));
+            let author_aad = 7u64.to_le_bytes();
+            assert!(open_from_storage(&author_aad, &identity_file, 32).is_err());
+        }
+
+        #[test]
+        fn missing_and_deleted_identities_are_not_found() {
+            let (_dir, store) = store();
+            assert!(matches!(
+                store.load_encryption_identity(id(9)),
+                Err(AionError::IdentityNotFound { .. })
+            ));
+            let identity = ok(EncryptionIdentity::generate(EncryptionKem::X25519));
+            ok(store.store_encryption_identity(id(9), &identity));
+            ok(store.delete_encryption_identity(id(9)));
+            assert!(!store.has_encryption_identity(id(9)));
+            assert!(matches!(
+                store.delete_encryption_identity(id(9)),
+                Err(AionError::IdentityNotFound { .. })
+            ));
+        }
+
+        #[test]
+        fn a_stored_record_with_an_unknown_kind_does_not_load() {
+            let (_dir, store) = store();
+            let mut record = vec![0x7F];
+            record.extend_from_slice(&[1u8; 32]);
+            let sealed = ok(seal_for_storage(&encryption_aad(id(5)), &record));
+            ok(store.write_secret_file(&store.encryption_file_path(id(5)), &sealed));
+            assert!(matches!(
+                store.load_encryption_identity(id(5)),
+                Err(AionError::InvalidPrivateKey { .. })
+            ));
+            assert!(decode_encryption_record(&record[..20]).is_err());
+            record[0] = crate::envelope::STANZA_XWING;
+            assert!(decode_encryption_record(&record).is_ok());
+        }
+    }
 
     mod password_encryption {
         use super::*;

@@ -58,10 +58,11 @@ become provable instead of assumed.
 
 > **Tamper-evident always; secret only when you ask.** Public rules,
 > and every format-v2 file, can be read by anyone who holds the file.
-> Format-v3 rules sealed with `RulesProtection::Confidential` are
-> readable only by the X25519 or X-Wing recipients you name, and still
-> verify without any key (library API now; `aion --recipient` arrives
-> with RFC-0039 Phase B4). See [crypto](book/src/architecture/crypto.md#confidential-rules).
+> Format-v3 rules sealed to recipients (`aion init --recipient …`, or
+> `RulesProtection::Confidential` in the library) are readable only by
+> the X25519 or X-Wing recipients you name, and still verify without
+> any key. See [crypto](book/src/architecture/crypto.md#confidential-rules)
+> and [the CLI guide](book/src/cli/lifecycle.md#confidential-rules).
 
 It is *not* a replacement for sigstore, in-toto, or SLSA. It is the
 policy/document-shaped sibling those systems leave on the table — see

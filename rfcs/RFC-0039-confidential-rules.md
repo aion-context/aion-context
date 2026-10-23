@@ -709,7 +709,7 @@ should have been removed from carrying over by default.
 - Committing with any X25519 recipient or any external wrapper next
   to an X-Wing recipient prints a note: the version is only as
   post-quantum-safe as its weakest stanza.
-- `aion show <FILE> rules --identity <key-id>` decrypts. Without an
+- `aion show <FILE> --identity <IDENTITY_ID> rules` decrypts. Without an
   identity, a confidential file reports `RecipientKeyRequired` and
   exits 1. With an identity that isn't listed, it reports
   `NotARecipient`; with one that is listed but can't open the stanza,
@@ -1140,6 +1140,18 @@ Four PRs, each reviewed by `crypto-auditor` and `api-reviewer`:
 - **B4, keystore and CLI.** The encryption-identity key kind (X-Wing
   default), `aion key generate --encryption`, `--recipient`,
   `--keep-recipients`, and `--identity`.
+  - *Implementation note:* recipients travel as one line of text,
+    `aion-recipient:<kem>:<lowercase hex public key>` with `<kem>` one of
+    `x25519` or `xwing` (`Recipient`'s `Display` / `FromStr`). This
+    text form is a stability commitment, like the binary format.
+  - The keystore stores an identity as `kind ‖ seed`, where `kind` is
+    the stanza kind byte, in its own namespace (`encryption-<id>`). File
+    storage binds it to a distinct AAD prefix, so a signing-key file
+    never decrypts as an identity or the other way round.
+  - `aion key recipient` exports the recipient line; `aion key delete
+    --encryption` removes an identity. The CLI does not yet take KMS
+    recipients (`kms:…`); those arrive with external wrappers in
+    Phase C.
 
 Dependencies (B2):
 

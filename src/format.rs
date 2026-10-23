@@ -270,6 +270,68 @@ impl Recipient {
     }
 }
 
+/// Prefix of a recipient's text form.
+const RECIPIENT_TEXT_PREFIX: &str = "aion-recipient:";
+
+/// The recipient's text form, `aion-recipient:<kem>:<lowercase hex key>`,
+/// as written to a recipient file and read by [`Recipient::from_str`].
+///
+/// # Example
+///
+/// ```
+/// use aion_context::confidential::{EncryptionIdentity, EncryptionKem};
+/// use aion_context::format::Recipient;
+///
+/// let auditor = EncryptionIdentity::generate(EncryptionKem::X25519)?;
+/// let text = auditor.recipient().to_string();
+/// assert!(text.starts_with("aion-recipient:x25519:"));
+/// assert_eq!(text.parse::<Recipient>()?, auditor.recipient());
+/// # Ok::<(), aion_context::AionError>(())
+/// ```
+impl std::fmt::Display for Recipient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{RECIPIENT_TEXT_PREFIX}{}:{}",
+            self.kem(),
+            hex::encode(self.public_key())
+        )
+    }
+}
+
+impl std::str::FromStr for Recipient {
+    type Err = AionError;
+
+    /// Parse the canonical text form. Surrounding whitespace is ignored;
+    /// anything else that deviates, including uppercase hex, is rejected,
+    /// so each recipient has exactly one accepted spelling.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AionError::InvalidPublicKey`] for a missing prefix, an
+    /// unknown KEM name, non-lowercase-hex key bytes, or a key of the wrong
+    /// length for its KEM.
+    fn from_str(text: &str) -> Result<Self> {
+        let malformed = || AionError::InvalidPublicKey {
+            reason: "recipient is not in the form aion-recipient:<kem>:<lowercase hex>".to_string(),
+        };
+        let rest = text
+            .trim()
+            .strip_prefix(RECIPIENT_TEXT_PREFIX)
+            .ok_or_else(malformed)?;
+        let (kem, key_hex) = rest.split_once(':').ok_or_else(malformed)?;
+        let kem: crate::confidential::EncryptionKem = kem.parse().map_err(|_| malformed())?;
+        if !key_hex
+            .bytes()
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+        {
+            return Err(malformed());
+        }
+        let key = hex::decode(key_hex).map_err(|_| malformed())?;
+        Self::from_public_key(kem, &key)
+    }
+}
+
 /// Commit to a stored rules section (RFC-0039).
 ///
 /// `BLAKE3(RULES_COMMIT_DOMAIN ‖ mode ‖ section)`. The mode byte keeps the
@@ -643,6 +705,40 @@ mod tests {
                 padme_len(len).unwrap_or_else(|_| std::process::abort()),
                 padded,
                 "padme_len({len})"
+            );
+        }
+    }
+
+    /// The recipient text form is a stability commitment (RFC-0039 B4).
+    #[test]
+    fn recipient_text_form_is_pinned_and_strict() {
+        use crate::confidential::EncryptionKem;
+        let recipient = Recipient::from_public_key(EncryptionKem::X25519, &[0xAB; 32])
+            .unwrap_or_else(|_| std::process::abort());
+        let text = recipient.to_string();
+        assert_eq!(text, format!("aion-recipient:x25519:{}", "ab".repeat(32)));
+        assert_eq!(text.parse::<Recipient>().ok(), Some(recipient.clone()));
+        assert_eq!(
+            format!("  {text}\n").parse::<Recipient>().ok(),
+            Some(recipient)
+        );
+
+        let rejected = [
+            format!("aion-recipient:x25519:{}", "AB".repeat(32)),
+            format!("aion-recipient:x25519:{}", "ab".repeat(31)),
+            format!("aion-recipient:xwing:{}", "ab".repeat(32)),
+            format!("aion-recipient:mlkem:{}", "ab".repeat(32)),
+            format!("aion-recipient:x25519:0x{}", "ab".repeat(31)),
+            format!("recipient:x25519:{}", "ab".repeat(32)),
+            "aion-recipient:x25519".to_string(),
+        ];
+        for bad in rejected {
+            assert!(
+                matches!(
+                    bad.parse::<Recipient>(),
+                    Err(AionError::InvalidPublicKey { .. })
+                ),
+                "{bad}"
             );
         }
     }
