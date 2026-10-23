@@ -56,7 +56,8 @@ and the project follows [Semantic Versioning].
   `dsse::manifest_payload`, `dsse::wrap_version_attestation`, and
   `dsse::wrap_manifest` return `Result` instead of aborting the process
   if JSON serialization fails. Payload bytes are unchanged, so existing
-  envelopes still verify.
+  envelopes still verify. Migration: add `?` (or handle the `Err`) at
+  each call site; the error is `AionError::InvalidFormat`.
 - `commit_version` and the software-keystore CLI path now use the same internal
   signer abstraction as hardware-backed commits. Existing public call sites
   remain source-compatible.
