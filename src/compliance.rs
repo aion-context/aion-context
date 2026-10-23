@@ -9,7 +9,7 @@
 //! Reports are generated in structured formats (JSON, Markdown, plain text)
 //! suitable for regulatory submission or conversion to PDF.
 
-use crate::operations::{show_file_info, verify_file, FileInfo, VerificationReport};
+use crate::operations::{file_info_of, verify_bytes, FileInfo, VerificationReport};
 use crate::{AionError, Result};
 use std::path::Path;
 
@@ -132,9 +132,12 @@ pub fn generate_compliance_report(
     format: ReportFormat,
     registry: &crate::key_registry::KeyRegistry,
 ) -> Result<String> {
-    // Gather file information
-    let file_info = show_file_info(path, registry)?;
-    let verification = verify_file(path, registry)?;
+    let file_bytes = std::fs::read(path).map_err(|e| AionError::FileReadError {
+        path: path.to_path_buf(),
+        source: e,
+    })?;
+    let file_info = file_info_of(&file_bytes, registry)?;
+    let verification = verify_bytes(&file_bytes, registry)?;
 
     // Build report structure
     let report = build_report(path, framework, &file_info, &verification)?;

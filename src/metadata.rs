@@ -523,15 +523,65 @@ mod tests {
     /// version, so the swap fails.
     #[test]
     fn swapping_equal_length_messages_between_versions_fails() {
-        let fixture = v4_file();
+        let fixture = file_with_messages(&["Approved by: Alice", "Approved by: Brian"]);
         let mut bytes = ok(std::fs::read(&fixture.path));
-        let first = position(&bytes, APPROVAL);
-        let second = position(&bytes, b"Raised by: Bob");
-        let swapped_first: Vec<u8> = b"Raised by: Bob".to_vec();
-        bytes[first..first + 14].copy_from_slice(&swapped_first);
-        bytes[second..second + 14].copy_from_slice(&APPROVAL[..14]);
+        let first = position(&bytes, b"Approved by: Alice");
+        let second = position(&bytes, b"Approved by: Brian");
+        bytes[first..first + 18].copy_from_slice(b"Approved by: Brian");
+        bytes[second..second + 18].copy_from_slice(b"Approved by: Alice");
         recompute_integrity(&mut bytes);
         assert!(!verify_bytes_of(&fixture, &bytes).is_valid);
+    }
+
+    /// A message lifted from another validly signed file does not verify
+    /// in this one.
+    #[test]
+    fn swapping_equal_length_messages_between_files_fails() {
+        let ours = file_with_messages(&["Approved by: Alice"]);
+        let theirs = file_with_messages(&["Approved by: Brian"]);
+        let mut bytes = ok(std::fs::read(&ours.path));
+        let at = position(&bytes, b"Approved by: Alice");
+        let foreign = ok(std::fs::read(&theirs.path));
+        let from = position(&foreign, b"Approved by: Brian");
+        bytes[at..at + 18].copy_from_slice(&foreign[from..from + 18]);
+        recompute_integrity(&mut bytes);
+        assert!(!verify_bytes_of(&ours, &bytes).is_valid);
+    }
+
+    fn file_with_messages(messages: &[&str]) -> Fixture {
+        let dir = ok(TempDir::new());
+        let path = dir.path().join("m.aion");
+        let key = ok(SigningKey::generate());
+        let master = ok(SigningKey::generate());
+        let author = AuthorId::new(40_004);
+        let mut registry = KeyRegistry::new();
+        ok(registry.register_author(author, master.verifying_key(), key.verifying_key(), 0));
+        for (index, message) in messages.iter().enumerate() {
+            if index == 0 {
+                let init = InitOptions {
+                    author_id: author,
+                    signing_key: &key,
+                    message,
+                    timestamp: None,
+                    protection: RulesProtection::Public,
+                };
+                ok(init_file(&path, b"r", &init));
+            } else {
+                let commit = CommitOptions {
+                    author_id: author,
+                    signing_key: &key,
+                    message,
+                    timestamp: None,
+                    protection: RulesProtection::Public,
+                };
+                ok(commit_version(&path, b"r", &commit, &registry));
+            }
+        }
+        Fixture {
+            _dir: dir,
+            path,
+            registry,
+        }
     }
 
     #[test]

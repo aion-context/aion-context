@@ -1887,13 +1887,19 @@ pub fn show_file_info(
         path: path.to_path_buf(),
         source: e,
     })?;
-    let parser = AionParser::new(&file_bytes)?;
+    file_info_of(&file_bytes, registry)
+}
 
+/// [`show_file_info`] for bytes already read.
+pub(crate) fn file_info_of(
+    file_bytes: &[u8],
+    registry: &crate::key_registry::KeyRegistry,
+) -> Result<FileInfo> {
+    let parser = AionParser::new(file_bytes)?;
     let header = parser.header();
-
     let metadata_signed = header.format()?.signs_metadata();
     let versions = if metadata_signed {
-        let chain = crate::chain::VerifiedChain::from_bytes(&file_bytes, registry)?;
+        let chain = crate::chain::VerifiedChain::from_bytes(file_bytes, registry)?;
         crate::chain::verified_history(&chain)
     } else {
         let versions = collect_versions(&parser, header.version_chain_count)?;
@@ -1903,7 +1909,7 @@ pub fn show_file_info(
             .map(|entry| version_info(table, entry))
             .collect()
     };
-    let signatures = signatures_of(&file_bytes, registry)?;
+    let signatures = signatures_of(file_bytes, registry)?;
 
     let current_version = versions.last().map_or(0, |v| v.version_number);
 
