@@ -1,6 +1,6 @@
 {
   "version": "1",
-  "generated_at": "2026-07-20T16:02:14Z",
+  "generated_at": "2026-10-23T03:09:14Z",
   "workspace_members": [
     "path+file:///home/ops/Project/aion-context#1.0.0"
   ],
@@ -97,13 +97,6 @@
       "license_file": null
     },
     {
-      "name": "arrayref",
-      "version": "0.3.9",
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "license": "BSD-2-Clause",
-      "license_file": null
-    },
-    {
       "name": "arrayvec",
       "version": "0.7.6",
       "source": "registry+https://github.com/rust-lang/crates.io-index",
@@ -120,6 +113,13 @@
     {
       "name": "base64",
       "version": "0.22.1",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "license": "MIT OR Apache-2.0",
+      "license_file": null
+    },
+    {
+      "name": "base64",
+      "version": "0.23.1",
       "source": "registry+https://github.com/rust-lang/crates.io-index",
       "license": "MIT OR Apache-2.0",
       "license_file": null
@@ -147,7 +147,7 @@
     },
     {
       "name": "blake3",
-      "version": "1.8.5",
+      "version": "1.8.7",
       "source": "registry+https://github.com/rust-lang/crates.io-index",
       "license": "CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception",
       "license_file": null
@@ -210,7 +210,7 @@
     },
     {
       "name": "chacha20",
-      "version": "0.10.1",
+      "version": "0.10.2",
       "source": "registry+https://github.com/rust-lang/crates.io-index",
       "license": "MIT OR Apache-2.0",
       "license_file": null
@@ -252,21 +252,21 @@
     },
     {
       "name": "clap",
-      "version": "4.6.2",
+      "version": "4.6.6",
       "source": "registry+https://github.com/rust-lang/crates.io-index",
       "license": "MIT OR Apache-2.0",
       "license_file": null
     },
     {
       "name": "clap_builder",
-      "version": "4.6.2",
+      "version": "4.6.6",
       "source": "registry+https://github.com/rust-lang/crates.io-index",
       "license": "MIT OR Apache-2.0",
       "license_file": null
     },
     {
       "name": "clap_derive",
-      "version": "4.6.1",
+      "version": "4.6.4",
       "source": "registry+https://github.com/rust-lang/crates.io-index",
       "license": "MIT OR Apache-2.0",
       "license_file": null
@@ -531,13 +531,6 @@
       "license_file": null
     },
     {
-      "name": "foldhash",
-      "version": "0.1.5",
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "license": "Zlib",
-      "license_file": null
-    },
-    {
       "name": "form_urlencoded",
       "version": "1.2.2",
       "source": "registry+https://github.com/rust-lang/crates.io-index",
@@ -567,7 +560,7 @@
     },
     {
       "name": "getrandom",
-      "version": "0.4.2",
+      "version": "0.4.3",
       "source": "registry+https://github.com/rust-lang/crates.io-index",
       "license": "MIT OR Apache-2.0",
       "license_file": null
@@ -582,13 +575,6 @@
     {
       "name": "half",
       "version": "2.7.1",
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "license": "MIT OR Apache-2.0",
-      "license_file": null
-    },
-    {
-      "name": "hashbrown",
-      "version": "0.15.5",
       "source": "registry+https://github.com/rust-lang/crates.io-index",
       "license": "MIT OR Apache-2.0",
       "license_file": null
@@ -720,13 +706,6 @@
       "license_file": null
     },
     {
-      "name": "id-arena",
-      "version": "2.3.0",
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "license": "MIT/Apache-2.0",
-      "license_file": null
-    },
-    {
       "name": "idna",
       "version": "1.1.0",
       "source": "registry+https://github.com/rust-lang/crates.io-index",
@@ -806,13 +785,6 @@
     {
       "name": "lazy_static",
       "version": "1.5.0",
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "license": "MIT OR Apache-2.0",
-      "license_file": null
-    },
-    {
-      "name": "leb128fmt",
-      "version": "0.1.0",
       "source": "registry+https://github.com/rust-lang/crates.io-index",
       "license": "MIT OR Apache-2.0",
       "license_file": null
@@ -1042,13 +1014,6 @@
       "license_file": null
     },
     {
-      "name": "prettyplease",
-      "version": "0.2.37",
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "license": "MIT OR Apache-2.0",
-      "license_file": null
-    },
-    {
       "name": "proc-macro2",
       "version": "1.0.106",
       "source": "registry+https://github.com/rust-lang/crates.io-index",
@@ -1197,7 +1162,7 @@
     },
     {
       "name": "rustls",
-      "version": "0.23.39",
+      "version": "0.23.46",
       "source": "registry+https://github.com/rust-lang/crates.io-index",
       "license": "Apache-2.0 OR ISC OR MIT",
       "license_file": null
@@ -1211,7 +1176,7 @@
     },
     {
       "name": "rustls-webpki",
-      "version": "0.103.13",
+      "version": "0.103.16",
       "source": "registry+https://github.com/rust-lang/crates.io-index",
       "license": "ISC",
       "license_file": null
@@ -1539,13 +1504,6 @@
       "license_file": null
     },
     {
-      "name": "unicode-xid",
-      "version": "0.2.6",
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "license": "MIT OR Apache-2.0",
-      "license_file": null
-    },
-    {
       "name": "universal-hash",
       "version": "0.6.1",
       "source": "registry+https://github.com/rust-lang/crates.io-index",
@@ -1630,13 +1588,6 @@
       "license_file": null
     },
     {
-      "name": "wasip3",
-      "version": "0.4.0+wasi-0.3.0-rc-2026-01-06",
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
-      "license_file": null
-    },
-    {
       "name": "wasm-bindgen",
       "version": "0.2.118",
       "source": "registry+https://github.com/rust-lang/crates.io-index",
@@ -1665,27 +1616,6 @@
       "license_file": null
     },
     {
-      "name": "wasm-encoder",
-      "version": "0.244.0",
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
-      "license_file": null
-    },
-    {
-      "name": "wasm-metadata",
-      "version": "0.244.0",
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
-      "license_file": null
-    },
-    {
-      "name": "wasmparser",
-      "version": "0.244.0",
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
-      "license_file": null
-    },
-    {
       "name": "web-sys",
       "version": "0.3.95",
       "source": "registry+https://github.com/rust-lang/crates.io-index",
@@ -1701,7 +1631,7 @@
     },
     {
       "name": "webpki-roots",
-      "version": "1.0.7",
+      "version": "1.0.10",
       "source": "registry+https://github.com/rust-lang/crates.io-index",
       "license": "CDLA-Permissive-2.0",
       "license_file": null
@@ -1820,49 +1750,7 @@
     },
     {
       "name": "wit-bindgen",
-      "version": "0.51.0",
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
-      "license_file": null
-    },
-    {
-      "name": "wit-bindgen",
       "version": "0.57.1",
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
-      "license_file": null
-    },
-    {
-      "name": "wit-bindgen-core",
-      "version": "0.51.0",
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
-      "license_file": null
-    },
-    {
-      "name": "wit-bindgen-rust",
-      "version": "0.51.0",
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
-      "license_file": null
-    },
-    {
-      "name": "wit-bindgen-rust-macro",
-      "version": "0.51.0",
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
-      "license_file": null
-    },
-    {
-      "name": "wit-component",
-      "version": "0.244.0",
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
-      "license_file": null
-    },
-    {
-      "name": "wit-parser",
-      "version": "0.244.0",
       "source": "registry+https://github.com/rust-lang/crates.io-index",
       "license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
       "license_file": null
