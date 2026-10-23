@@ -1,7 +1,7 @@
 # RFC 0039: Confidential Rules (Format v3)
 
 - **Author:** copyleftdev
-- **Status:** PROPOSED
+- **Status:** ACCEPTED (2026-10-23). Unresolved Questions 1 and 8 must be decided before Phase B, and Question 3 before Phase D.
 - **Created:** 2026-10-23
 - **Updated:** 2026-10-23 (five crypto-review rounds; see Review history)
 - **Depends on:** RFC-0002 (file format), RFC-0003 (cryptography),
