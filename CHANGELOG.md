@@ -57,6 +57,23 @@ and the project follows [Semantic Versioning].
   `signature_chain::{verify_signature, verify_attestation}` compared pinned
   public keys with `==` / `!=`, against the hard rule in
   `.claude/rules/crypto.md`. All four now use `subtle::ConstantTimeEq`.
+- **`cargo audit` ignore list was never applied** — the config lived at
+  the repo root as `audit.toml`, where cargo-audit does not look. Moved
+  to `.cargo/audit.toml` and synced with `deny.toml`.
+
+### Security
+
+- Bumped `rustls` 0.23.39 → 0.23.46, `rustls-webpki` 0.103.13 →
+  0.103.16, and `webpki-roots` 1.0.7 → 1.0.10 for RUSTSEC-2026-0285,
+  -0346, -0348, -0349, -0381, and -0382. These are only reachable
+  through the optional `llm-agent-example` feature's `ureq` client.
+- Replaced the yanked `chacha20` 0.10.1 with 0.10.2, and bumped `blake3`
+  to 1.8.7, which drops the `arrayref` dependency after its crates.io
+  owner account was compromised. The locked `arrayref` 0.3.9 predates
+  the compromise.
+- `unsafe-libyaml` (RUSTSEC-2024-0449, via the deprecated `serde_yaml`)
+  is ignored with a written reason pending migration to a safe-Rust
+  YAML crate.
 
 ## [1.0.0] — 2026-04-25
 

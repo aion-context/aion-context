@@ -540,7 +540,7 @@ mod tests {
             let result = verify_multisig(&version, &[valid_att, bad_att], &policy, &reg)
                 .unwrap_or_else(|_| std::process::abort());
             assert!(result.threshold_met);
-            assert!(!result.invalid_signers.is_empty());
+            assert_ne!(result.invalid_signers, Vec::<AuthorId>::new());
             assert!(!result.is_valid());
         }
 

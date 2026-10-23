@@ -2750,7 +2750,7 @@ mod tests {
 
             // Assert: Empty content preserved
             assert_eq!(decrypted, rules);
-            assert!(decrypted.is_empty());
+            assert_eq!(decrypted, Vec::<u8>::new());
         }
 
         #[test]
@@ -2950,7 +2950,7 @@ mod tests {
             assert!(report.hash_chain_valid);
             assert!(report.signatures_valid);
             assert_eq!(report.version_count, 1);
-            assert!(report.errors.is_empty());
+            assert_eq!(report.errors, Vec::<String>::new());
         }
 
         #[test]
@@ -2998,7 +2998,7 @@ mod tests {
 
             assert!(report.is_valid);
             assert_eq!(report.version_count, 3);
-            assert!(report.errors.is_empty());
+            assert_eq!(report.errors, Vec::<String>::new());
         }
 
         #[test]
@@ -3025,7 +3025,7 @@ mod tests {
             assert!(!report.is_valid);
             assert!(report.structure_valid);
             assert!(!report.integrity_hash_valid);
-            assert!(!report.errors.is_empty());
+            assert_ne!(report.errors, Vec::<String>::new());
         }
 
         #[test]
@@ -3075,7 +3075,7 @@ mod tests {
 
             // Tampering should cause overall validation failure
             assert!(!report.is_valid);
-            assert!(!report.errors.is_empty());
+            assert_ne!(report.errors, Vec::<String>::new());
         }
 
         #[test]
@@ -3103,7 +3103,7 @@ mod tests {
             assert!(!report.is_valid);
             assert!(report.structure_valid);
             assert!(!report.signatures_valid);
-            assert!(!report.errors.is_empty());
+            assert_ne!(report.errors, Vec::<String>::new());
         }
 
         #[test]
@@ -3200,7 +3200,7 @@ mod tests {
             assert!(!report.integrity_hash_valid);
 
             // Should report multiple errors (at least integrity hash failed)
-            assert!(!report.errors.is_empty());
+            assert_ne!(report.errors, Vec::<String>::new());
         }
 
         #[test]
@@ -3218,7 +3218,7 @@ mod tests {
             let report = verify_file(&file_path, &test_reg(author_id, &signing_key)).unwrap();
 
             // Valid file should have no errors
-            assert!(report.errors.is_empty());
+            assert_eq!(report.errors, Vec::<String>::new());
             assert!(report.is_valid);
         }
     }
@@ -3666,7 +3666,7 @@ mod tests {
             let report = verify_file(&file_path, &test_reg(author_id, &signing_key)).unwrap();
             assert!(report.is_valid);
             assert!(report.signatures_valid);
-            assert!(report.errors.is_empty());
+            assert_eq!(report.errors, Vec::<String>::new());
         }
 
         #[test]
