@@ -46,6 +46,18 @@ and the project follows [Semantic Versioning].
 
 ### Changed
 
+- **BREAKING (RFC-0037, #165)** — `SigningKey::generate`,
+  `crypto::generate_nonce`, and `HybridSigningKey::generate` return
+  `Result`, propagating `AionError::EntropyUnavailable` instead of
+  panicking when the OS RNG fails. The Ed25519 stack moved to
+  `ed25519-dalek` 3.0 and `rand` 0.10. Key and signature byte
+  encodings are unchanged.
+- **BREAKING** — `dsse::version_attestation_payload`,
+  `dsse::manifest_payload`, `dsse::wrap_version_attestation`, and
+  `dsse::wrap_manifest` return `Result` instead of aborting the process
+  if JSON serialization fails. Payload bytes are unchanged, so existing
+  envelopes still verify. Migration: add `?` (or handle the `Err`) at
+  each call site; the error is `AionError::InvalidFormat`.
 - `commit_version` and the software-keystore CLI path now use the same internal
   signer abstraction as hardware-backed commits. Existing public call sites
   remain source-compatible.
@@ -57,6 +69,11 @@ and the project follows [Semantic Versioning].
   `signature_chain::{verify_signature, verify_attestation}` compared pinned
   public keys with `==` / `!=`, against the hard rule in
   `.claude/rules/crypto.md`. All four now use `subtle::ConstantTimeEq`.
+- **No process aborts in library code** — rules encryption propagated
+  an OS-RNG failure as `std::process::abort()` rather than through its
+  `Result`. The four abort sites in non-test library code are gone:
+  `operations::encrypt_rules` uses `?`, the manifest capacity hint
+  saturates, and the DSSE payload builders return `Result`.
 - **`cargo audit` ignore list was never applied** — the config lived at
   the repo root as `audit.toml`, where cargo-audit does not look. Moved
   to `.cargo/audit.toml` and synced with `deny.toml`.

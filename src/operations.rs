@@ -631,7 +631,7 @@ fn encrypt_rules(
     )?;
 
     // Generate nonce and encrypt
-    let nonce = generate_nonce().unwrap_or_else(|_| std::process::abort());
+    let nonce = generate_nonce()?;
     let aad = version.as_u64().to_le_bytes();
     let ciphertext = encrypt(&encryption_key, &nonce, rules, &aad)?;
 

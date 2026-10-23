@@ -231,6 +231,16 @@ pub fn wrap_manifest(
 ) -> DsseEnvelope;
 ```
 
+> **Errata (2026-10, PR #195).** The signatures above are the original
+> proposal, kept for the record; `src/dsse.rs` is authoritative.
+> - `version_attestation_payload`, `manifest_payload`,
+>   `wrap_version_attestation`, and `wrap_manifest` now return
+>   `Result<…>`. The original versions aborted the process on a
+>   serialization failure, which the crate's zero-panic rule forbids.
+>   Payload bytes are unchanged.
+> - RFC-0034 replaced `verify_envelope`'s `key_for` closure with a
+>   pinned `KeyRegistry` and an `at_version` argument.
+
 ### Verification semantics
 
 `verify_envelope`:
