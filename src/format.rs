@@ -32,7 +32,9 @@
 //! # Ok::<(), aion_context::AionError>(())
 //! ```
 
-use crate::serializer::VersionEntry;
+use crate::crypto::SigningKey;
+use crate::key_registry::KeyRegistry;
+use crate::serializer::{SignatureEntry, VersionEntry};
 use crate::types::{AuthorId, FileId};
 use crate::{AionError, Result};
 
@@ -137,13 +139,16 @@ impl RulesMode {
     /// Returns [`AionError::InvalidFormat`] if the mode byte is unknown or
     /// any other reserved byte is non-zero.
     pub fn of(entry: &VersionEntry) -> Result<Self> {
-        let (mode, rest) =
-            entry
-                .reserved
-                .split_first()
-                .ok_or_else(|| AionError::InvalidFormat {
-                    reason: "version entry has no reserved bytes".to_string(),
-                })?;
+        Self::from_reserved(&entry.reserved)
+    }
+
+    /// Read the mode from a version entry's 52 reserved bytes.
+    pub(crate) fn from_reserved(reserved: &[u8; 52]) -> Result<Self> {
+        let (mode, rest) = reserved
+            .split_first()
+            .ok_or_else(|| AionError::InvalidFormat {
+                reason: "version entry has no reserved bytes".to_string(),
+            })?;
         if rest.iter().any(|b| *b != 0) {
             return Err(AionError::InvalidFormat {
                 reason: "VersionEntry reserved bytes after rules_mode must be zero".to_string(),
@@ -376,6 +381,111 @@ impl FileContext {
                 signer,
             ),
         }
+    }
+
+    /// Sign a version entry under this file's format.
+    ///
+    /// # Errors
+    ///
+    /// For v3, returns [`AionError::InvalidFormat`] if the entry's rules
+    /// mode or reserved bytes are invalid.
+    pub fn sign_version(
+        &self,
+        version: &VersionEntry,
+        signing_key: &SigningKey,
+    ) -> Result<SignatureEntry> {
+        let message = self.canonical_version_message(version)?;
+        Ok(SignatureEntry::new(
+            AuthorId::new(version.author_id),
+            signing_key.verifying_key().to_bytes(),
+            signing_key.sign(&message),
+        ))
+    }
+
+    /// Verify one version signature against a pinned registry, over this
+    /// file's canonical message: author binding, active epoch,
+    /// constant-time key match, then Ed25519 (RFC-0034).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the entry is invalid for this format or any
+    /// check fails.
+    pub fn verify_signature(
+        &self,
+        version: &VersionEntry,
+        signature: &SignatureEntry,
+        registry: &KeyRegistry,
+    ) -> Result<()> {
+        let message = self.canonical_version_message(version)?;
+        crate::signature_chain::verify_version_signature_over(
+            version, signature, registry, &message,
+        )
+    }
+
+    /// Verify every version signature in a chain.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on a count mismatch or the first failing pair.
+    pub fn verify_signatures(
+        &self,
+        versions: &[VersionEntry],
+        signatures: &[SignatureEntry],
+        registry: &KeyRegistry,
+    ) -> Result<()> {
+        crate::signature_chain::verify_signatures_with(
+            versions,
+            signatures,
+            |version, signature| self.verify_signature(version, signature, registry),
+        )
+    }
+
+    /// Verify chain structure: genesis is version 1 with a zero parent,
+    /// versions increase by one, and each `parent_hash` equals this
+    /// format's [`FileContext::version_hash`] of the previous entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error at the first structural or linkage failure.
+    pub fn verify_hash_chain(&self, versions: &[VersionEntry]) -> Result<()> {
+        crate::signature_chain::verify_hash_chain_with(versions, |parent| self.version_hash(parent))
+    }
+
+    /// Produce an RFC-0021 attestation signature under this file's format.
+    ///
+    /// # Errors
+    ///
+    /// For v3, returns [`AionError::InvalidFormat`] if the entry's rules
+    /// mode or reserved bytes are invalid.
+    pub fn sign_attestation(
+        &self,
+        version: &VersionEntry,
+        signer: AuthorId,
+        signing_key: &SigningKey,
+    ) -> Result<SignatureEntry> {
+        let message = self.attestation_message(version, signer)?;
+        Ok(SignatureEntry::new(
+            signer,
+            signing_key.verifying_key().to_bytes(),
+            signing_key.sign(&message),
+        ))
+    }
+
+    /// Verify an RFC-0021 attestation signature against a pinned registry,
+    /// under this file's format.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the entry is invalid for this format or any
+    /// check fails.
+    pub fn verify_attestation(
+        &self,
+        version: &VersionEntry,
+        signature: &SignatureEntry,
+        registry: &KeyRegistry,
+    ) -> Result<()> {
+        let message = self.attestation_message(version, AuthorId::new(signature.author_id))?;
+        crate::signature_chain::verify_attestation_over(version, signature, registry, &message)
     }
 }
 

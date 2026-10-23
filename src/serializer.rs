@@ -11,6 +11,7 @@
 
 use crate::audit::AuditEntry;
 use crate::crypto::hash;
+use crate::format::FormatVersion;
 use crate::parser::{FileHeader, HASH_SIZE, HEADER_SIZE, SIGNATURE_ENTRY_SIZE, VERSION_ENTRY_SIZE};
 use crate::types::{AuthorId, FileId, VersionNumber};
 use crate::{AionError, Result};
@@ -122,6 +123,8 @@ impl SignatureEntry {
 /// AION file data for serialization
 #[derive(Debug, Clone)]
 pub struct AionFile {
+    /// On-disk format version written to the header (RFC-0039)
+    pub format: FormatVersion,
     /// File ID
     pub file_id: FileId,
     /// Current version number
@@ -159,6 +162,7 @@ impl AionFile {
 /// Builder for `AionFile`
 #[derive(Debug, Default)]
 pub struct AionFileBuilder {
+    format: Option<FormatVersion>,
     file_id: Option<FileId>,
     current_version: Option<VersionNumber>,
     flags: u16,
@@ -178,6 +182,14 @@ impl AionFileBuilder {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Set the on-disk format version. Defaults to
+    /// [`FormatVersion::V2`] when not set.
+    #[must_use]
+    pub const fn format(mut self, format: FormatVersion) -> Self {
+        self.format = Some(format);
+        self
     }
 
     /// Set the file ID
@@ -314,6 +326,7 @@ impl AionFileBuilder {
         });
 
         Ok(AionFile {
+            format: self.format.unwrap_or(FormatVersion::V2),
             file_id,
             current_version,
             flags: self.flags,
@@ -455,7 +468,7 @@ impl SectionOffsets {
 fn build_header(file: &AionFile, sizes: &SectionSizes, offsets: &SectionOffsets) -> FileHeader {
     FileHeader {
         magic: *b"AION",
-        version: 2,
+        version: file.format.as_u16(),
         flags: file.flags,
         file_id: file.file_id.as_u64(),
         current_version: file.current_version.as_u64(),

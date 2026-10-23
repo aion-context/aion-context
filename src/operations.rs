@@ -41,7 +41,7 @@ use crate::serializer::{AionFile, AionSerializer, SignatureEntry, VersionEntry};
 #[allow(deprecated)] // RFC-0034 Phase D: verify_signature kept for legacy verify_file path
 use crate::signature_chain::{
     canonical_version_message, compute_version_hash, create_genesis_version, sign_version,
-    verify_hash_chain, verify_signature, verify_signatures_batch,
+    verify_signature,
 };
 use crate::types::{AuthorId, FileId, VersionNumber};
 use crate::{AionError, Result};
@@ -407,6 +407,7 @@ fn commit_version_with_signer_inner(
     })?;
     let parser = AionParser::new(&file_bytes)?;
     let header = parser.header();
+    ensure_commit_format_supported(header)?;
 
     // Pre-write integrity gate (audit follow-up to PR #37):
     //
@@ -586,7 +587,9 @@ fn verify_head_signature(
     let last = version_count - 1;
     let version = parser.get_version_entry(last)?;
     let signature = parser.get_signature_entry(last)?;
-    verify_signature(&version, &signature, registry)
+    header
+        .context()?
+        .verify_signature(&version, &signature, registry)
 }
 
 /// Get the last version entry from the parser
@@ -1069,14 +1072,15 @@ pub fn verify_file(
         return Ok(report);
     };
 
-    verify_content_chain_into_report(&parser, &versions, &mut report);
+    let context = header.context()?;
+    verify_content_chain_into_report(&parser, &context, &versions, &mut report);
 
     let Some(signatures) = collect_signatures_into_report(&parser, &mut report)? else {
         emit_verify_outcome(&report);
         return Ok(report);
     };
 
-    match verify_signatures_batch(&versions, &signatures, registry) {
+    match context.verify_signatures(&versions, &signatures, registry) {
         Ok(()) => report.signatures_valid = true,
         Err(e) => report
             .errors
@@ -1106,16 +1110,21 @@ pub fn verify_file(
 /// payload.
 fn verify_content_chain_into_report(
     parser: &AionParser<'_>,
+    context: &crate::format::FileContext,
     versions: &[VersionEntry],
     report: &mut VerificationReport,
 ) {
-    if let Err(e) = verify_hash_chain(versions) {
+    if let Err(e) = context.verify_hash_chain(versions) {
         report
             .errors
             .push(format!("Hash chain verification failed: {e}"));
         return;
     }
-    match verify_rules_payload(parser, versions) {
+    let payload = match context.format() {
+        crate::format::FormatVersion::V2 => verify_rules_payload(parser, versions),
+        crate::format::FormatVersion::V3 => verify_rules_section_v3(parser, versions),
+    };
+    match payload {
         Ok(()) => report.hash_chain_valid = true,
         Err(AionError::HashMismatch { .. }) => report
             .errors
@@ -1135,6 +1144,61 @@ fn verify_rules_payload(parser: &AionParser<'_>, versions: &[VersionEntry]) -> R
         latest.rules_hash,
     )
     .map(|_| ())
+}
+
+/// Committing to a format-v3 file needs the v3 writer, which is not
+/// implemented yet; refuse rather than append a v2-shaped entry.
+fn ensure_commit_format_supported(header: &crate::parser::FileHeader) -> Result<()> {
+    match header.format()? {
+        crate::format::FormatVersion::V2 => Ok(()),
+        crate::format::FormatVersion::V3 => Err(AionError::UnsupportedVersion {
+            version: header.version,
+            supported: "2".to_string(),
+        }),
+    }
+}
+
+/// Read a format-v3 head's rules after binding the stored section to the
+/// signed commitment. A public section returns its plaintext; a
+/// confidential one needs a recipient key.
+fn read_rules_section_v3(parser: &AionParser<'_>, latest: &VersionEntry) -> Result<Vec<u8>> {
+    verify_rules_section_v3(parser, std::slice::from_ref(latest))?;
+    match crate::format::RulesMode::of(latest)? {
+        crate::format::RulesMode::Public => {
+            Ok(crate::format::unframe_rules(parser.encrypted_rules_bytes()?)?.to_vec())
+        }
+        crate::format::RulesMode::Confidential => Err(AionError::RecipientKeyRequired),
+    }
+}
+
+/// Bind a format-v3 head's stored rules section to what was signed
+/// (RFC-0039), without any key.
+///
+/// The section must commit to the head entry's signed `rules_hash` under
+/// the head's own recorded mode, the header's flag bit 0 must mirror that
+/// mode, and a public section must be a canonical frame.
+fn verify_rules_section_v3(parser: &AionParser<'_>, versions: &[VersionEntry]) -> Result<()> {
+    let latest = versions.last().ok_or_else(|| AionError::InvalidFormat {
+        reason: "Version chain is empty".to_string(),
+    })?;
+    let mode = crate::format::RulesMode::of(latest)?;
+    if parser.header().is_encrypted() != (mode == crate::format::RulesMode::Confidential) {
+        return Err(AionError::InvalidFormat {
+            reason: "header rules-mode flag does not match the head version".to_string(),
+        });
+    }
+    let section = parser.encrypted_rules_bytes()?;
+    let commitment = crate::format::rules_commitment(mode, section);
+    if commitment != latest.rules_hash {
+        return Err(AionError::HashMismatch {
+            expected: latest.rules_hash,
+            actual: commitment,
+        });
+    }
+    if mode == crate::format::RulesMode::Public {
+        crate::format::unframe_rules(section)?;
+    }
+    Ok(())
 }
 
 /// Validate the embedded audit-trail hash chain (RFC-0002, issue #141).
@@ -1366,6 +1430,10 @@ pub fn show_current_rules(path: &Path) -> Result<Vec<u8>> {
     let latest_idx = (version_count - 1) as usize;
     let latest_version = parser.get_version_entry(latest_idx)?;
 
+    if header.format()? == crate::format::FormatVersion::V3 {
+        return read_rules_section_v3(&parser, &latest_version);
+    }
+
     // Get encrypted rules (entire section contains current version only)
     let encrypted_rules = parser.encrypted_rules_bytes()?;
 
@@ -1522,6 +1590,7 @@ pub fn show_signatures(
     let parser = AionParser::new(&file_bytes)?;
 
     let header = parser.header();
+    let context = header.context()?;
     let sig_count = header.signatures_count;
     let version_count = header.version_chain_count;
 
@@ -1550,7 +1619,7 @@ pub fn show_signatures(
             ),
         })?;
 
-        let result = crate::signature_chain::verify_signature(version_entry, &sig_entry, registry);
+        let result = context.verify_signature(version_entry, &sig_entry, registry);
         let (verified, error) = match result {
             Ok(()) => (true, None),
             Err(e) => (false, Some(e.to_string())),
@@ -3368,6 +3437,324 @@ mod tests {
                     verify_file(&path, &registry).unwrap_or_else(|_| std::process::abort());
                 assert!(!report.is_valid);
                 assert!(!report.hash_chain_valid);
+            }
+        }
+    }
+
+    /// RFC-0039 Phase A2a: reading and verifying format-v3 files. The
+    /// writers land in A2b, so these files are assembled from the format
+    /// primitives. A confidential section here is opaque stand-in bytes:
+    /// verification is key-free and never opens it.
+    mod format_v3_read_tests {
+        use super::*;
+        use crate::format::{rules_commitment, FileContext, FormatVersion, RulesMode};
+
+        const V3_FILE_ID: u64 = 0x00AB_CDEF_0123_4567;
+
+        fn section_for(rules: &[u8], mode: RulesMode) -> Vec<u8> {
+            match mode {
+                RulesMode::Public => {
+                    crate::format::frame_rules(rules).unwrap_or_else(|_| std::process::abort())
+                }
+                RulesMode::Confidential => {
+                    let mut opaque = b"AIONENV1".to_vec();
+                    opaque.extend_from_slice(rules);
+                    opaque
+                }
+            }
+        }
+
+        /// Build a signed v3 file with one version per `(rules, mode)`.
+        fn build_v3_file(
+            versions: &[(&[u8], RulesMode)],
+            context: FileContext,
+            signing_key: &SigningKey,
+            author: AuthorId,
+        ) -> Vec<u8> {
+            let messages: Vec<String> = (1..=versions.len()).map(|n| format!("v{n}")).collect();
+            let message_refs: Vec<&str> = messages.iter().map(String::as_str).collect();
+            let (string_table, offsets) = AionSerializer::build_string_table(&message_refs);
+            let mut builder = AionFile::builder()
+                .format(FormatVersion::V3)
+                .file_id(context.file_id())
+                .created_at(1_700_000_000_000_000_000)
+                .modified_at(1_700_000_000_000_000_000)
+                .string_table(string_table);
+            let mut parent = [0u8; 32];
+            let mut head = Vec::new();
+            for (index, (rules, mode)) in versions.iter().enumerate() {
+                let section = section_for(rules, *mode);
+                let commitment = rules_commitment(*mode, &section);
+                let entry = VersionEntry::new(
+                    VersionNumber((index as u64).saturating_add(1)),
+                    parent,
+                    commitment,
+                    author,
+                    1_700_000_000_000_000_000_u64.saturating_add(index as u64),
+                    offsets.get(index).copied().unwrap_or(0),
+                    messages.get(index).map_or(0, |m| m.len() as u32),
+                )
+                .with_rules_mode(*mode);
+                let signature = context
+                    .sign_version(&entry, signing_key)
+                    .unwrap_or_else(|_| std::process::abort());
+                parent = context
+                    .version_hash(&entry)
+                    .unwrap_or_else(|_| std::process::abort());
+                if index == 0 {
+                    builder = builder.root_hash(commitment);
+                }
+                builder = builder
+                    .current_hash(commitment)
+                    .flags(u16::from(*mode == RulesMode::Confidential))
+                    .add_version(entry)
+                    .add_signature(signature);
+                head = section;
+            }
+            let file = builder
+                .encrypted_rules(head)
+                .build()
+                .unwrap_or_else(|_| std::process::abort());
+            AionSerializer::serialize(&file).unwrap_or_else(|_| std::process::abort())
+        }
+
+        fn v3_context() -> FileContext {
+            FileContext::new(FormatVersion::V3, FileId::new(V3_FILE_ID))
+        }
+
+        fn recompute_integrity(bytes: &mut [u8]) {
+            let body_len = bytes.len().saturating_sub(32);
+            let integrity = hash(&bytes[..body_len]);
+            bytes[body_len..].copy_from_slice(&integrity);
+        }
+
+        fn write_and_verify(
+            dir: &TempDir,
+            bytes: &[u8],
+            registry: &KeyRegistry,
+        ) -> (std::path::PathBuf, VerificationReport) {
+            let path = dir.path().join("v3.aion");
+            std::fs::write(&path, bytes).unwrap_or_else(|_| std::process::abort());
+            let report = verify_file(&path, registry).unwrap_or_else(|_| std::process::abort());
+            (path, report)
+        }
+
+        fn fixture(versions: &[(&[u8], RulesMode)]) -> (Vec<u8>, KeyRegistry) {
+            let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+            let author = AuthorId::new(80_001);
+            let registry = test_reg(author, &key);
+            (
+                build_v3_file(versions, v3_context(), &key, author),
+                registry,
+            )
+        }
+
+        #[test]
+        fn public_v3_file_verifies_and_reads() {
+            let dir = TempDir::new().unwrap_or_else(|_| std::process::abort());
+            let (bytes, registry) = fixture(&[(b"allow: read", RulesMode::Public)]);
+            let (path, report) = write_and_verify(&dir, &bytes, &registry);
+            assert!(report.is_valid, "{:?}", report.errors);
+            let rules = show_current_rules(&path).unwrap_or_else(|_| std::process::abort());
+            assert_eq!(rules, b"allow: read");
+        }
+
+        #[test]
+        fn mixed_mode_chain_verifies() {
+            let dir = TempDir::new().unwrap_or_else(|_| std::process::abort());
+            let (bytes, registry) = fixture(&[
+                (b"one", RulesMode::Public),
+                (b"two", RulesMode::Confidential),
+                (b"three", RulesMode::Public),
+            ]);
+            let (path, report) = write_and_verify(&dir, &bytes, &registry);
+            assert!(report.is_valid, "{:?}", report.errors);
+            let rules = show_current_rules(&path).unwrap_or_else(|_| std::process::abort());
+            assert_eq!(rules, b"three");
+        }
+
+        #[test]
+        fn confidential_head_verifies_but_needs_a_key_to_read() {
+            let dir = TempDir::new().unwrap_or_else(|_| std::process::abort());
+            let (bytes, registry) = fixture(&[(b"secret", RulesMode::Confidential)]);
+            let (path, report) = write_and_verify(&dir, &bytes, &registry);
+            assert!(report.is_valid, "{:?}", report.errors);
+            assert!(matches!(
+                show_current_rules(&path),
+                Err(AionError::RecipientKeyRequired)
+            ));
+        }
+
+        #[test]
+        fn tampered_section_is_rejected() {
+            let dir = TempDir::new().unwrap_or_else(|_| std::process::abort());
+            let (mut bytes, registry) = fixture(&[(b"refund_limit: 100", RulesMode::Public)]);
+            let offset = {
+                let parser = AionParser::new(&bytes).unwrap_or_else(|_| std::process::abort());
+                parser.header().encrypted_rules_offset as usize
+            };
+            bytes[offset + FRAME_BODY_START] ^= 0x01;
+            recompute_integrity(&mut bytes);
+            let (path, report) = write_and_verify(&dir, &bytes, &registry);
+            assert!(report.integrity_hash_valid);
+            assert!(!report.hash_chain_valid);
+            assert!(!report.is_valid);
+            assert!(show_current_rules(&path).is_err());
+        }
+
+        const FRAME_BODY_START: usize = 8;
+
+        #[test]
+        fn header_mode_flag_mismatch_is_rejected() {
+            let dir = TempDir::new().unwrap_or_else(|_| std::process::abort());
+            let (mut bytes, registry) = fixture(&[(b"rules", RulesMode::Public)]);
+            bytes[6] |= 0x01;
+            recompute_integrity(&mut bytes);
+            let (_, report) = write_and_verify(&dir, &bytes, &registry);
+            assert!(!report.hash_chain_valid);
+            assert!(!report.is_valid);
+        }
+
+        #[test]
+        fn flipped_entry_mode_breaks_the_signature() {
+            let dir = TempDir::new().unwrap_or_else(|_| std::process::abort());
+            let (mut bytes, registry) = fixture(&[(b"rules", RulesMode::Public)]);
+            let mode_offset = {
+                let parser = AionParser::new(&bytes).unwrap_or_else(|_| std::process::abort());
+                parser.header().version_chain_offset as usize + 100
+            };
+            bytes[mode_offset] = RulesMode::Confidential.as_u8();
+            bytes[6] |= 0x01;
+            recompute_integrity(&mut bytes);
+            let (_, report) = write_and_verify(&dir, &bytes, &registry);
+            assert!(!report.signatures_valid);
+            assert!(!report.is_valid);
+        }
+
+        #[test]
+        fn entry_moved_to_another_file_id_is_rejected() {
+            let dir = TempDir::new().unwrap_or_else(|_| std::process::abort());
+            let (mut bytes, registry) = fixture(&[(b"rules", RulesMode::Public)]);
+            bytes[8] ^= 0xFF;
+            recompute_integrity(&mut bytes);
+            let (_, report) = write_and_verify(&dir, &bytes, &registry);
+            assert!(!report.signatures_valid);
+            assert!(!report.is_valid);
+        }
+
+        #[test]
+        fn v2_signatures_in_a_v3_file_are_rejected() {
+            let dir = TempDir::new().unwrap_or_else(|_| std::process::abort());
+            let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+            let author = AuthorId::new(80_002);
+            let registry = test_reg(author, &key);
+            let v2_signed = FileContext::new(FormatVersion::V2, FileId::new(V3_FILE_ID));
+            let mut bytes =
+                build_v3_file(&[(b"rules", RulesMode::Public)], v2_signed, &key, author);
+            recompute_integrity(&mut bytes);
+            let (_, report) = write_and_verify(&dir, &bytes, &registry);
+            assert!(!report.signatures_valid);
+            assert!(!report.is_valid);
+        }
+
+        #[test]
+        fn unknown_mode_byte_is_rejected_by_the_parser() {
+            let (mut bytes, _) = fixture(&[(b"rules", RulesMode::Public)]);
+            let mode_offset = {
+                let parser = AionParser::new(&bytes).unwrap_or_else(|_| std::process::abort());
+                parser.header().version_chain_offset as usize + 100
+            };
+            bytes[mode_offset] = 0x02;
+            recompute_integrity(&mut bytes);
+            let parser = AionParser::new(&bytes).unwrap_or_else(|_| std::process::abort());
+            assert!(parser.get_version_entry(0).is_err());
+        }
+
+        #[test]
+        fn mode_byte_in_a_v2_file_is_rejected_by_the_parser() {
+            let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+            let mut bytes = create_test_file(&key, AuthorId::new(80_003));
+            let mode_offset = {
+                let parser = AionParser::new(&bytes).unwrap_or_else(|_| std::process::abort());
+                parser.header().version_chain_offset as usize + 100
+            };
+            bytes[mode_offset] = RulesMode::Confidential.as_u8();
+            let parser = AionParser::new(&bytes).unwrap_or_else(|_| std::process::abort());
+            assert!(parser.get_version_entry(0).is_err());
+        }
+
+        #[test]
+        fn unknown_format_version_is_rejected() {
+            let (mut bytes, _) = fixture(&[(b"rules", RulesMode::Public)]);
+            bytes[4] = 4;
+            assert!(matches!(
+                AionParser::new(&bytes),
+                Err(AionError::UnsupportedVersion { version: 4, .. })
+            ));
+        }
+
+        #[test]
+        fn commit_to_a_v3_file_is_refused_until_the_v3_writer_exists() {
+            let dir = TempDir::new().unwrap_or_else(|_| std::process::abort());
+            let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+            let author = AuthorId::new(80_004);
+            let registry = test_reg(author, &key);
+            let bytes = build_v3_file(&[(b"rules", RulesMode::Public)], v3_context(), &key, author);
+            let path = dir.path().join("v3.aion");
+            std::fs::write(&path, &bytes).unwrap_or_else(|_| std::process::abort());
+            let options = CommitOptions {
+                author_id: author,
+                signing_key: &key,
+                message: "v2",
+                timestamp: None,
+            };
+            assert!(matches!(
+                commit_version(&path, b"next", &options, &registry),
+                Err(AionError::UnsupportedVersion { version: 3, .. })
+            ));
+            let after = std::fs::read(&path).unwrap_or_else(|_| std::process::abort());
+            assert_eq!(after, bytes);
+        }
+
+        mod properties {
+            use super::*;
+            use hegel::generators as gs;
+
+            #[hegel::test]
+            fn prop_v3_public_file_round_trips_through_verify_and_read(tc: hegel::TestCase) {
+                let rules = tc.draw(gs::binary().max_size(2048));
+                let dir = TempDir::new().unwrap_or_else(|_| std::process::abort());
+                let (bytes, registry) = fixture(&[(rules.as_slice(), RulesMode::Public)]);
+                let (path, report) = write_and_verify(&dir, &bytes, &registry);
+                assert!(report.is_valid);
+                let read = show_current_rules(&path).unwrap_or_else(|_| std::process::abort());
+                assert_eq!(read, rules);
+            }
+
+            #[hegel::test]
+            fn prop_v3_any_section_byte_flip_is_rejected(tc: hegel::TestCase) {
+                let rules = tc.draw(gs::binary().max_size(2048));
+                let mode = if tc.draw(gs::booleans()) {
+                    RulesMode::Public
+                } else {
+                    RulesMode::Confidential
+                };
+                let dir = TempDir::new().unwrap_or_else(|_| std::process::abort());
+                let (mut bytes, registry) = fixture(&[(rules.as_slice(), mode)]);
+                let (offset, length) = {
+                    let parser = AionParser::new(&bytes).unwrap_or_else(|_| std::process::abort());
+                    let header = parser.header();
+                    (
+                        header.encrypted_rules_offset as usize,
+                        header.encrypted_rules_length as usize,
+                    )
+                };
+                let index = tc.draw(gs::integers::<usize>().max_value(length.saturating_sub(1)));
+                bytes[offset.saturating_add(index)] ^= tc.draw(gs::integers::<u8>().min_value(1));
+                recompute_integrity(&mut bytes);
+                let (_, report) = write_and_verify(&dir, &bytes, &registry);
+                assert!(!report.hash_chain_valid);
+                assert!(!report.is_valid);
             }
         }
     }

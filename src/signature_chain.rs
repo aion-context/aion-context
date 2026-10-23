@@ -265,6 +265,24 @@ pub fn verify_signature(
     signature: &SignatureEntry,
     registry: &crate::key_registry::KeyRegistry,
 ) -> Result<()> {
+    verify_version_signature_over(
+        version,
+        signature,
+        registry,
+        &canonical_version_message(version),
+    )
+}
+
+/// Registry-pinned check of a version signature over a caller-built
+/// canonical message: author binding, active epoch, constant-time key
+/// match, then Ed25519. Shared by the v2 entry point and
+/// [`crate::format::FileContext::verify_signature`].
+pub(crate) fn verify_version_signature_over(
+    version: &VersionEntry,
+    signature: &SignatureEntry,
+    registry: &crate::key_registry::KeyRegistry,
+    message: &[u8],
+) -> Result<()> {
     if version.author_id != signature.author_id {
         emit_sig_rejected(
             version.version_number,
@@ -293,10 +311,9 @@ pub fn verify_signature(
             author: signer,
         });
     }
-    let message = canonical_version_message(version);
     let verifying_key = VerifyingKey::from_bytes(&signature.public_key)?;
     verifying_key
-        .verify(&message, &signature.signature)
+        .verify(message, &signature.signature)
         .inspect_err(|_| {
             emit_sig_rejected(version.version_number, signer, "bad_signature");
         })
@@ -457,6 +474,24 @@ pub fn verify_attestation(
     registry: &crate::key_registry::KeyRegistry,
 ) -> Result<()> {
     let signer = AuthorId::new(signature.author_id);
+    verify_attestation_over(
+        version,
+        signature,
+        registry,
+        &canonical_attestation_message(version, signer),
+    )
+}
+
+/// Registry-pinned check of an attestation signature over a caller-built
+/// canonical message. Shared by the v2 entry point and
+/// [`crate::format::FileContext::verify_attestation`].
+pub(crate) fn verify_attestation_over(
+    version: &VersionEntry,
+    signature: &SignatureEntry,
+    registry: &crate::key_registry::KeyRegistry,
+    message: &[u8],
+) -> Result<()> {
+    let signer = AuthorId::new(signature.author_id);
     let epoch = registry
         .active_epoch_at(signer, version.version_number)
         .ok_or_else(|| {
@@ -473,10 +508,9 @@ pub fn verify_attestation(
             author: signer,
         });
     }
-    let message = canonical_attestation_message(version, signer);
     let verifying_key = VerifyingKey::from_bytes(&signature.public_key)?;
     verifying_key
-        .verify(&message, &signature.signature)
+        .verify(message, &signature.signature)
         .inspect_err(|_| {
             emit_sig_rejected(version.version_number, signer, "bad_attestation");
         })
@@ -501,6 +535,22 @@ pub fn verify_signatures_batch(
     signatures: &[SignatureEntry],
     registry: &crate::key_registry::KeyRegistry,
 ) -> Result<()> {
+    verify_signatures_with(versions, signatures, |version, signature| {
+        verify_signature(version, signature, registry)
+    })
+}
+
+/// Verify every `(version, signature)` pair with `verify_one`, in
+/// parallel for chains longer than 10. Shared by the v2 entry point and
+/// [`crate::format::FileContext::verify_signatures`].
+pub(crate) fn verify_signatures_with<F>(
+    versions: &[VersionEntry],
+    signatures: &[SignatureEntry],
+    verify_one: F,
+) -> Result<()>
+where
+    F: Fn(&VersionEntry, &SignatureEntry) -> Result<()> + Sync,
+{
     if versions.len() != signatures.len() {
         return Err(crate::AionError::InvalidFormat {
             reason: format!(
@@ -515,10 +565,10 @@ pub fn verify_signatures_batch(
         versions
             .par_iter()
             .zip(signatures.par_iter())
-            .try_for_each(|(version, signature)| verify_signature(version, signature, registry))
+            .try_for_each(|(version, signature)| verify_one(version, signature))
     } else {
         for (version, signature) in versions.iter().zip(signatures.iter()) {
-            verify_signature(version, signature, registry)?;
+            verify_one(version, signature)?;
         }
         Ok(())
     }
@@ -695,7 +745,24 @@ pub fn verify_hash_chain(versions: &[VersionEntry]) -> Result<()> {
             reason: "Version chain is empty".to_string(),
         })?;
     verify_genesis_version(genesis)?;
-    verify_chain_links(versions)
+    verify_chain_links(versions, |parent| Ok(compute_version_hash(parent)))
+}
+
+/// Verify chain structure with a caller-supplied version hash: genesis is
+/// version 1 with a zero parent, versions increase by one, and each
+/// `parent_hash` equals `version_hash(parent)`. Shared by the v2 entry
+/// point and [`crate::format::FileContext::verify_hash_chain`].
+pub(crate) fn verify_hash_chain_with<H>(versions: &[VersionEntry], version_hash: H) -> Result<()>
+where
+    H: Fn(&VersionEntry) -> Result<[u8; 32]>,
+{
+    let genesis = versions
+        .first()
+        .ok_or_else(|| crate::AionError::InvalidFormat {
+            reason: "Version chain is empty".to_string(),
+        })?;
+    verify_genesis_version(genesis)?;
+    verify_chain_links(versions, version_hash)
 }
 
 fn verify_genesis_version(genesis: &VersionEntry) -> Result<()> {
@@ -716,7 +783,10 @@ fn verify_genesis_version(genesis: &VersionEntry) -> Result<()> {
     Ok(())
 }
 
-fn verify_chain_links(versions: &[VersionEntry]) -> Result<()> {
+fn verify_chain_links<H>(versions: &[VersionEntry], version_hash: H) -> Result<()>
+where
+    H: Fn(&VersionEntry) -> Result<[u8; 32]>,
+{
     for pair in versions.windows(2) {
         let [parent, current] = pair else { continue };
         let expected_version =
@@ -732,7 +802,7 @@ fn verify_chain_links(versions: &[VersionEntry]) -> Result<()> {
                 current: expected_version,
             });
         }
-        if current.parent_hash != compute_version_hash(parent) {
+        if current.parent_hash != version_hash(parent)? {
             return Err(crate::AionError::BrokenVersionChain {
                 version: current.version_number,
             });

@@ -238,6 +238,11 @@ pub enum AionError {
         actual: [u8; 32],
     },
 
+    /// The rules section is confidential and no recipient key was
+    /// supplied to open it (RFC-0039)
+    #[error("Rules are confidential: a recipient key is required to read them")]
+    RecipientKeyRequired,
+
     /// Invalid private key
     #[error("Invalid private key: {reason}")]
     InvalidPrivateKey {
