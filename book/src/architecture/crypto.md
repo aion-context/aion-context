@@ -71,6 +71,10 @@ confused with hashes used for another. The separators in use:
 | `AION_V2_KEY_ATTESTATION_V1` | Hardware-attestation binding (RFC-0026) |
 | `AION_V2_HYBRID_V1\0` | Hybrid classical + ML-DSA signature payload (RFC-0027) |
 | `AION_V2_MANIFEST_V1` | ArtifactManifest canonical bytes prefix |
+| `AION_V3_VERSION_SIGNATURE_V1\0` | Format-v3 version signature canonical message (RFC-0039) |
+| `AION_V3_VERSION_HASH_V1\0` | Format-v3 version hash, the value `parent_hash` links to (RFC-0039) |
+| `AION_V3_ATTESTATION_V1\0` | Format-v3 multi-party attestation message (RFC-0039) |
+| `AION_V3_RULES_COMMIT_V1\0` | Format-v3 commitment to the stored rules section (RFC-0039) |
 
 A trailing `\0` byte forbids any other domain from being
 constructed by appending bytes to one of these.

@@ -71,6 +71,20 @@ below with its scope.
   signatures) remains BLAKE3-only. The SHA-256 use at
   `src/oci.rs` is transport-only; no aion-internal accept/reject
   decision is gated on a SHA-256 comparison.
+- **HKDF-SHA256 and HPKE key derivation (RFC-0039)**:
+  - **Where:** SHA-256 appears only as the hash function inside
+    HKDF-SHA256 (`crypto::derive_key`: the v2 rules key today, and the
+    v3 content key) and inside HPKE's DHKEM(X25519, HKDF-SHA256) and
+    HKDF-SHA256 KDF.
+  - **What it does:** it derives keys only. No SHA-256 output is ever
+    stored, signed, or compared. Every commitment and every hash
+    compared in an accept/reject decision is BLAKE3: the rules
+    commitment, the DEK commitment, version hashes, and the integrity
+    hash.
+  - **How it can fail:** a SHA-256 weakness could weaken derived-key
+    secrecy, which affects confidentiality, or make an open fail. It
+    cannot turn a forgery into an accept, because acceptance is decided
+    by Ed25519 signatures over BLAKE3 commitments.
 
 ## Key material lifecycle
 

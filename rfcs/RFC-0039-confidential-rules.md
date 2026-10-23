@@ -386,7 +386,11 @@ the header's `version`, and `file_id` is the header's `file_id`.
 `parent_hash` links to, covers the v2 canonical fields. For v3 it
 covers the **v3 canonical message**: every field listed above,
 including `format_version`, `file_id`, and the entry's `rules_mode`.
-A version's mode is therefore part of its identity. Re-signing the
+It is computed under its own domain:
+`BLAKE3(AION_V3_VERSION_HASH_V1\0 ‖ fields)`, where `fields` is
+everything in the signed message after the signature domain. So the
+value `parent_hash` links to is never the same BLAKE3 input as a
+signed message. A version's mode is therefore part of its identity. Re-signing the
 same version number with a different mode yields a different version
 hash, which the parent links of later versions, and the acceptance
 store, treat as a different version (equivocation).

@@ -67,6 +67,27 @@ impl VersionEntry {
             reserved: [0; 52],
         }
     }
+
+    /// Record the entry's rules mode in `reserved[0]` (format v3,
+    /// RFC-0039). The other reserved bytes are left unchanged and must
+    /// stay zero.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use aion_context::format::RulesMode;
+    /// use aion_context::serializer::VersionEntry;
+    /// use aion_context::types::{AuthorId, VersionNumber};
+    ///
+    /// let entry = VersionEntry::new(VersionNumber::GENESIS, [0; 32], [1; 32], AuthorId::new(1), 0, 0, 0)
+    ///     .with_rules_mode(RulesMode::Confidential);
+    /// assert_eq!(RulesMode::of(&entry).ok(), Some(RulesMode::Confidential));
+    /// ```
+    #[must_use]
+    pub const fn with_rules_mode(mut self, mode: crate::format::RulesMode) -> Self {
+        self.reserved[0] = mode.as_u8();
+        self
+    }
 }
 
 /// Signature entry for serialization (112 bytes)

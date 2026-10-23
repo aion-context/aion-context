@@ -199,6 +199,14 @@ blocks on a drop.
 | `src/operations.rs`             | RFC-0038 provider failure leaves the artifact byte-identical  |
 | `src/operations.rs`             | RFC-0038 arbitrary provider signature bytes ⇒ rejected, nothing written |
 | `src/operations.rs`             | GHSA-7625-44v8-v62f substituted rules payload (integrity hash recomputed) ⇒ `verify_file` rejects |
+| `src/format.rs`                 | RFC-0039 Padmé length: ≥ input, ≤ 12.5% overhead, idempotent, monotonic |
+| `src/format.rs`                 | RFC-0039 frame → unframe round-trip; unframe never panics on arbitrary bytes |
+| `src/format.rs`                 | RFC-0039 non-zero frame padding ⇒ unframe rejects |
+| `src/format.rs`                 | RFC-0039 rules commitment separates modes and detects any byte flip |
+| `src/signature_chain.rs`        | RFC-0039 v3 message and version hash bind `file_id` and rules mode |
+| `src/signature_chain.rs`        | RFC-0039 v3 version hash ≠ v2 version hash; v3 version vs attestation domain-separated |
+| `src/signature_chain.rs`        | RFC-0039 v3 signature verifies, and fails under another `file_id` |
+| `src/signature_chain.rs`        | RFC-0039 invalid mode byte or non-zero reserved byte ⇒ v3 message/hash rejects |
 
 ## Tier 3 (model / stateful — required once the audit chain is stable)
 
