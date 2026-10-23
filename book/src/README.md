@@ -42,10 +42,10 @@ first-class.
 
 ## Status
 
-aion-context is **0.2.x** as of the last update to this book.
-Pre-1.0 means breaking changes are permitted on minor bumps,
-called out in the changelog and (where structural) in their
-own RFC.
+aion-context is **2.x** as of the last update to this book, and
+follows semver: breaking changes need a major version, are called
+out in the changelog, and (where structural) get their own RFC.
+See [Stability](./architecture/stability.md).
 
 The library is **single-binary, single-crate, no async, no
 unsafe in normal code** (the parser has one audited `unsafe`

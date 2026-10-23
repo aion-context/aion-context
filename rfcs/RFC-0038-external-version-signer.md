@@ -1,9 +1,9 @@
 # RFC 0038: External Version Signer
 
 - **Author:** copyleftdev
-- **Status:** ACCEPTED
+- **Status:** IMPLEMENTED (#173, released in 2.0.0)
 - **Created:** 2026-08-09
-- **Updated:** 2026-08-09
+- **Updated:** 2026-10-23
 - **Depends on:** RFC-0003 (cryptography), RFC-0004 (key management),
   RFC-0005 (signature chain), RFC-0012 (versioning), RFC-0026
   (hardware attestation), RFC-0028 (key rotation and revocation),

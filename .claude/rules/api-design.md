@@ -82,7 +82,7 @@ change gets:
    template).
 2. A version bump in the file header.
 3. A migration path: old readers reject new files with a specific
-   `Error::UnsupportedFormat(version)`, never silently misparse.
+   `AionError::UnsupportedVersion`, never silently misparse.
 4. A fuzz target that exercises the parser on old and new versions.
 
 The `api-reviewer` agent hard-blocks format changes that skip any of
