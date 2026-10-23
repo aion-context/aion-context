@@ -284,9 +284,9 @@ recipients and selective-disclosure parties alike.
 | kind | Name | Body |
 |---|---|---|
 | `0x01` | HPKE X25519 recipient | `recipient_pk[32] ‖ enc[32] ‖ wrapped_dek[48]`. `body_len` must be exactly 112. |
-| `0x02` | External wrapper | `provider_id_len u8 ‖ provider_id ‖ key_ref_len u16 ‖ key_ref ‖ blob_len u16 ‖ blob`. The inner lengths plus their 5 length bytes must sum exactly to `body_len`; trailing or missing bytes reject. |
+| `0x02` | External wrapper | `provider_id_len u8 ‖ provider_id ‖ key_ref_len u16 ‖ key_ref ‖ blob_len u16 ‖ blob`. The inner lengths plus their 5 length bytes must sum exactly to `body_len`; trailing or missing bytes reject. `provider_id` (1–64 bytes) and `key_ref` (1–1024 bytes) are non-empty UTF-8, and `blob` is non-empty. |
 | `0x03` | HPKE X-Wing recipient | `recipient_pk[1216] ‖ enc[1120] ‖ wrapped_dek[48]`. `body_len` must be exactly 2,384. |
-| `0x04`–`0xFF` | Reserved | Readers skip unknown kinds. A reader that holds no identity matching any stanza fails with `NotARecipient`. |
+| `0x00`, `0x04`–`0xFF` | Reserved | Readers skip unknown kinds. A reader that holds no identity matching any stanza fails with `NotARecipient`. |
 
 **Stanza ordering and identity.**
 
@@ -1093,6 +1093,17 @@ Four PRs, each reviewed by `crypto-auditor` and `api-reviewer`:
   stanzas with every bound, canonical order, and identity
   de-duplication above. No new dependency. A `fuzz_confidential_envelope`
   target and Tier-1 parser properties.
+  - *Implementation note:* the `envelope` module. `Envelope::parse`
+    is zero-copy and accepts only the canonical encoding, so
+    `parse(b)?.to_bytes() == b`. The writer-side encoder is
+    crate-internal and re-parses its own output.
+  - A parsed envelope is structural only and unauthenticated. Its bytes
+    are trusted after the signature and rules commitment verify.
+  - `parse` bounds `ct_len` by the input length and the 24-byte minimum.
+    B3 applies the reader's rules-size limit before any AEAD work.
+  - An unknown content suite is rejected as `InvalidFormat`, not
+    skipped, because nothing in it can be opened. A new suite needs
+    its own RFC.
 - **B2, key schedule and stanzas.** DEK, `K_enc`, `dek_commitment`, the
   content AEAD, and HPKE seal/open for kinds `0x01` and `0x03`, with
   the known-answer tests above.

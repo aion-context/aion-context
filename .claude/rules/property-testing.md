@@ -211,6 +211,9 @@ blocks on a drop.
 | `src/operations.rs`             | RFC-0039 v3 public file: build → `verify_file` → `show_current_rules` round-trip |
 | `src/operations.rs`             | RFC-0039 any byte flip in a v3 rules section (either mode) ⇒ `verify_file` rejects |
 | `src/operations.rs`             | RFC-0039 v3 `init` + N `commit`s ⇒ valid chain, head readable, every entry Public |
+| `src/envelope.rs`               | RFC-0039 `Envelope::parse` never panics on arbitrary bytes, and anything it accepts re-serializes to the same bytes |
+| `src/envelope.rs`               | RFC-0039 encode → parse round-trip for any stanza set, in canonical order |
+| `src/envelope.rs`               | RFC-0039 any single-byte mutation of an envelope is rejected or still canonical |
 | `src/chain.rs`                  | RFC-0039 an archived section opens exactly against verified entries with the same commitment |
 | `src/acceptance.rs`             | RFC-0039 Tier-3 model: `MemoryStore` decisions match a reference model over main and fork chains (replay, equivocation, idempotence) |
 

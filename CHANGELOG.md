@@ -10,6 +10,27 @@ and the project follows [Semantic Versioning].
 
 ## [Unreleased]
 
+### Added
+
+- **RFC-0039 Phase B1: confidential envelope codec** (`envelope`
+  module). `Envelope::parse` reads the confidential rules envelope
+  zero-copy and accepts only its canonical encoding:
+  - the `AIONENV1` magic and content suite `0x01`;
+  - 1–64 stanzas, each body at most 4096 bytes, at most 160 KiB in
+    total;
+  - X25519 (`0x01`, 112 bytes) and X-Wing (`0x03`, 2,384 bytes)
+    stanzas at their exact lengths, and strict external-wrapper
+    (`0x02`) fields;
+  - stanzas strictly ascending by `kind ‖ body`, with no two for one
+    recipient identity;
+  - a ciphertext of at least 24 bytes and no trailing bytes.
+
+  `Envelope::to_bytes` re-serializes, and returns exactly the parsed
+  bytes. Unknown stanza kinds parse as `StanzaRecipient::Unknown`. No
+  cryptography yet: sealing and opening arrive in B2 and B3.
+- Fuzz target `fuzz_confidential_envelope`, with seeds for every
+  stanza kind in `fuzz/seeds/fuzz_confidential_envelope/`.
+
 ## [2.0.0] — 2026-10-23
 
 Major release. New files are format v3 (RFC-0039 Phase A). Every
