@@ -147,7 +147,7 @@ another terminal. The pattern is:
 | Terminal | Action | Expected |
 |---|---|---|
 | Left | run a forever-loop variant of `tick()` against `agent.aion` | tick … tick … |
-| Right | `aion commit agent.aion --rules tighter.yaml ...` | new version signed |
+| Right | `aion commit --public agent.aion --rules tighter.yaml ...` | new version signed |
 | Left | next tick | picks up new version, decisions change |
 | Right | `printf '\x01' \| dd of=agent.aion bs=1 seek=4096 count=1 conv=notrunc` | (no output) |
 | Left | next tick | `decision=REFUSE reason=integrity_hash_mismatch` |

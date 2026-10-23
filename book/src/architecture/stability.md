@@ -47,7 +47,7 @@ The pinned primitives are:
 
 - **Ed25519** (via `ed25519-dalek`) — author signatures
 - **BLAKE3** (via `blake3`) — file hashing, hash-chain links, integrity hash
-- **ChaCha20-Poly1305** (via `chacha20poly1305`) — rules-section encoding.
+- **ChaCha20-Poly1305** (via `chacha20poly1305`) — format-v2 rules-section encoding.
   This is not a confidentiality boundary: see
   [crypto.md](crypto.md#the-rules-section-is-not-confidential).
 - **HKDF-SHA-256** (via `hkdf` / `sha2`) — key derivation

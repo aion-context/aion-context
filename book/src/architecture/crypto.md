@@ -20,8 +20,17 @@ explicit about this.
 
 ## The rules section is not confidential
 
-The rules payload is stored as ChaCha20-Poly1305 ciphertext, but
-**anyone who holds an `.aion` file can read its rules.** The key
+**Format v3 (written since RFC-0039 Phase A):** rules written with
+`RulesProtection::Public` / `--public` are stored in the clear, framed
+and Padmé-padded. The version entry signs a BLAKE3 commitment to those
+exact stored bytes, so any change fails `verify_file` without any key.
+Public means public: the signature makes the rules tamper-evident,
+not secret. Confidential rules, readable only by named recipients,
+arrive with RFC-0039 Phase B.
+
+**Format v2 (files written before format v3):** the rules payload is
+stored as ChaCha20-Poly1305 ciphertext, but **anyone who holds an
+`.aion` file can still read its rules.** The key
 comes from HKDF over the file's `file_id` and the version number,
 and both are stored in plain sight in the file. No secret goes in.
 This is why `operations::show_current_rules(path)` takes only a path.
@@ -46,10 +55,11 @@ If the policy itself must be kept confidential, encrypt the whole
 `.aion` file at rest or in transit with a tool that holds a real key
 (age, a KMS envelope, disk encryption).
 
-`aion init --no-encryption` has no effect today: the rules section
-is always written the same way. Real confidentiality needs a key
-that isn't stored in the file. That's a file-format change and needs
-an RFC.
+For either format, real confidentiality needs a key that isn't
+stored in the file. RFC-0039 (accepted) specifies it: confidential
+v3 sections are encrypted under a per-version key wrapped for each
+named recipient. `aion init --no-encryption` is now a deprecated
+alias for `--public`.
 
 ## Domain separation
 

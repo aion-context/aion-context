@@ -13,6 +13,7 @@
 //! # Usage Example
 //!
 //! ```no_run
+//! use aion_context::format::RulesProtection;
 //! use aion_context::operations::{commit_version, CommitOptions};
 //! use aion_context::crypto::SigningKey;
 //! use aion_context::types::AuthorId;
@@ -24,6 +25,7 @@
 //!     signing_key: &signing_key,
 //!     message: "Updated fraud detection rules",
 //!     timestamp: None, // Use current time
+//!     protection: RulesProtection::Public,
 //! };
 //!
 //! // Commit new rules to existing file
@@ -36,13 +38,10 @@
 
 use crate::audit::{ActionCode, AuditEntry};
 use crate::crypto::{decrypt, derive_key, encrypt, generate_nonce, hash, SigningKey};
+use crate::format::{FileContext, FormatVersion, RulesMode, RulesProtection};
 use crate::parser::AionParser;
 use crate::serializer::{AionFile, AionSerializer, SignatureEntry, VersionEntry};
-#[allow(deprecated)] // RFC-0034 Phase D: verify_signature kept for legacy verify_file path
-use crate::signature_chain::{
-    canonical_version_message, compute_version_hash, create_genesis_version, sign_version,
-    verify_signature,
-};
+use crate::signature_chain::create_genesis_version;
 use crate::types::{AuthorId, FileId, VersionNumber};
 use crate::{AionError, Result};
 use std::path::Path;
@@ -62,6 +61,8 @@ pub struct InitOptions<'a> {
     pub message: &'a str,
     /// Optional timestamp (uses current time if None)
     pub timestamp: Option<u64>,
+    /// How the rules are protected (RFC-0039). There is no default.
+    pub protection: RulesProtection,
 }
 
 /// Result of file initialization
@@ -105,6 +106,7 @@ pub struct InitResult {
 /// # Example
 ///
 /// ```no_run
+/// use aion_context::format::RulesProtection;
 /// use aion_context::operations::{init_file, InitOptions};
 /// use aion_context::crypto::SigningKey;
 /// use aion_context::types::AuthorId;
@@ -116,6 +118,7 @@ pub struct InitResult {
 ///     signing_key: &signing_key,
 ///     message: "Initial policy version",
 ///     timestamp: None, // Use current time
+///     protection: RulesProtection::Public,
 /// };
 ///
 /// let initial_rules = b"fraud_threshold: 1000\nrisk_level: medium";
@@ -132,12 +135,18 @@ pub fn init_file(path: &Path, initial_rules: &[u8], options: &InitOptions) -> Re
             path: path.to_path_buf(),
         });
     }
-    let file_id = FileId::random();
+    let context = FileContext::new(FormatVersion::V3, FileId::random());
+    let file_id = context.file_id();
     let timestamp = options.timestamp.unwrap_or_else(current_timestamp_nanos);
-    let rules_hash = hash(initial_rules);
-    let (encrypted_rules, _) = encrypt_rules(initial_rules, file_id, VersionNumber::GENESIS)?;
+    let encoded = encode_rules(
+        &context,
+        &options.protection,
+        initial_rules,
+        VersionNumber::GENESIS,
+    )?;
+    let rules_hash = encoded.rules_hash;
 
-    let aion_file = build_genesis_file(file_id, timestamp, rules_hash, encrypted_rules, options)?;
+    let aion_file = build_genesis_file(&context, timestamp, encoded, options)?;
     write_serialized_file(&aion_file, path)?;
 
     tracing::info!(
@@ -155,23 +164,22 @@ pub fn init_file(path: &Path, initial_rules: &[u8], options: &InitOptions) -> Re
 
 #[allow(clippy::cast_possible_truncation)]
 fn build_genesis_file(
-    file_id: FileId,
+    context: &FileContext,
     timestamp: u64,
-    rules_hash: [u8; 32],
-    encrypted_rules: Vec<u8>,
+    encoded: EncodedRules,
     options: &InitOptions,
 ) -> Result<AionFile> {
     let (string_table, offsets) = AionSerializer::build_string_table(&[options.message]);
     let message_offset = offsets.first().copied().unwrap_or(0);
 
-    let genesis_version = create_genesis_version(
-        rules_hash,
+    let genesis_version = encoded.apply_mode(create_genesis_version(
+        encoded.rules_hash,
         options.author_id,
         timestamp,
         message_offset,
         options.message.len() as u32,
-    );
-    let signature = sign_version(&genesis_version, options.signing_key);
+    ));
+    let signature = context.sign_version(&genesis_version, options.signing_key)?;
     let audit_entry = AuditEntry::new(
         timestamp,
         options.author_id,
@@ -182,14 +190,15 @@ fn build_genesis_file(
     );
 
     AionFile::builder()
-        .file_id(file_id)
+        .format(context.format())
+        .file_id(context.file_id())
         .current_version(VersionNumber::GENESIS)
-        .flags(0x0001)
-        .root_hash(rules_hash)
-        .current_hash(rules_hash)
+        .flags(encoded.header_flags(0x0001))
+        .root_hash(encoded.rules_hash)
+        .current_hash(encoded.rules_hash)
         .created_at(timestamp)
         .modified_at(timestamp)
-        .encrypted_rules(encrypted_rules)
+        .encrypted_rules(encoded.section)
         .add_version(genesis_version)
         .add_signature(signature)
         .add_audit_entry(audit_entry)
@@ -220,6 +229,9 @@ pub struct CommitOptions<'a> {
     /// Optional timestamp (nanoseconds since Unix epoch)
     /// If None, uses current system time
     pub timestamp: Option<u64>,
+    /// How the new version's rules are protected (RFC-0039). There is no
+    /// default.
+    pub protection: RulesProtection,
 }
 
 /// Provider boundary for signing canonical AION version messages.
@@ -256,6 +268,9 @@ pub struct ExternalCommitOptions<'a> {
     pub message: &'a str,
     /// Optional timestamp in nanoseconds since the Unix epoch.
     pub timestamp: Option<u64>,
+    /// How the new version's rules are protected (RFC-0039). There is no
+    /// default.
+    pub protection: RulesProtection,
 }
 
 /// Result of a successful commit operation
@@ -301,6 +316,7 @@ pub struct CommitResult {
 /// # Example
 ///
 /// ```no_run
+/// use aion_context::format::RulesProtection;
 /// use aion_context::operations::{commit_version, CommitOptions};
 /// use aion_context::crypto::SigningKey;
 /// use aion_context::types::AuthorId;
@@ -312,6 +328,7 @@ pub struct CommitResult {
 ///     signing_key: &signing_key,
 ///     message: "Updated rules",
 ///     timestamp: None,
+///     protection: RulesProtection::Public,
 /// };
 ///
 /// // let result = commit_version(
@@ -335,6 +352,7 @@ pub fn commit_version(
         signer: options.signing_key,
         message: options.message,
         timestamp: options.timestamp,
+        protection: options.protection.clone(),
     };
     commit_version_with_signer_inner(path, new_rules, &external, registry, true)
 }
@@ -390,6 +408,7 @@ pub fn commit_version_force_unregistered(
         signer: options.signing_key,
         message: options.message,
         timestamp: options.timestamp,
+        protection: options.protection.clone(),
     };
     commit_version_with_signer_inner(path, new_rules, &external, registry, false)
 }
@@ -401,67 +420,36 @@ fn commit_version_with_signer_inner(
     registry: &crate::key_registry::KeyRegistry,
     enforce_registry: bool,
 ) -> Result<CommitResult> {
-    let file_bytes = std::fs::read(path).map_err(|e| AionError::FileReadError {
-        path: path.to_path_buf(),
-        source: e,
-    })?;
+    let file_bytes = read_file_bytes(path)?;
     let parser = AionParser::new(&file_bytes)?;
     let header = parser.header();
-    ensure_commit_format_supported(header)?;
-
-    // Pre-write integrity gate (audit follow-up to PR #37):
-    //
-    //   1. integrity_hash over the whole on-disk byte range — catches
-    //      any single-bit tamper in any section, including ones that
-    //      verify_head_signature alone wouldn't notice.
-    //   2. parent_hash chain over the version entries — catches
-    //      tampering of an intermediate VersionEntry that doesn't
-    //      change the head signature.
-    //   3. head signature — catches tampering of the latest sig.
-    //
-    // PR #37's commit message claimed (1) was already done by the
-    // parser at parse time. It was not — `AionParser::new` only
-    // does structural validation. Without (1) and (2), commit
-    // could layer a valid new entry on top of a corrupt chain,
-    // hiding the corruption beneath fresh bytes.
-    parser.verify_integrity()?;
-    let existing_versions = collect_versions(&parser, header.version_chain_count)?;
-    crate::signature_chain::verify_hash_chain(&existing_versions)?;
-    verify_head_signature(&parser, registry)?;
+    let context = header.context()?;
+    verify_chain_before_commit(&parser, &context, registry)?;
 
     let new_version = VersionNumber(header.current_version).next()?;
     let public_key = options.signer.public_key()?;
-
     if enforce_registry {
         preflight_registry_public_key(options.author_id, &public_key, new_version, registry)?;
     }
 
     let timestamp = options.timestamp.unwrap_or_else(current_timestamp_nanos);
-    let file_id = FileId::new(header.file_id);
-    let (encrypted_rules, rules_hash) = encrypt_rules(new_rules, file_id, new_version)?;
-    let parent_hash = compute_version_hash(&get_last_version_entry(&parser)?);
+    let encoded = encode_rules(&context, &options.protection, new_rules, new_version)?;
+    let rules_hash = encoded.rules_hash;
+    let parent_hash = context.version_hash(&get_last_version_entry(&parser)?)?;
     let (string_table, message_offset) = build_string_table_with_message(options.message, &parser)?;
-
-    let (new_version_entry, signature_entry) = build_new_version_and_signature(
-        new_version,
-        parent_hash,
-        rules_hash,
-        timestamp,
-        message_offset,
-        options,
-        public_key,
-    )?;
+    let new_entry = encoded.new_entry(new_version, parent_hash, options, timestamp, message_offset);
+    let signature_entry = sign_new_entry(&context, &new_entry, options, public_key)?;
     if enforce_registry {
-        verify_signature(&new_version_entry, &signature_entry, registry)?;
+        context.verify_signature(&new_entry, &signature_entry, registry)?;
     }
 
     let updated_file = build_updated_file(
         &parser,
         header,
+        &context,
         new_version,
-        rules_hash,
-        encrypted_rules,
-        new_version_entry,
+        encoded,
+        new_entry,
         signature_entry,
         string_table,
         timestamp,
@@ -469,20 +457,167 @@ fn commit_version_with_signer_inner(
     )?;
     AionSerializer::write_atomic(&updated_file, path)?;
 
-    let version_hash = compute_version_hash(&new_version_entry);
-    tracing::info!(
-        event = "commit_accepted",
-        file_id = %crate::obs::short_hex(&header.file_id.to_le_bytes()),
-        author = %crate::obs::author_short(options.author_id),
-        version = new_version.as_u64(),
-        version_hash = %crate::obs::short_hex(&version_hash),
-        rules_hash = %crate::obs::short_hex(&rules_hash),
+    let version_hash = context.version_hash(&new_entry)?;
+    emit_commit_accepted(
+        header,
+        options.author_id,
+        new_version,
+        &version_hash,
+        &rules_hash,
     );
     Ok(CommitResult {
         version: new_version,
         version_hash,
         rules_hash,
     })
+}
+
+fn read_file_bytes(path: &Path) -> Result<Vec<u8>> {
+    std::fs::read(path).map_err(|e| AionError::FileReadError {
+        path: path.to_path_buf(),
+        source: e,
+    })
+}
+
+/// Pre-write integrity gate (audit follow-up to PR #37):
+///
+///   1. the integrity hash over the whole on-disk byte range catches any
+///      single-bit tamper in any section, including ones the head
+///      signature alone would not notice;
+///   2. the parent-hash chain over the version entries catches tampering
+///      of an intermediate entry that does not change the head signature;
+///   3. the head signature catches tampering of the latest signature.
+///
+/// Without (1) and (2), commit could layer a valid new entry on top of a
+/// corrupt chain, hiding the corruption beneath fresh bytes.
+fn verify_chain_before_commit(
+    parser: &AionParser<'_>,
+    context: &FileContext,
+    registry: &crate::key_registry::KeyRegistry,
+) -> Result<()> {
+    parser.verify_integrity()?;
+    let existing_versions = collect_versions(parser, parser.header().version_chain_count)?;
+    context.verify_hash_chain(&existing_versions)?;
+    verify_head_signature(parser, registry)
+}
+
+/// Ask the provider for exactly one signature over the new entry's
+/// canonical message for this file's format (RFC-0038, RFC-0039), and
+/// check it against the provider's own public key on every path,
+/// including `commit_version_force_unregistered`, which skips the
+/// registry check.
+fn sign_new_entry(
+    context: &FileContext,
+    entry: &VersionEntry,
+    options: &ExternalCommitOptions<'_>,
+    public_key: [u8; 32],
+) -> Result<SignatureEntry> {
+    let message = context.canonical_version_message(entry)?;
+    let signature = options.signer.sign_version_message(&message)?;
+    crate::crypto::VerifyingKey::from_bytes(&public_key)?.verify(&message, &signature)?;
+    Ok(SignatureEntry::new(
+        options.author_id,
+        public_key,
+        signature,
+    ))
+}
+
+fn emit_commit_accepted(
+    header: &crate::parser::FileHeader,
+    author: AuthorId,
+    version: VersionNumber,
+    version_hash: &[u8; 32],
+    rules_hash: &[u8; 32],
+) {
+    tracing::info!(
+        event = "commit_accepted",
+        file_id = %crate::obs::short_hex(&header.file_id.to_le_bytes()),
+        author = %crate::obs::author_short(author),
+        version = version.as_u64(),
+        version_hash = %crate::obs::short_hex(version_hash),
+        rules_hash = %crate::obs::short_hex(rules_hash),
+    );
+}
+
+/// A rules section encoded for one file format, with the value its
+/// version entry signs and, for format v3, the mode the entry records.
+struct EncodedRules {
+    section: Vec<u8>,
+    rules_hash: [u8; 32],
+    mode: Option<RulesMode>,
+}
+
+impl EncodedRules {
+    /// Record this section's mode on a version entry (format v3 only).
+    const fn apply_mode(&self, entry: VersionEntry) -> VersionEntry {
+        match self.mode {
+            Some(mode) => entry.with_rules_mode(mode),
+            None => entry,
+        }
+    }
+
+    /// The new version entry that signs this section, recording its mode
+    /// for format v3.
+    #[allow(clippy::cast_possible_truncation)] // commit messages are far below 4 GiB
+    const fn new_entry(
+        &self,
+        version: VersionNumber,
+        parent_hash: [u8; 32],
+        options: &ExternalCommitOptions<'_>,
+        timestamp: u64,
+        message_offset: u64,
+    ) -> VersionEntry {
+        self.apply_mode(VersionEntry::new(
+            version,
+            parent_hash,
+            self.rules_hash,
+            options.author_id,
+            timestamp,
+            message_offset,
+            options.message.len() as u32,
+        ))
+    }
+
+    /// Header flags for a file whose head carries this section. v3 flag
+    /// bit 0 mirrors the head's mode; v2 keeps its existing flags.
+    const fn header_flags(&self, v2_flags: u16) -> u16 {
+        match self.mode {
+            None => v2_flags,
+            Some(RulesMode::Public) => 0,
+            Some(RulesMode::Confidential) => 1,
+        }
+    }
+}
+
+/// Encode rules for a file's format. Format v2 keeps its legacy encoding
+/// (it has no modes); format v3 honours the requested protection.
+fn encode_rules(
+    context: &FileContext,
+    protection: &RulesProtection,
+    rules: &[u8],
+    version: VersionNumber,
+) -> Result<EncodedRules> {
+    match context.format() {
+        FormatVersion::V2 => {
+            let (section, rules_hash) = encrypt_rules(rules, context.file_id(), version)?;
+            Ok(EncodedRules {
+                section,
+                rules_hash,
+                mode: None,
+            })
+        }
+        FormatVersion::V3 => match protection {
+            RulesProtection::Public => {
+                let section = crate::format::frame_rules(rules)?;
+                let rules_hash = crate::format::rules_commitment(RulesMode::Public, &section);
+                Ok(EncodedRules {
+                    section,
+                    rules_hash,
+                    mode: Some(RulesMode::Public),
+                })
+            }
+        },
+    }
 }
 
 /// Pre-write authz check (issue #25): the signer must have an
@@ -522,31 +657,6 @@ fn preflight_registry_public_key(
         });
     }
     Ok(())
-}
-
-#[allow(clippy::cast_possible_truncation)]
-fn build_new_version_and_signature(
-    new_version: VersionNumber,
-    parent_hash: [u8; 32],
-    rules_hash: [u8; 32],
-    timestamp: u64,
-    message_offset: u64,
-    options: &ExternalCommitOptions<'_>,
-    public_key: [u8; 32],
-) -> Result<(VersionEntry, SignatureEntry)> {
-    let new_version_entry = VersionEntry::new(
-        new_version,
-        parent_hash,
-        rules_hash,
-        options.author_id,
-        timestamp,
-        message_offset,
-        options.message.len() as u32,
-    );
-    let message = canonical_version_message(&new_version_entry);
-    let signature = options.signer.sign_version_message(&message)?;
-    let signature_entry = SignatureEntry::new(options.author_id, public_key, signature);
-    Ok((new_version_entry, signature_entry))
 }
 
 /// Verify only the head (most recent) signature against the pinned
@@ -1146,18 +1256,6 @@ fn verify_rules_payload(parser: &AionParser<'_>, versions: &[VersionEntry]) -> R
     .map(|_| ())
 }
 
-/// Committing to a format-v3 file needs the v3 writer, which is not
-/// implemented yet; refuse rather than append a v2-shaped entry.
-fn ensure_commit_format_supported(header: &crate::parser::FileHeader) -> Result<()> {
-    match header.format()? {
-        crate::format::FormatVersion::V2 => Ok(()),
-        crate::format::FormatVersion::V3 => Err(AionError::UnsupportedVersion {
-            version: header.version,
-            supported: "2".to_string(),
-        }),
-    }
-}
-
 /// Read a format-v3 head's rules after binding the stored section to the
 /// signed commitment. A public section returns its plaintext; a
 /// confidential one needs a recipient key.
@@ -1725,9 +1823,9 @@ fn current_timestamp_nanos() -> u64 {
 fn build_updated_file(
     parser: &AionParser<'_>,
     header: &crate::parser::FileHeader,
+    context: &FileContext,
     new_version: VersionNumber,
-    new_rules_hash: [u8; 32],
-    encrypted_rules: Vec<u8>,
+    encoded: EncodedRules,
     new_version_entry: VersionEntry,
     new_signature: SignatureEntry,
     string_table: Vec<u8>,
@@ -1740,14 +1838,15 @@ fn build_updated_file(
     let audit_entries = collect_existing_audit_plus_commit(parser, header, timestamp, author_id)?;
 
     AionFile::builder()
+        .format(context.format())
         .file_id(FileId::new(header.file_id))
         .current_version(new_version)
-        .flags(header.flags)
+        .flags(encoded.header_flags(header.flags))
         .root_hash(header.root_hash)
-        .current_hash(new_rules_hash)
+        .current_hash(encoded.rules_hash)
         .created_at(header.created_at)
         .modified_at(timestamp)
-        .encrypted_rules(encrypted_rules)
+        .encrypted_rules(encoded.section)
         .versions(versions)
         .signatures(signatures)
         .audit_entries(audit_entries)
@@ -1830,7 +1929,9 @@ mod tests {
     use crate::audit::ActionCode;
     use crate::key_registry::KeyRegistry;
     use crate::serializer::AionSerializer;
-    use crate::signature_chain::{create_genesis_version, sign_version};
+    use crate::signature_chain::{
+        canonical_version_message, compute_version_hash, create_genesis_version, sign_version,
+    };
     use tempfile::TempDir;
 
     /// Build a registry pinning `author_id` at epoch 0 with `signing_key`.
@@ -1964,6 +2065,7 @@ mod tests {
                 signing_key: &signing_key,
                 message: "Updated rules",
                 timestamp: Some(1700000001_000_000_000),
+                protection: RulesProtection::Public,
             };
 
             let result = commit_version(
@@ -2022,6 +2124,7 @@ mod tests {
                     signing_key: &signing_key,
                     message: "hardware-backed release",
                     timestamp,
+                    protection: RulesProtection::Public,
                 },
                 &registry,
             )
@@ -2040,6 +2143,7 @@ mod tests {
                     signer: &signer,
                     message: "hardware-backed release",
                     timestamp,
+                    protection: RulesProtection::Public,
                 },
                 &registry,
             )
@@ -2093,6 +2197,7 @@ mod tests {
                     signer: &InvalidSignatureSigner(&signing_key),
                     message: "invalid provider output",
                     timestamp: Some(1_700_000_001_000_000_000),
+                    protection: RulesProtection::Public,
                 },
                 &registry,
             );
@@ -2121,6 +2226,7 @@ mod tests {
                     signer: &FailingSigner(&signing_key),
                     message: "provider outage",
                     timestamp: Some(1_700_000_001_000_000_000),
+                    protection: RulesProtection::Public,
                 },
                 &registry,
             );
@@ -2129,6 +2235,119 @@ mod tests {
                 std::fs::read(&file_path).unwrap_or_else(|_| std::process::abort()),
                 initial_bytes
             );
+        }
+
+        fn init_v3(path: &Path, key: &SigningKey, author_id: AuthorId) -> Vec<u8> {
+            let options = InitOptions {
+                author_id,
+                signing_key: key,
+                message: "genesis",
+                timestamp: Some(1_700_000_000_000_000_000),
+                protection: RulesProtection::Public,
+            };
+            init_file(path, b"v1 rules", &options).unwrap_or_else(|_| std::process::abort());
+            std::fs::read(path).unwrap_or_else(|_| std::process::abort())
+        }
+
+        #[test]
+        fn external_signer_on_a_v3_file_signs_the_v3_message_exactly_once() {
+            let temp_dir = TempDir::new().unwrap_or_else(|_| std::process::abort());
+            let file_path = temp_dir.path().join("external-v3.aion");
+            let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+            let author_id = AuthorId::new(50_020);
+            init_v3(&file_path, &key, author_id);
+            let registry = test_reg(author_id, &key);
+            let signer = RecordingSigner {
+                key: &key,
+                calls: Cell::new(0),
+                message: RefCell::new(Vec::new()),
+            };
+
+            commit_version_with_signer(
+                &file_path,
+                b"v2 rules",
+                &ExternalCommitOptions {
+                    author_id,
+                    signer: &signer,
+                    message: "external v3",
+                    timestamp: Some(1_700_000_001_000_000_000),
+                    protection: RulesProtection::Public,
+                },
+                &registry,
+            )
+            .unwrap_or_else(|_| std::process::abort());
+            assert_eq!(signer.calls.get(), 1);
+
+            let bytes = std::fs::read(&file_path).unwrap_or_else(|_| std::process::abort());
+            let parser = AionParser::new(&bytes).unwrap_or_else(|_| std::process::abort());
+            let context = parser
+                .header()
+                .context()
+                .unwrap_or_else(|_| std::process::abort());
+            assert_eq!(context.format(), FormatVersion::V3);
+            let landed = parser
+                .get_version_entry(1)
+                .unwrap_or_else(|_| std::process::abort());
+            let expected = context
+                .canonical_version_message(&landed)
+                .unwrap_or_else(|_| std::process::abort());
+            assert_eq!(*signer.message.borrow(), expected);
+            let report =
+                verify_file(&file_path, &registry).unwrap_or_else(|_| std::process::abort());
+            assert!(report.is_valid, "{:?}", report.errors);
+        }
+
+        #[test]
+        fn invalid_external_signature_on_a_v3_file_leaves_it_untouched() {
+            let temp_dir = TempDir::new().unwrap_or_else(|_| std::process::abort());
+            let file_path = temp_dir.path().join("bad-external-v3.aion");
+            let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+            let author_id = AuthorId::new(50_021);
+            let initial_bytes = init_v3(&file_path, &key, author_id);
+            let registry = test_reg(author_id, &key);
+
+            let result = commit_version_with_signer(
+                &file_path,
+                b"v2 rules",
+                &ExternalCommitOptions {
+                    author_id,
+                    signer: &InvalidSignatureSigner(&key),
+                    message: "bad signature",
+                    timestamp: Some(1_700_000_001_000_000_000),
+                    protection: RulesProtection::Public,
+                },
+                &registry,
+            );
+            assert!(result.is_err());
+            assert_eq!(
+                std::fs::read(&file_path).unwrap_or_else(|_| std::process::abort()),
+                initial_bytes
+            );
+        }
+
+        #[test]
+        fn provider_signature_is_checked_even_without_the_registry() {
+            let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+            let context = FileContext::new(FormatVersion::V3, FileId::new(9));
+            let entry = VersionEntry::new(
+                VersionNumber::GENESIS,
+                [0; 32],
+                [1; 32],
+                AuthorId::new(50_022),
+                1,
+                0,
+                0,
+            )
+            .with_rules_mode(RulesMode::Public);
+            let options = ExternalCommitOptions {
+                author_id: AuthorId::new(50_022),
+                signer: &InvalidSignatureSigner(&key),
+                message: "",
+                timestamp: None,
+                protection: RulesProtection::Public,
+            };
+            let public_key = key.verifying_key().to_bytes();
+            assert!(sign_new_entry(&context, &entry, &options, public_key).is_err());
         }
 
         #[test]
@@ -2155,6 +2374,7 @@ mod tests {
                     signer: &signer,
                     message: "wrong provider key",
                     timestamp: Some(1_700_000_001_000_000_000),
+                    protection: RulesProtection::Public,
                 },
                 &registry,
             );
@@ -2188,6 +2408,7 @@ mod tests {
                     signing_key: &signing_key,
                     message: "rev",
                     timestamp: Some(1_700_000_000_000_000_000 + i * 1_000_000_000),
+                    protection: RulesProtection::Public,
                 };
                 commit_version(&file_path, b"new rules", &options, &registry)
                     .unwrap_or_else(|_| std::process::abort());
@@ -2235,6 +2456,7 @@ mod tests {
                 signing_key: &signing_key,
                 message: "rev",
                 timestamp: Some(1_700_000_001_000_000_000),
+                protection: RulesProtection::Public,
             };
             commit_version(&file_path, b"new rules", &options, &registry)
                 .unwrap_or_else(|_| std::process::abort());
@@ -2294,6 +2516,7 @@ mod tests {
                     signing_key: &signing_key,
                     message: &format!("Version {i}"),
                     timestamp: Some(1700000000_000_000_000 + i * 1_000_000_000),
+                    protection: RulesProtection::Public,
                 };
 
                 let result = commit_version(
@@ -2335,6 +2558,7 @@ mod tests {
                 signing_key: &signing_key,
                 message: "New version",
                 timestamp: Some(1700000001_000_000_000),
+                protection: RulesProtection::Public,
             };
             commit_version(
                 &file_path,
@@ -2375,6 +2599,7 @@ mod tests {
                 signing_key: &signing_key,
                 message: "Version 2",
                 timestamp: Some(1700000001_000_000_000),
+                protection: RulesProtection::Public,
             };
             commit_version(
                 &file_path,
@@ -2477,6 +2702,7 @@ mod tests {
                         signing_key: &key,
                         message: &message,
                         timestamp: Some(TRIAL_TIMESTAMP),
+                        protection: RulesProtection::Public,
                     },
                     &registry,
                 )
@@ -2498,6 +2724,7 @@ mod tests {
                         signer: &signer,
                         message: &message,
                         timestamp: Some(TRIAL_TIMESTAMP),
+                        protection: RulesProtection::Public,
                     },
                     &registry,
                 )
@@ -2566,6 +2793,7 @@ mod tests {
                         signer: &signer,
                         message: &message,
                         timestamp: Some(TRIAL_TIMESTAMP),
+                        protection: RulesProtection::Public,
                     },
                     &registry,
                 )
@@ -2610,6 +2838,7 @@ mod tests {
                         },
                         message: "provider failure",
                         timestamp: Some(TRIAL_TIMESTAMP),
+                        protection: RulesProtection::Public,
                     },
                     &registry,
                 );
@@ -2648,6 +2877,7 @@ mod tests {
                         },
                         message: "invalid provider output",
                         timestamp: Some(TRIAL_TIMESTAMP),
+                        protection: RulesProtection::Public,
                     },
                     &registry,
                 );
@@ -2932,6 +3162,7 @@ mod tests {
                 signing_key: &signing_key,
                 message: "Should fail",
                 timestamp: Some(1700000001_000_000_000),
+                protection: RulesProtection::Public,
             };
 
             let result = commit_version(
@@ -2981,6 +3212,7 @@ mod tests {
                 signing_key: &signing_key,
                 message: "should fail",
                 timestamp: None,
+                protection: RulesProtection::Public,
             };
             let result = commit_version(
                 &file_path,
@@ -3021,6 +3253,7 @@ mod tests {
                 signing_key: &signing_key,
                 message: "should fail",
                 timestamp: None,
+                protection: RulesProtection::Public,
             };
             let result = commit_version(
                 &file_path,
@@ -3078,6 +3311,7 @@ mod tests {
                 signing_key: &signing_key,
                 message: "Version 2",
                 timestamp: Some(1700000001_000_000_000),
+                protection: RulesProtection::Public,
             };
             commit_version(
                 &file_path,
@@ -3092,6 +3326,7 @@ mod tests {
                 signing_key: &signing_key,
                 message: "Version 3",
                 timestamp: Some(1700000002_000_000_000),
+                protection: RulesProtection::Public,
             };
             commit_version(
                 &file_path,
@@ -3153,6 +3388,7 @@ mod tests {
                 signing_key: &signing_key,
                 message: "Version 2",
                 timestamp: Some(1700000001_000_000_000),
+                protection: RulesProtection::Public,
             };
             commit_version(
                 &file_path,
@@ -3258,6 +3494,7 @@ mod tests {
                 signing_key: &signing_key,
                 message: "Version 2",
                 timestamp: Some(1700000001_000_000_000),
+                protection: RulesProtection::Public,
             };
             commit_version(
                 &file_path,
@@ -3331,8 +3568,10 @@ mod tests {
         }
     }
 
-    /// GHSA-7625-44v8-v62f — `verify_file` must bind the stored rules
-    /// payload to the latest signed `rules_hash`.
+    /// GHSA-7625-44v8-v62f is a format-v2 bug: v2 signs the plaintext
+    /// hash while readers consume the stored ciphertext. These tests pin
+    /// the 1.0.1 fix on genuine v2 files. Format v3 signs the stored
+    /// bytes directly; see `format_v3_read_tests`.
     mod payload_binding_tests {
         use super::*;
 
@@ -3341,13 +3580,32 @@ mod tests {
             let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let author = AuthorId::new(70_001);
             let registry = test_reg(author, &key);
-            let options = InitOptions {
-                author_id: author,
-                signing_key: &key,
-                message: "genesis",
-                timestamp: Some(1_700_000_000_000_000_000),
-            };
-            init_file(&path, rules, &options).unwrap_or_else(|_| std::process::abort());
+            let file_id = FileId::new(70_001);
+            let timestamp = 1_700_000_000_000_000_000;
+            let (section, rules_hash) = encrypt_rules(rules, file_id, VersionNumber::GENESIS)
+                .unwrap_or_else(|_| std::process::abort());
+            let (string_table, _) = AionSerializer::build_string_table(&["genesis"]);
+            let genesis = create_genesis_version(rules_hash, author, timestamp, 0, 7);
+            let file = AionFile::builder()
+                .format(FormatVersion::V2)
+                .file_id(file_id)
+                .current_version(VersionNumber::GENESIS)
+                .flags(0x0001)
+                .root_hash(rules_hash)
+                .current_hash(rules_hash)
+                .created_at(timestamp)
+                .modified_at(timestamp)
+                .encrypted_rules(section)
+                .add_signature(sign_version(&genesis, &key))
+                .add_version(genesis)
+                .string_table(string_table)
+                .build()
+                .unwrap_or_else(|_| std::process::abort());
+            std::fs::write(
+                &path,
+                AionSerializer::serialize(&file).unwrap_or_else(|_| std::process::abort()),
+            )
+            .unwrap_or_else(|_| std::process::abort());
             (path, registry)
         }
 
@@ -3408,6 +3666,7 @@ mod tests {
                 signing_key: &key,
                 message: "v2",
                 timestamp: Some(1_700_000_001_000_000_000),
+                protection: RulesProtection::Public,
             };
             commit_version(&path, b"second rules", &options, &registry)
                 .unwrap_or_else(|_| std::process::abort());
@@ -3742,7 +4001,7 @@ mod tests {
         }
 
         #[test]
-        fn commit_to_a_v3_file_is_refused_until_the_v3_writer_exists() {
+        fn commit_to_a_v3_file_appends_a_v3_public_version() {
             let dir = TempDir::new().unwrap_or_else(|_| std::process::abort());
             let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let author = AuthorId::new(80_004);
@@ -3755,13 +4014,58 @@ mod tests {
                 signing_key: &key,
                 message: "v2",
                 timestamp: None,
+                protection: RulesProtection::Public,
             };
-            assert!(matches!(
-                commit_version(&path, b"next", &options, &registry),
-                Err(AionError::UnsupportedVersion { version: 3, .. })
-            ));
+            let result = commit_version(&path, b"next", &options, &registry)
+                .unwrap_or_else(|_| std::process::abort());
+            assert_eq!(result.version, VersionNumber(2));
+
+            let report = verify_file(&path, &registry).unwrap_or_else(|_| std::process::abort());
+            assert!(report.is_valid, "{:?}", report.errors);
+            assert_eq!(
+                show_current_rules(&path).unwrap_or_else(|_| std::process::abort()),
+                b"next"
+            );
             let after = std::fs::read(&path).unwrap_or_else(|_| std::process::abort());
-            assert_eq!(after, bytes);
+            let parser = AionParser::new(&after).unwrap_or_else(|_| std::process::abort());
+            assert_eq!(parser.header().version, 3);
+            let head = parser
+                .get_version_entry(1)
+                .unwrap_or_else(|_| std::process::abort());
+            assert_eq!(head.rules_hash, result.rules_hash);
+            assert_eq!(
+                RulesMode::of(&head).unwrap_or_else(|_| std::process::abort()),
+                RulesMode::Public
+            );
+        }
+
+        #[test]
+        fn commit_to_a_v2_file_keeps_it_v2() {
+            let dir = TempDir::new().unwrap_or_else(|_| std::process::abort());
+            let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+            let author = AuthorId::new(80_005);
+            let registry = test_reg(author, &key);
+            let path = dir.path().join("v2.aion");
+            std::fs::write(&path, create_test_file(&key, author))
+                .unwrap_or_else(|_| std::process::abort());
+            let options = CommitOptions {
+                author_id: author,
+                signing_key: &key,
+                message: "v2",
+                timestamp: None,
+                protection: RulesProtection::Public,
+            };
+            commit_version(&path, b"next", &options, &registry)
+                .unwrap_or_else(|_| std::process::abort());
+            let bytes = std::fs::read(&path).unwrap_or_else(|_| std::process::abort());
+            let parser = AionParser::new(&bytes).unwrap_or_else(|_| std::process::abort());
+            assert_eq!(parser.header().version, 2);
+            let report = verify_file(&path, &registry).unwrap_or_else(|_| std::process::abort());
+            assert!(report.is_valid, "{:?}", report.errors);
+            assert_eq!(
+                show_current_rules(&path).unwrap_or_else(|_| std::process::abort()),
+                b"next"
+            );
         }
 
         mod properties {
@@ -3777,6 +4081,57 @@ mod tests {
                 assert!(report.is_valid);
                 let read = show_current_rules(&path).unwrap_or_else(|_| std::process::abort());
                 assert_eq!(read, rules);
+            }
+
+            #[hegel::test]
+            fn prop_v3_init_then_commits_verifies_and_reads_the_head(tc: hegel::TestCase) {
+                let count = tc.draw(gs::integers::<usize>().min_value(1).max_value(5));
+                let rules: Vec<Vec<u8>> = (0..count)
+                    .map(|_| tc.draw(gs::binary().max_size(512)))
+                    .collect();
+                let dir = TempDir::new().unwrap_or_else(|_| std::process::abort());
+                let path = dir.path().join("grown.aion");
+                let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+                let author = AuthorId::new(80_006);
+                let registry = test_reg(author, &key);
+                let mut drafts = rules.iter();
+                let first = drafts.next().unwrap_or_else(|| std::process::abort());
+                let init = InitOptions {
+                    author_id: author,
+                    signing_key: &key,
+                    message: "genesis",
+                    timestamp: None,
+                    protection: RulesProtection::Public,
+                };
+                init_file(&path, first, &init).unwrap_or_else(|_| std::process::abort());
+                for next in drafts {
+                    let commit = CommitOptions {
+                        author_id: author,
+                        signing_key: &key,
+                        message: "next",
+                        timestamp: None,
+                        protection: RulesProtection::Public,
+                    };
+                    commit_version(&path, next, &commit, &registry)
+                        .unwrap_or_else(|_| std::process::abort());
+                }
+                let report =
+                    verify_file(&path, &registry).unwrap_or_else(|_| std::process::abort());
+                assert!(report.is_valid);
+                assert_eq!(report.version_count, count as u64);
+                let head = show_current_rules(&path).unwrap_or_else(|_| std::process::abort());
+                assert_eq!(Some(&head), rules.last());
+                let bytes = std::fs::read(&path).unwrap_or_else(|_| std::process::abort());
+                let parser = AionParser::new(&bytes).unwrap_or_else(|_| std::process::abort());
+                for index in 0..count {
+                    let entry = parser
+                        .get_version_entry(index)
+                        .unwrap_or_else(|_| std::process::abort());
+                    assert_eq!(
+                        RulesMode::of(&entry).unwrap_or_else(|_| std::process::abort()),
+                        RulesMode::Public
+                    );
+                }
             }
 
             #[hegel::test]
@@ -3866,6 +4221,7 @@ mod tests {
                 signing_key: &signing_key,
                 message: "Version 2",
                 timestamp: Some(1700000001_000_000_000),
+                protection: RulesProtection::Public,
             };
             commit_version(
                 &file_path,
@@ -3880,6 +4236,7 @@ mod tests {
                 signing_key: &signing_key,
                 message: "Version 3",
                 timestamp: Some(1700000002_000_000_000),
+                protection: RulesProtection::Public,
             };
             commit_version(
                 &file_path,
@@ -3945,6 +4302,7 @@ mod tests {
                 signing_key: &signing_key,
                 message: "Version 2",
                 timestamp: Some(1700000001_000_000_000),
+                protection: RulesProtection::Public,
             };
             commit_version(
                 &file_path,
@@ -4010,6 +4368,7 @@ mod tests {
                 signing_key: &signing_key,
                 message: "Version 2",
                 timestamp: Some(1700000001_000_000_000),
+                protection: RulesProtection::Public,
             };
             commit_version(
                 &file_path,
@@ -4050,6 +4409,7 @@ mod tests {
                 signing_key: &signing_key,
                 message: "Updated rules",
                 timestamp: Some(1700000001_000_000_000),
+                protection: RulesProtection::Public,
             };
             let new_rules = b"these are the updated rules";
             commit_version(
@@ -4108,6 +4468,7 @@ mod tests {
                 signing_key: &signing_key,
                 message: "Initial version",
                 timestamp: Some(1700000000_000_000_000),
+                protection: RulesProtection::Public,
             };
 
             let rules = b"fraud_threshold: 1000\nrisk_level: medium";
@@ -4134,6 +4495,7 @@ mod tests {
                 signing_key: &signing_key,
                 message: "Genesis",
                 timestamp: Some(1700000000_000_000_000),
+                protection: RulesProtection::Public,
             };
 
             let rules = b"test rules";
@@ -4170,6 +4532,7 @@ mod tests {
                 signing_key: &signing_key,
                 message: "Initial version",
                 timestamp: Some(1700000000_000_000_000),
+                protection: RulesProtection::Public,
             };
 
             init_file(&file_path, b"rules", &options).unwrap();
@@ -4193,6 +4556,7 @@ mod tests {
                 signing_key: &signing_key,
                 message: "Initial",
                 timestamp: Some(1700000000_000_000_000),
+                protection: RulesProtection::Public,
             };
 
             let result1 = init_file(&path1, b"rules1", &options).unwrap();
@@ -4203,9 +4567,9 @@ mod tests {
         }
 
         #[test]
-        fn should_encrypt_rules_content() {
-            let temp_dir = TempDir::new().unwrap();
-            let file_path = temp_dir.path().join("encrypted.aion");
+        fn should_write_public_rules_as_a_v3_frame_in_the_clear() {
+            let temp_dir = TempDir::new().unwrap_or_else(|_| std::process::abort());
+            let file_path = temp_dir.path().join("public.aion");
 
             let signing_key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let author_id = AuthorId::new(50001);
@@ -4214,20 +4578,36 @@ mod tests {
                 signing_key: &signing_key,
                 message: "Initial",
                 timestamp: Some(1700000000_000_000_000),
+                protection: RulesProtection::Public,
             };
 
-            let secret_rules = b"secret: fraud_detection_threshold_is_5000";
-            init_file(&file_path, secret_rules, &options).unwrap();
+            let rules = b"refund_limit: 5000";
+            init_file(&file_path, rules, &options).unwrap_or_else(|_| std::process::abort());
 
-            // Read raw file bytes - should not contain plaintext
-            let file_bytes = std::fs::read(&file_path).unwrap();
-            let file_string = String::from_utf8_lossy(&file_bytes);
-            assert!(!file_string.contains("secret"));
-            assert!(!file_string.contains("fraud_detection_threshold"));
-
-            // But decryption should work
-            let decrypted = show_current_rules(&file_path).unwrap();
-            assert_eq!(decrypted, secret_rules);
+            // Public means public: the plaintext is in the file, framed, and
+            // the signature (not secrecy) is what protects it.
+            let bytes = std::fs::read(&file_path).unwrap_or_else(|_| std::process::abort());
+            let parser = AionParser::new(&bytes).unwrap_or_else(|_| std::process::abort());
+            assert_eq!(parser.header().version, 3);
+            assert!(!parser.header().is_encrypted());
+            let section = parser
+                .encrypted_rules_bytes()
+                .unwrap_or_else(|_| std::process::abort());
+            assert_eq!(
+                crate::format::unframe_rules(section).unwrap_or_else(|_| std::process::abort()),
+                rules
+            );
+            let genesis = parser
+                .get_version_entry(0)
+                .unwrap_or_else(|_| std::process::abort());
+            assert_eq!(
+                RulesMode::of(&genesis).unwrap_or_else(|_| std::process::abort()),
+                RulesMode::Public
+            );
+            assert_eq!(
+                show_current_rules(&file_path).unwrap_or_else(|_| std::process::abort()),
+                rules
+            );
         }
 
         #[test]
@@ -4242,6 +4622,7 @@ mod tests {
                 signing_key: &signing_key,
                 message: "Initial",
                 timestamp: Some(1700000000_000_000_000),
+                protection: RulesProtection::Public,
             };
 
             init_file(&file_path, b"rules", &options).unwrap();
@@ -4265,6 +4646,7 @@ mod tests {
                 signing_key: &signing_key,
                 message: "Initial",
                 timestamp: None, // Should use current time
+                protection: RulesProtection::Public,
             };
 
             let before = current_timestamp_nanos();
@@ -4290,6 +4672,7 @@ mod tests {
                 signing_key: &signing_key,
                 message: "Empty genesis",
                 timestamp: Some(1700000000_000_000_000),
+                protection: RulesProtection::Public,
             };
 
             let result = init_file(&file_path, b"", &options).unwrap();
@@ -4312,6 +4695,7 @@ mod tests {
                 signing_key: &signing_key,
                 message: "Large ruleset",
                 timestamp: Some(1700000000_000_000_000),
+                protection: RulesProtection::Public,
             };
 
             // Create large rules (1MB)
@@ -4337,6 +4721,7 @@ mod tests {
                 signing_key: &signing_key,
                 message: &long_message,
                 timestamp: Some(1700000000_000_000_000),
+                protection: RulesProtection::Public,
             };
 
             init_file(&file_path, b"rules", &options).unwrap();
@@ -4425,6 +4810,7 @@ mod tests {
                     signing_key: key,
                     message: "",
                     timestamp: None,
+                    protection: RulesProtection::Public,
                 }
             }
 
@@ -4527,6 +4913,7 @@ mod tests {
                 signing_key: &signing_key,
                 message: "v1",
                 timestamp: None,
+                protection: RulesProtection::Public,
             };
             init_file(&path, b"r1", &init_opts).unwrap();
             for _ in 2..=3u64 {
@@ -4535,6 +4922,7 @@ mod tests {
                     signing_key: &signing_key,
                     message: "amend",
                     timestamp: None,
+                    protection: RulesProtection::Public,
                 };
                 commit_version(&path, b"r", &opts, &registry).unwrap();
             }
@@ -4549,6 +4937,7 @@ mod tests {
                 signing_key: &signing_key,
                 message: "v4",
                 timestamp: None,
+                protection: RulesProtection::Public,
             };
             let result = commit_version(&path, b"r4", &next_opts, &registry);
             assert!(
@@ -4581,6 +4970,7 @@ mod tests {
                 signing_key: &signing_key,
                 message: "v1",
                 timestamp: None,
+                protection: RulesProtection::Public,
             };
             init_file(&path, b"r1", &init_opts).unwrap();
             for _ in 2..=3u64 {
@@ -4589,6 +4979,7 @@ mod tests {
                     signing_key: &signing_key,
                     message: "amend",
                     timestamp: None,
+                    protection: RulesProtection::Public,
                 };
                 commit_version(&path, b"r", &opts, &registry).unwrap();
             }
@@ -4607,6 +4998,7 @@ mod tests {
                 signing_key: &signing_key,
                 message: "v4",
                 timestamp: None,
+                protection: RulesProtection::Public,
             };
             let result = commit_version(&path, b"r4", &next_opts, &registry);
             assert!(
@@ -4646,6 +5038,7 @@ mod tests {
                 signing_key: &signing_key,
                 message: "v1",
                 timestamp: None,
+                protection: RulesProtection::Public,
             };
             init_file(&path, b"v1", &init_opts).unwrap();
 
@@ -4655,6 +5048,7 @@ mod tests {
                     signing_key: &signing_key,
                     message: "amend",
                     timestamp: None,
+                    protection: RulesProtection::Public,
                 };
                 commit_version(&path, b"amend", &opts, &registry).unwrap();
             }

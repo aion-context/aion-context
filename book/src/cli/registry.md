@@ -142,7 +142,7 @@ aion registry rotate \
     --registry registry.json
 
 # Successor commits v9 using the new key.
-aion commit policy.aion --author 50001 --key 50002 \
+aion commit --public policy.aion --author 50001 --key 50002 \
     --rules new-rules.yaml \
     --message "Successor's first amendment" \
     --registry registry.json

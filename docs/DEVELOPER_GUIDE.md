@@ -113,16 +113,18 @@ error (standalone - used by all)
 Create a new AION file with genesis version.
 
 ```rust
+use aion_context::format::RulesProtection;
 use aion_context::operations::{init_file, InitOptions};
 use aion_context::crypto::SigningKey;
 use aion_context::types::AuthorId;
 
-let signing_key = SigningKey::generate();
+let signing_key = SigningKey::generate()?;
 let options = InitOptions {
     author_id: AuthorId::new(1001),
     signing_key: &signing_key,
     message: "Initial policy",
     timestamp: None, // Use current time
+    protection: RulesProtection::Public,
 };
 
 let result = init_file(Path::new("policy.aion"), &rules, &options)?;
@@ -134,6 +136,7 @@ println!("Created file with ID: {:?}", result.file_id);
 Add a new version to an existing file.
 
 ```rust
+use aion_context::format::RulesProtection;
 use aion_context::operations::{commit_version, CommitOptions};
 
 let options = CommitOptions {
@@ -141,6 +144,7 @@ let options = CommitOptions {
     signing_key: &signing_key,
     message: "Updated thresholds",
     timestamp: None,
+    protection: RulesProtection::Public,
 };
 
 let result = commit_version(Path::new("policy.aion"), &new_rules, &options)?;
@@ -155,6 +159,7 @@ into the caller. Implement `VersionSigner::public_key` and
 `ExternalCommitOptions`:
 
 ```rust
+use aion_context::format::RulesProtection;
 use aion_context::operations::{
     commit_version_with_signer, ExternalCommitOptions, VersionSigner,
 };
@@ -164,6 +169,7 @@ let options = ExternalCommitOptions {
     signer: &district_hsm,
     message: "Approved district policy release",
     timestamp: None,
+    protection: RulesProtection::Public,
 };
 
 let result = commit_version_with_signer(
@@ -221,7 +227,7 @@ println!("Rules: {}", String::from_utf8_lossy(&rules));
 ```rust
 use aion_context::crypto::SigningKey;
 
-let signing_key = SigningKey::generate();
+let signing_key = SigningKey::generate()?;
 let verifying_key = signing_key.verifying_key();
 ```
 

@@ -11,15 +11,19 @@ Create a new `.aion` file with a v1 genesis version.
 aion init <FILE> \
     --author <AUTHOR_ID> \
     --key <KEY_ID> \
+    --public \                           # required: name the rules protection
     [--rules <RULES_FILE> | --rules -]   # stdin if `-`
     [--message <MESSAGE>]                # defaults to "Genesis version"
     [--force]                            # overwrite if FILE exists
-    [--no-encryption]                    # no effect; kept for compatibility
 ```
 
-The rules payload is readable by anyone who holds the file. It is
-tamper-evident, not confidential; see
-[crypto](../architecture/crypto.md#the-rules-section-is-not-confidential).
+`init` writes a format-v3 file (RFC-0039). The rules protection has no
+default, so `--public` is required: it stores the rules in the clear,
+framed and padded, where anyone holding the file can read them. The
+signature makes them tamper-evident, not secret. Confidential rules,
+readable only by named recipients, arrive with RFC-0039 Phase B.
+`--no-encryption` is a deprecated alias for `--public` and will be
+removed in 3.0.
 
 `init` deliberately does **not** take a registry. Genesis trust
 flows from the original signing key alone; the registry is
@@ -36,9 +40,13 @@ aion commit <FILE> \
     --key <KEY_ID> \
     --message <MESSAGE> \
     --registry <REGISTRY_FILE> \
+    --public \                           # required: name the rules protection
     [--rules <RULES_FILE> | --rules -]
     [--force-unregistered]
 ```
+
+A commit keeps the file's format. A v3 file gains a v3 public version;
+a v2 file stays v2 and keeps its legacy encoding.
 
 `commit` runs four pre-write gates in order before any byte is
 written:
@@ -54,7 +62,7 @@ written:
 4. **Registry pre-check** — the supplied `(author, signing key)`
    must match the active epoch in the registry at the new
    version number. Catches the most common operator mistake:
-   running `aion commit --author X --key Y` where Y is not
+   running `aion commit --public --author X --key Y` where Y is not
    pinned for X.
 
 If any gate fails, `commit` exits with `Err` and **does not
@@ -137,13 +145,13 @@ aion registry pin \
 # 3. Create the file. init does not consult the registry,
 #    but the AuthorId in the file should match the pinned
 #    author.
-aion init policy.aion --author 50001 --key 50001 \
+aion init --public policy.aion --author 50001 --key 50001 \
     --rules genesis.yaml
 
 # 4. Subsequent amendments use commit. These DO consult the
 #    registry — the pre-check makes sure the (author, key)
 #    pair matches the active epoch.
-aion commit policy.aion --author 50001 --key 50001 \
+aion commit --public policy.aion --author 50001 --key 50001 \
     --rules amendment.yaml \
     --message "Tighten threshold" \
     --registry registry.json

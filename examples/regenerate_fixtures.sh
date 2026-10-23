@@ -64,7 +64,7 @@ while IFS='|' read -r industry name rules_yaml author message; do
     # key already exists; that's expected on re-runs and is fine.
     $AION_BIN key generate --id "$author" --description "$industry fixture key" >/dev/null 2>&1 || true
 
-    $AION_BIN init "$aion_file" \
+    $AION_BIN init --public "$aion_file" \
         --author "$author" \
         --key "$author" \
         --rules "$rules" \
