@@ -254,6 +254,27 @@ fn test_chacha20_poly1305_no_aad() {
 }
 
 // ============================================================================
+// RFC 5869: HKDF-SHA256 Test Vectors
+// ============================================================================
+
+/// RFC 5869 Appendix A.1 (Test Case 1). `crypto::derive_key` is the
+/// HKDF-SHA256 behind the v2 rules key and the RFC-0039 v3 content key.
+#[test]
+fn test_hkdf_sha256_rfc5869_test1() {
+    let ikm = [0x0b_u8; 22];
+    let salt = hex::decode("000102030405060708090a0b0c").expect("Invalid hex");
+    let info = hex::decode("f0f1f2f3f4f5f6f7f8f9").expect("Invalid hex");
+    let expected = hex::decode(
+        "3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf34007208d5b887185865",
+    )
+    .expect("Invalid hex");
+
+    let mut okm = [0u8; 42];
+    aion_context::crypto::derive_key(&ikm, &salt, &info, &mut okm).expect("HKDF failed");
+    assert_eq!(okm.as_slice(), expected.as_slice());
+}
+
+// ============================================================================
 // BLAKE3 Test Vectors
 // ============================================================================
 

@@ -19,9 +19,14 @@ categories = ["cryptography", "command-line-utilities", "filesystem", "encoding"
 # Cryptography - pinned versions for security
 ed25519-dalek = "3.0"
 chacha20poly1305 = "0.11"
+# RFC-0039 Phase B: HPKE recipient stanzas (X25519 and X-Wing). Pinned
+# exactly: X-Wing and its HPKE binding are IETF drafts, and golden-stanza
+# tests fix the wire bytes. No `getrandom` feature: randomness comes from
+# `crypto::fill_os_entropy`, so an RNG failure is an error, not a panic.
+hpke = { version = "=0.14.1", default-features = false, features = ["alloc", "x25519", "mlkem", "chacha", "hkdfsha2"] }
 blake3 = "1.8"
-hkdf = "0.12"
-sha2 = "0.10"
+hkdf = "0.13"
+sha2 = "0.11"
 # Constant-time comparisons for any secret-or-key-shaped bytes
 # (crypto-rule: `==` on key bytes is a BLOCK, see .claude/rules/crypto.md).
 subtle = "2.6"
