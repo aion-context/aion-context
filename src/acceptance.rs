@@ -1028,7 +1028,10 @@ pub fn accept_file(
 ///    advance `dest`'s own record.
 ///
 /// The first verified claim for a source wins; presenting the same
-/// destination again is idempotent. Recovering from a mistaken migration
+/// destination again is idempotent. `source` is checked against the
+/// store only if the store already tracks it, so accept the source with
+/// [`accept_file`] first: otherwise a stale copy of it can anchor the
+/// migration. Recovering from a mistaken migration
 /// is [`AcceptedVersionStore::clear_migration`].
 ///
 /// # Errors
@@ -1412,7 +1415,7 @@ mod tests {
             rejected(&accept(&fx, &fx.main[1], &FileStore::open(&state))),
             Some(VersionRejectReason::Replay)
         );
-        ok(std::fs::write(&state, b"{ not json"));
+        ok(std::fs::write(&state, b"not json"));
         assert_eq!(
             store_failure(&accept(&fx, &fx.main[3], &FileStore::open(&state))),
             Some("store_corrupt")

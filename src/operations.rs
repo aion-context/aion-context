@@ -326,14 +326,19 @@ fn write_serialized_file(file: &AionFile, path: &Path) -> Result<()> {
             .open(path)?;
         out.write_all(&file_bytes)
     };
-    write().map_err(|e| match e.kind() {
-        std::io::ErrorKind::AlreadyExists => AionError::FileExists {
-            path: path.to_path_buf(),
-        },
-        _ => AionError::FileWriteError {
+    write().map_err(|e| {
+        if e.kind() == std::io::ErrorKind::AlreadyExists {
+            return AionError::FileExists {
+                path: path.to_path_buf(),
+            };
+        }
+        // Best effort: a partial file would block a retry, and the write
+        // error below is what the caller needs.
+        let _ = std::fs::remove_file(path);
+        AionError::FileWriteError {
             path: path.to_path_buf(),
             source: e,
-        },
+        }
     })
 }
 

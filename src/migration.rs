@@ -268,12 +268,18 @@ pub fn verify_migration(
         crate::obs::short_hex(&chain.context().file_id().as_u64().to_le_bytes())
     };
     let (file_id, source_file_id) = (short(dest), short(source));
+    let author = dest
+        .entry(VersionNumber::GENESIS)
+        .map_or_else(String::new, |genesis| {
+            crate::obs::author_short(genesis.author())
+        });
     let reason = match &outcome {
         Ok(_) => {
             tracing::info!(
                 event = "migration_verified",
                 file_id = %file_id,
                 source_file_id = %source_file_id,
+                author = %author,
                 source_version = source.head().version().as_u64(),
             );
             return outcome;
@@ -285,6 +291,7 @@ pub fn verify_migration(
         event = "migration_rejected",
         file_id = %file_id,
         source_file_id = %source_file_id,
+        author = %author,
         reason,
     );
     outcome
