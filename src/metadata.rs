@@ -504,6 +504,150 @@ mod tests {
         assert!(!verify_bytes_of(&fixture, &bytes).is_valid);
     }
 
+    /// RFC-0040: an audit entry with the wrong action for its position fails.
+    #[test]
+    fn a_wrong_audit_action_fails_v4() {
+        let fixture = v4_file();
+        let mut bytes = ok(std::fs::read(&fixture.path));
+        let audit_at = {
+            let parser = ok(AionParser::new(&bytes));
+            parser.header().audit_trail_offset as usize
+        };
+        bytes[audit_at + 16..audit_at + 18]
+            .copy_from_slice(&(ActionCode::Verify as u16).to_le_bytes());
+        recompute_integrity(&mut bytes);
+        assert!(!verify_bytes_of(&fixture, &bytes).is_valid);
+    }
+
+    /// Two versions' equal-length messages swapped: each commitment is per
+    /// version, so the swap fails.
+    #[test]
+    fn swapping_equal_length_messages_between_versions_fails() {
+        let fixture = v4_file();
+        let mut bytes = ok(std::fs::read(&fixture.path));
+        let first = position(&bytes, APPROVAL);
+        let second = position(&bytes, b"Raised by: Bob");
+        let swapped_first: Vec<u8> = b"Raised by: Bob".to_vec();
+        bytes[first..first + 14].copy_from_slice(&swapped_first);
+        bytes[second..second + 14].copy_from_slice(&APPROVAL[..14]);
+        recompute_integrity(&mut bytes);
+        assert!(!verify_bytes_of(&fixture, &bytes).is_valid);
+    }
+
+    #[test]
+    fn writers_refuse_nul_in_v4_messages() {
+        let dir = ok(TempDir::new());
+        let key = ok(SigningKey::generate());
+        let init = InitOptions {
+            author_id: AuthorId::new(40_002),
+            signing_key: &key,
+            message: "approved\0by",
+            timestamp: None,
+            protection: RulesProtection::Public,
+        };
+        assert!(init_file(&dir.path().join("nul.aion"), b"r", &init).is_err());
+        assert!(!dir.path().join("nul.aion").exists());
+
+        let fixture = v4_file();
+        let before = ok(std::fs::read(&fixture.path));
+        let signer = ok(SigningKey::generate());
+        let commit = CommitOptions {
+            author_id: AuthorId::new(40_001),
+            signing_key: &signer,
+            message: "bad\0message",
+            timestamp: None,
+            protection: RulesProtection::Public,
+        };
+        assert!(commit_version(&fixture.path, b"r", &commit, &fixture.registry).is_err());
+        assert_eq!(ok(std::fs::read(&fixture.path)), before);
+    }
+
+    /// S1: committing on a v4 file whose history was forged is refused
+    /// before anything is signed, and the file is left as it was.
+    #[test]
+    fn committing_on_forged_v4_history_is_refused() {
+        let dir = ok(TempDir::new());
+        let path = dir.path().join("forged.aion");
+        let key = ok(SigningKey::generate());
+        let master = ok(SigningKey::generate());
+        let author = AuthorId::new(40_003);
+        let mut registry = KeyRegistry::new();
+        ok(registry.register_author(author, master.verifying_key(), key.verifying_key(), 0));
+        let init = InitOptions {
+            author_id: author,
+            signing_key: &key,
+            message: ok(std::str::from_utf8(APPROVAL)),
+            timestamp: None,
+            protection: RulesProtection::Public,
+        };
+        ok(init_file(&path, b"r", &init));
+        let mut bytes = ok(std::fs::read(&path));
+        let at = position(&bytes, APPROVAL);
+        bytes[at..at + FORGERY.len()].copy_from_slice(FORGERY);
+        recompute_integrity(&mut bytes);
+        ok(std::fs::write(&path, &bytes));
+        let commit = CommitOptions {
+            author_id: author,
+            signing_key: &key,
+            message: "next",
+            timestamp: None,
+            protection: RulesProtection::Public,
+        };
+        assert!(commit_version(&path, b"r2", &commit, &registry).is_err());
+        assert_eq!(ok(std::fs::read(&path)), bytes);
+    }
+
+    #[test]
+    fn audit_hash_v4_matches_golden_layout() {
+        let audit = AuditEntry::new(
+            0x0102_0304,
+            AuthorId::new(9),
+            ActionCode::MigratedFrom,
+            0,
+            0,
+            [0x77; 32],
+        );
+        let mut input = b"AION_V4_AUDIT_ENTRY_V1\0".to_vec();
+        input.extend_from_slice(audit.as_bytes());
+        input.extend_from_slice(&4u32.to_le_bytes());
+        input.extend_from_slice(b"link");
+        assert_eq!(
+            ok(audit_hash_v4(&audit, b"link")),
+            *blake3::hash(&input).as_bytes()
+        );
+    }
+
+    /// RFC-0021 attestations on a v4 file sign the v4 attestation message
+    /// and pass a K-of-N policy.
+    #[test]
+    fn multisig_attestations_verify_on_v4() {
+        let fixture = v4_file();
+        let bytes = ok(std::fs::read(&fixture.path));
+        let parser = ok(AionParser::new(&bytes));
+        let context = ok(parser.header().context());
+        let head = ok(parser.get_version_entry(1));
+        let mut registry = KeyRegistry::new();
+        let mut signatures = Vec::new();
+        let mut signers = Vec::new();
+        for id in [41_001u64, 41_002] {
+            let key = ok(SigningKey::generate());
+            let master = ok(SigningKey::generate());
+            ok(registry.register_author(
+                AuthorId::new(id),
+                master.verifying_key(),
+                key.verifying_key(),
+                0,
+            ));
+            signatures.push(ok(context.sign_attestation(&head, AuthorId::new(id), &key)));
+            signers.push(AuthorId::new(id));
+        }
+        let policy = ok(crate::multisig::MultiSigPolicy::new(2, signers));
+        let verdict = ok(context.verify_multisig(&head, &signatures, &policy, &registry));
+        assert!(verdict.threshold_met);
+        let message = ok(context.attestation_message(&head, AuthorId::new(41_001)));
+        assert!(message.starts_with(crate::signature_chain::ATTESTATION_DOMAIN_V4));
+    }
+
     mod properties {
         use super::*;
         use hegel::generators as gs;
@@ -567,6 +711,23 @@ mod tests {
                 .map(|v| v.message)
                 .collect();
             assert_eq!(shown, messages);
+        }
+
+        #[hegel::test]
+        fn prop_any_byte_flip_anywhere_in_a_v4_file_fails(tc: hegel::TestCase) {
+            let (fixture, _) = grow(&tc);
+            let mut bytes = ok(std::fs::read(&fixture.path));
+            let body_end = bytes.len().saturating_sub(33);
+            let index = tc.draw(gs::integers::<usize>().max_value(body_end));
+            let flip = tc.draw(gs::integers::<u8>().min_value(1));
+            bytes[index] ^= flip;
+            recompute_integrity(&mut bytes);
+            ok(std::fs::write(&fixture.path, &bytes));
+            let verdict = verify_file(&fixture.path, &fixture.registry);
+            assert!(
+                verdict.map_or(true, |report| !report.is_valid),
+                "byte {index}"
+            );
         }
 
         #[hegel::test]

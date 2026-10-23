@@ -136,6 +136,7 @@ pub fn init_file(path: &Path, initial_rules: &[u8], options: &InitOptions) -> Re
         });
     }
     let context = FileContext::new(FormatVersion::V4, FileId::random());
+    check_v4_message(&context, options.message)?;
     let file_id = context.file_id();
     let timestamp = options.timestamp.unwrap_or_else(current_timestamp_nanos);
     let encoded = encode_rules(
@@ -519,7 +520,22 @@ fn verify_chain_before_commit(
     parser.verify_integrity()?;
     let existing_versions = collect_versions(parser, parser.header().version_chain_count)?;
     context.verify_hash_chain(&existing_versions)?;
+    if context.format().signs_metadata() {
+        crate::metadata::verify_v4_metadata(parser, &existing_versions)?;
+    }
     verify_head_signature(parser, registry)
+}
+
+/// Format-v4 messages are UTF-8 without NUL (RFC-0040): the string table
+/// uses NUL as a terminator, so a message containing one would produce a
+/// file the verifier rejects.
+fn check_v4_message(context: &FileContext, message: &str) -> Result<()> {
+    if context.format().signs_metadata() && message.contains('\0') {
+        return Err(AionError::InvalidFormat {
+            reason: "format-v4 commit messages cannot contain NUL".to_string(),
+        });
+    }
+    Ok(())
 }
 
 /// Ask the provider for exactly one signature over the new entry's
@@ -1585,6 +1601,10 @@ pub struct FileInfo {
     pub versions: Vec<VersionInfo>,
     /// List of all signatures
     pub signatures: Vec<SignatureInfo>,
+    /// Whether the commit messages and audit trail are covered by the
+    /// signatures (RFC-0040): true for format v4. For v2 and v3 the
+    /// messages in `versions` are unauthenticated (GHSA-69cp-fwrw-82vh).
+    pub metadata_signed: bool,
 }
 
 /// Get the current (latest) rules content from an AION file
@@ -1697,64 +1717,31 @@ pub fn show_current_rules(path: &Path) -> Result<Vec<u8>> {
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 pub fn show_version_history(path: &Path) -> Result<Vec<VersionInfo>> {
-    // Load and parse the file
     let file_bytes = std::fs::read(path).map_err(|e| AionError::FileReadError {
         path: path.to_path_buf(),
         source: e,
     })?;
     let parser = AionParser::new(&file_bytes)?;
-
     let header = parser.header();
     refuse_unverified_v4(header)?;
-    let version_count = header.version_chain_count;
+    let versions = collect_versions(&parser, header.version_chain_count)?;
+    let table = parser.string_table_bytes()?;
+    Ok(versions
+        .iter()
+        .map(|entry| version_info(table, entry))
+        .collect())
+}
 
-    #[allow(clippy::cast_possible_truncation)] // version_count is header field, won't exceed usize
-    let mut versions = Vec::with_capacity(version_count as usize);
-
-    // Get string table for extracting messages
-    let string_table = parser.string_table_bytes()?;
-
-    #[allow(clippy::cast_possible_truncation)]
-    for i in 0..version_count as usize {
-        let entry = parser.get_version_entry(i)?;
-
-        // Get commit message from string table
-        let message_offset = entry.message_offset as usize;
-        let message_length = entry.message_length as usize;
-
-        #[allow(clippy::arithmetic_side_effects)] // Checked bounds before use
-        let message =
-            message_offset
-                .checked_add(message_length)
-                .map_or_else(String::new, |end_offset| {
-                    if end_offset <= string_table.len() {
-                        string_table
-                            .get(message_offset..end_offset)
-                            .map(|bytes| String::from_utf8_lossy(bytes).to_string())
-                            .unwrap_or_default()
-                    } else {
-                        String::new()
-                    }
-                });
-
-        // Parent hash is all zeros for genesis, otherwise it's the actual hash
-        let parent_hash = if entry.version_number == 1 {
-            None
-        } else {
-            Some(entry.parent_hash)
-        };
-
-        versions.push(VersionInfo {
-            version_number: entry.version_number,
-            author_id: entry.author_id,
-            timestamp: entry.timestamp,
-            message,
-            rules_hash: entry.rules_hash,
-            parent_hash,
-        });
+/// One version's display record, its message read leniently (v2/v3 only).
+fn version_info(table: &[u8], entry: &VersionEntry) -> VersionInfo {
+    VersionInfo {
+        version_number: entry.version_number,
+        author_id: entry.author_id,
+        timestamp: entry.timestamp,
+        message: lossy_message(table, entry),
+        rules_hash: entry.rules_hash,
+        parent_hash: (entry.version_number != 1).then_some(entry.parent_hash),
     }
-
-    Ok(versions)
 }
 
 /// Get signature information with verification status
@@ -1801,12 +1788,20 @@ pub fn show_signatures(
     path: &Path,
     registry: &crate::key_registry::KeyRegistry,
 ) -> Result<Vec<SignatureInfo>> {
-    // Load and parse the file
     let file_bytes = std::fs::read(path).map_err(|e| AionError::FileReadError {
         path: path.to_path_buf(),
         source: e,
     })?;
-    let parser = AionParser::new(&file_bytes)?;
+    signatures_of(&file_bytes, registry)
+}
+
+/// Signature status for bytes already read, so callers that also display
+/// other data from those bytes report one snapshot.
+fn signatures_of(
+    file_bytes: &[u8],
+    registry: &crate::key_registry::KeyRegistry,
+) -> Result<Vec<SignatureInfo>> {
+    let parser = AionParser::new(file_bytes)?;
 
     let header = parser.header();
     let context = header.context()?;
@@ -1896,13 +1891,19 @@ pub fn show_file_info(
 
     let header = parser.header();
 
-    let versions = if header.format()?.signs_metadata() {
+    let metadata_signed = header.format()?.signs_metadata();
+    let versions = if metadata_signed {
         let chain = crate::chain::VerifiedChain::from_bytes(&file_bytes, registry)?;
         crate::chain::verified_history(&chain)
     } else {
-        show_version_history(path)?
+        let versions = collect_versions(&parser, header.version_chain_count)?;
+        let table = parser.string_table_bytes()?;
+        versions
+            .iter()
+            .map(|entry| version_info(table, entry))
+            .collect()
     };
-    let signatures = show_signatures(path, registry)?;
+    let signatures = signatures_of(&file_bytes, registry)?;
 
     let current_version = versions.last().map_or(0, |v| v.version_number);
 
@@ -1912,6 +1913,7 @@ pub fn show_file_info(
         current_version,
         versions,
         signatures,
+        metadata_signed,
     })
 }
 
@@ -2077,6 +2079,7 @@ fn new_entry_and_audit(
     if !context.format().signs_metadata() {
         return Ok((entry, audit));
     }
+    check_v4_message(context, options.message)?;
     let audit_hash = crate::metadata::audit_hash_v4(&audit, &[])?;
     let commitment = crate::format::metadata_commitment(
         entry.version_number,

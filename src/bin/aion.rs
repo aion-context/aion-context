@@ -1353,6 +1353,13 @@ fn show_signatures_subcommand(args: &ShowArgs) -> Result<()> {
 fn show_info_subcommand(args: &ShowArgs) -> Result<()> {
     let registry = load_registry_from_path(&args.registry)?;
     let info = show_file_info(&args.path, &registry)?;
+    if !info.metadata_signed {
+        eprintln!(
+            "note: {} does not sign its commit messages or audit trail (format v2/v3). \
+             `aion migrate` re-signs it as format v4.",
+            args.path.display()
+        );
+    }
     match args.format {
         OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&info)?),
         OutputFormat::Yaml => println!("{}", serde_yaml::to_string(&info)?),
@@ -1367,7 +1374,7 @@ fn show_info_subcommand(args: &ShowArgs) -> Result<()> {
                 println!("  Number:   {}", latest.version_number);
                 println!("  Author:   {}", latest.author_id);
                 println!("  Timestamp: {}", latest.timestamp);
-                println!("  Message:  {}", latest.message);
+                println!("  Message:  {}", escape_controls(&latest.message));
             }
             println!("\nSignature Status:");
             let valid_count = info.signatures.iter().filter(|s| s.verified).count();
