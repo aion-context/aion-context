@@ -59,9 +59,9 @@ confused with hashes used for another. The separators in use:
 
 | Domain | Purpose |
 |---|---|
-| `AION_V2_VERSION_SIG_V1` | Per-version signature canonical message |
+| `AION_V2_VERSION_SIGNATURE_V1` | Per-version signature canonical message |
 | `AION_V2_ATTESTATION_V1` | Multi-party attestation message |
-| `AION_V2_MANIFEST_SIG_V1` | RFC-0022 manifest signature message |
+| `AION_V2_MANIFEST_SIG_V1\0` | RFC-0022 manifest signature message |
 | `AION_V2_ROTATION_V1` | Rotation record canonical message |
 | `AION_V2_REVOCATION_V1` | Revocation record canonical message |
 | `AION_V2_LOG_LEAF_V1\0` | Transparency-log leaf hash |
@@ -69,7 +69,7 @@ confused with hashes used for another. The separators in use:
 | `AION_V2_LOG_STH_V1\0` | Signed Tree Head canonical bytes |
 | `AION_V2_LOG_EMPTY_V1\0` | Empty-tree sentinel root |
 | `AION_V2_KEY_ATTESTATION_V1` | Hardware-attestation binding (RFC-0026) |
-| `AION_V2_HYBRID_V1` | Hybrid classical + ML-DSA signature payload (RFC-0027) |
+| `AION_V2_HYBRID_V1\0` | Hybrid classical + ML-DSA signature payload (RFC-0027) |
 | `AION_V2_MANIFEST_V1` | ArtifactManifest canonical bytes prefix |
 
 A trailing `\0` byte forbids any other domain from being

@@ -3,7 +3,7 @@
 - **Author:** copyleftdev
 - **Status:** DRAFT
 - **Created:** 2026-10-23
-- **Updated:** 2026-10-23
+- **Updated:** 2026-10-23 (revised after crypto review, round 1)
 - **Depends on:** RFC-0002 (file format), RFC-0003 (cryptography),
   RFC-0004 (key management), RFC-0005 (signature chain), RFC-0012
   (versioning), RFC-0028 (key rotation and revocation), RFC-0038
@@ -79,8 +79,8 @@ Three facts about v2 motivate this RFC.
 - Confidential payloads readable only by named recipients. Recipients
   are added or removed by committing a new version.
 - No offline confirmation of guessed plaintexts by non-recipients.
-- All recipients of a version provably decrypt the same plaintext
-  (key commitment).
+- Every recipient who can open a version's stanza decrypts the same
+  plaintext (key commitment).
 - No new hand-rolled cryptography. HPKE comes from a vetted crate;
   content encryption reuses the existing `crypto::encrypt` /
   `derive_key`.
@@ -114,19 +114,22 @@ stored rules section  ──BLAKE3(domain ‖ bytes)──▶  rules_commitment
 
 Public mode:        section = framed plaintext
 Confidential mode:  section = envelope {
-                       suite, dek_commitment, plaintext_commitment,
+                       suite, dek_commitment,
                        recipient stanzas (DEK wrapped per recipient),
                        nonce, ChaCha20-Poly1305(K_enc, framed plaintext)
                     }
 ```
 
 A verifier hashes the section and compares it with the signed
-commitment, in either mode and with no key. A recipient additionally:
+commitment, in either mode and with no key. The signed message also
+covers `file_id` and the mode, so a signed entry cannot be moved into
+another file or reinterpreted under the other mode. A recipient
+additionally:
 
 1. unwraps the DEK,
 2. checks it against `dek_commitment`,
-3. decrypts,
-4. checks the plaintext against `plaintext_commitment`.
+3. decrypts (the AEAD tag authenticates the plaintext under the
+   committed key).
 
 ### Detailed Design
 
@@ -138,6 +141,10 @@ commitment, in either mode and with no key. A recipient additionally:
   must be zero.
 - v3 readers interpret bit 0 by `version`. The v2 "Encrypted" bit
   keeps its v2 meaning: obfuscated, not confidential.
+- The reader takes the mode **only** from flags bit 0, never by
+  sniffing the section (for example its magic). It then cross-checks
+  that mode against the mode byte in the commitment preimage and in
+  the signed message. Any disagreement is a verification failure.
 - Every other header field is unchanged.
 
 #### Rules commitment (replaces the meaning of `rules_hash` in v3)
@@ -147,6 +154,10 @@ rules_commitment = BLAKE3(RULES_COMMIT_DOMAIN ‖ u8 mode ‖ section_bytes)
 RULES_COMMIT_DOMAIN = b"AION_V3_RULES_COMMIT_V1\0"
 mode = 0x00 (public) | 0x01 (confidential)
 ```
+
+The mode byte makes the two encodings unambiguous. A public section
+whose bytes happen to look like an envelope commits differently from
+the same bytes read as an envelope.
 
 The commitment is stored in `VersionEntry.rules_hash`. The 152-byte
 layout is unchanged, only the field's definition changes. It is also
@@ -173,7 +184,6 @@ allocation.
 envelope := magic[8]               = b"AIONENV1"
             suite: u8              = 0x01
             dek_commitment[32]
-            plaintext_commitment[32]
             stanza_count: u16      (1..=64)
             stanzas[stanza_count]
             nonce[12]
@@ -185,22 +195,60 @@ stanza  := kind: u8
            body[body_len]
 ```
 
-**Suite 0x01 key schedule.** The DEK is 32 random bytes from
-`crypto::fill_os_entropy`, fresh for every version. All derivations
-use the existing `crypto::derive_key` (HKDF-SHA256) with
-`salt = file_id_le ‖ version_le`:
+Parsing limits and canonical form:
+
+- The total size of all stanzas is capped at 64 KiB. This is checked
+  before any HPKE or provider work.
+- Stanzas must be sorted by `(kind, body)`, and duplicates are
+  rejected. Writers produce exactly one encoding for a given recipient
+  set, so a reordered or duplicated set is a different, unsigned
+  section.
+
+**Suite 0x01 key schedule.**
+
+- The DEK is 32 random bytes from `crypto::fill_os_entropy`.
+- It is fresh for every version **and for every attempt**: a failed
+  or retried commit, such as an external wrapper timing out, draws a
+  new DEK and a new nonce rather than reusing either.
+- All derivations use the existing `crypto::derive_key` (HKDF-SHA256)
+  with `ctx = file_id_le ‖ author_id_le ‖ version_le` as the salt.
 
 | Output | HKDF `info` |
 |---|---|
-| `K_enc` (content key) | `AION_V3_RULES_KEY_V1` |
-| `K_pc` (plaintext-commitment key) | `AION_V3_PLAINTEXT_COMMIT_KEY_V1` |
-| `dek_commitment` | `AION_V3_DEK_COMMIT_V1` |
+| `K_enc` (content key) | `AION_V3_RULES_KEY_V1\0` |
+| `dek_commitment` | `AION_V3_DEK_COMMIT_V1\0` |
 
 ```
-plaintext_commitment = BLAKE3::keyed_hash(K_pc, framed)
+nonce      = 12 random bytes
 ciphertext = ChaCha20-Poly1305(K_enc, nonce, framed,
-             aad = b"AION_V3_RULES_AAD_V1" ‖ file_id_le ‖ version_le)
+             aad = b"AION_V3_RULES_AAD_V1\0" ‖ ctx)
 ```
+
+`file_id` is chosen by the author and is only 64 bits. It is a binding
+input, never a uniqueness assumption: nothing stops two authors from
+picking the same `file_id`. `author_id` is in `ctx` for exactly that
+reason. Without it, a malicious author could copy another author's
+confidential section verbatim, signing ciphertext they cannot read,
+and recipients would decrypt the victim's rules under the copier's
+name.
+
+**Why `dek_commitment` is a key commitment.**
+
+- **Binding:** it is a deterministic HKDF-SHA256 output of the DEK,
+  and HKDF-SHA256 is collision-resistant. So no two DEKs produce the
+  same commitment.
+- **Fixed key:** `K_enc` is a deterministic function of the DEK and
+  `ctx`, both fixed by the signed section. A given ciphertext
+  therefore has exactly one key it can decrypt under. That defeats
+  "invisible salamanders" despite ChaCha20-Poly1305 not being
+  key-committing.
+- **Hiding:** it reveals nothing only because the DEK has full 256-bit
+  entropy. A leaked DEK can be confirmed against it, which is
+  harmless because the DEK itself is then known.
+
+No separate plaintext commitment is needed. Once the key is fixed,
+the AEAD tag authenticates the plaintext for anyone who holds the DEK,
+recipients and selective-disclosure parties alike.
 
 **Stanza kinds.**
 
@@ -214,11 +262,19 @@ ciphertext = ChaCha20-Poly1305(K_enc, nonce, framed,
 
 - **Mode:** RFC 9180 base mode, with DHKEM(X25519, HKDF-SHA256),
   HKDF-SHA256, and ChaCha20-Poly1305.
-- **Inputs:** `info = b"AION_V3_DEK_WRAP_V1" ‖ file_id_le ‖ version_le`
-  and `aad = dek_commitment`.
-- **Why these inputs:** binding `info` to the file and version stops a
-  stanza being transplanted into another file. Binding `aad` stops it
-  being paired with a different DEK commitment.
+- **Inputs:** `info = b"AION_V3_DEK_WRAP_V1\0" ‖ ctx`, where
+  `ctx = file_id ‖ author_id ‖ version`, and `aad = dek_commitment`.
+- **Why these inputs:**
+  - Binding `info` to `ctx` stops a stanza being transplanted into
+    another file, version, or author's section.
+  - Binding `aad` stops it being paired with a different DEK
+    commitment.
+  - `recipient_pk` and the suite are deliberately left out of `info`.
+    DHKEM already includes the recipient public key in its KEM
+    context, and HPKE's key schedule includes the suite ID.
+- **No sender authentication:** base mode does not authenticate the
+  sender. Authorship comes from the version signature, and `author_id`
+  in `ctx` is what ties the two together.
 - **Recipient key:** `recipient_pk` is stored in full. A committer can
   then re-wrap the next version for the same recipient set without
   out-of-band key distribution. The cost is that recipient keys are
@@ -238,22 +294,43 @@ pub trait DekUnwrapper {
 }
 ```
 
-`context = b"AION_V3_DEK_WRAP_V1" ‖ file_id_le ‖ version_le ‖
-dek_commitment` is passed as KMS encryption context or AAD where the
-provider supports it.
+`context = b"AION_V3_DEK_WRAP_V1\0" ‖ ctx ‖ dek_commitment` is passed
+as the KMS encryption context, or as AAD, where the provider supports
+it.
 
 The core always checks the unwrapped DEK against `dek_commitment`
-before using it. A provider bug cannot cause plaintext divergence.
+before using it, so a provider bug cannot cause plaintext divergence.
+Calls to `wrap` and `unwrap` run under a caller-configured timeout,
+and the returned blob is bounded at 4096 bytes.
 
 #### Signatures
 
-v3 version signatures use a new domain,
-`AION_V3_VERSION_SIGNATURE_V1`, over the same canonical field layout
-as v2. The new domain separates v2 and v3 signed messages, even
-though a v2 `rules_hash` and a v3 `rules_commitment` can never
-collide anyway: they come from different BLAKE3 inputs.
+v2's `canonical_version_message` (`src/signature_chain.rs`) covers
+the version number, parent hash, `rules_hash`, author, timestamp, and
+message offset and length. It does **not** cover `file_id`, the format
+version, or the flags.
 
-RFC-0021 attestations get `AION_V3_ATTESTATION_V1` in the same way.
+That was tolerable in v2 only because the rules key derived from
+`file_id`, so a transplanted entry failed decryption. In v3, public
+mode has no key and verification is key-free by design. So the v3
+canonical message is:
+
+```
+AION_V3_VERSION_SIGNATURE_V1\0 ‖ format_version u16 ‖ file_id u64 ‖ mode u8 ‖
+version u64 ‖ parent_hash[32] ‖ rules_commitment[32] ‖ author u64 ‖
+timestamp u64 ‖ message_offset u64 ‖ message_length u32
+```
+
+A signed entry therefore cannot be moved into a header with another
+`file_id` or mode, or replayed as v2. A non-author cannot flip a
+version between public and confidential. Doing so changes the mode
+byte, which both the signature and the commitment cover. RFC-0021
+attestations get `AION_V3_ATTESTATION_V1\0` with the same added
+fields.
+
+Every new v3 domain string ends in `\0`, so no domain is a prefix of
+another. This follows the transparency-log and hybrid-signature
+domains.
 
 #### Verification (key-free)
 
@@ -265,12 +342,28 @@ For v3, `verify_file` adds one check to the v2 set, and needs no key:
 This is the structural form of the 1.0.1 fix. Public-mode files also
 validate the framing.
 
+**Downgrade and rollback policy.** A v3 reader accepts v2 files, and
+modes may change between versions. So a compromised signer could
+commit a public version after confidential ones, and anyone could
+hand a verifier an older file. `verify_file` gains an optional
+`VerifyPolicy` covering:
+
+- `min_format_version`: reject v2 files where v3 is required;
+- `require_confidential`: reject any version, or only the head, that
+  is not confidential;
+- the per-`(author, version)` last-accepted tracking already required
+  by `.claude/rules/distributed.md`, so that an older section cannot
+  be replayed.
+
+The default policy keeps today's behavior. Deployments that rely on
+confidentiality must set it.
+
 #### Reading
 
 | Function | Behavior |
 |---|---|
 | `show_current_rules(path)` | Public mode: returns the plaintext. Confidential mode: `Err(AionError::RecipientKeyRequired)` (new variant; `AionError` is `#[non_exhaustive]`). |
-| `open_current_rules(path, &RecipientKeys)` | **New.** Tries each held identity (X25519 secret keys and/or `&dyn DekUnwrapper`) against the stanzas. Checks `dek_commitment`, decrypts, checks `plaintext_commitment` and framing, and returns `Zeroizing<Vec<u8>>`. |
+| `open_current_rules(path, &RecipientKeys)` | **New.** Tries each held identity (X25519 secret keys and/or `&dyn DekUnwrapper`) against the stanzas. Checks `dek_commitment`, decrypts, checks framing, and returns `Zeroizing<Vec<u8>>`. Every failure after parsing returns the single opaque error `RecipientKeyRequired`: no openable stanza, a commitment mismatch, an AEAD failure, or bad framing. The padding check runs only after the AEAD verifies, so there is no padding oracle. |
 | `disclose_version_key(path, &RecipientKeys)` | **New.** Returns the version's DEK for selective disclosure. A third party with that DEK, and nothing else, can run `open_current_rules` for that version only. |
 
 #### Writing
@@ -391,11 +484,13 @@ ChaCha20-Poly1305 is not key-committing. A malicious author could wrap
 different DEKs for different recipients, so that one ciphertext
 decrypts to different plaintexts for each of them: the "invisible
 salamanders" attack. The signed `dek_commitment` forces every
-recipient to use the same DEK.
+recipient to use the same DEK; the argument is under "Why
+`dek_commitment` is a key commitment" in the key schedule.
 
-The signed `plaintext_commitment`, keyed by a DEK-derived key, gives
-recipients and selective-disclosure parties an explicit plaintext
-check. It leaks nothing to anyone without the DEK.
+An earlier draft also stored a DEK-keyed `plaintext_commitment`. It
+was removed after crypto review, because it added nothing. With the
+key committed, the AEAD tag already authenticates the plaintext for
+every DEK holder, recipients and selective-disclosure parties alike.
 
 ### Why HPKE rather than raw X25519?
 
@@ -418,8 +513,9 @@ test vectors. Writing our own ECDH-plus-KDF composition violates
      base.
    - KMS integration goes through age's plugin protocol, which spawns
      external binaries.
-   - age exposes no per-file key we can derive a disclosure-safe
-     plaintext commitment from.
+   - age's per-file key is not bound to our signed context (`file_id`,
+     `author_id`, version). Selective disclosure would depend on age
+     internals rather than a documented per-version key.
 
    This is revisited in the Unresolved Questions.
 3. **Derive X25519 keys from authors' Ed25519 signing keys.**
@@ -456,10 +552,19 @@ Adversaries:
   computed over ciphertext.
 - **Against (b):** any change to the rules section, a stanza, or the
   envelope changes `rules_commitment` and fails key-free
-  verification. Stanza transplant fails HPKE `info`/`aad` binding.
-- **Against (c):** all recipients decrypt the same plaintext (key
-  commitment). The author can still sign garbage. Authorship is
-  trusted for content, as in v2.
+  verification. So does moving a signed entry into another file or
+  mode, because `file_id` and the mode are in the signed message.
+  Stanza transplant also fails the HPKE `info`/`aad` binding.
+- **Against (c):**
+  - Every recipient who can open a stanza gets the same plaintext
+    (key commitment).
+  - The author *can* include a stanza that does not open, or that
+    wraps a different DEK. Only the affected recipient detects that,
+    as `RecipientKeyRequired`; other parties cannot.
+  - Copying another author's section fails for recipients, because
+    `author_id` is in `ctx`.
+  - The author can still sign garbage. Authorship is trusted for
+    content, as in v2.
 - **Against (d):** a recipient can read and disclose, which cannot be
   prevented. They cannot produce a new signed version without a
   registered signing key.
@@ -480,6 +585,26 @@ Adversaries:
 - Two stanzas wrapping different DEKs (must fail `dek_commitment`).
 - Non-zero padding and an oversized `plaintext_len`.
 - A v2 signature presented as v3 (domain separation).
+- A signed entry and section moved under a header with a different
+  `file_id`, or with flags bit 0 flipped (must fail key-free verify).
+- Another author's confidential section re-signed verbatim (must fail
+  open for every recipient).
+- Reordered or duplicated stanzas, and total stanza bytes over the
+  cap.
+- Timing or error-shape differences between "no openable stanza",
+  "AEAD failure", and "bad padding" (all must look identical).
+
+### SHA-256 usage (crypto-rule exception)
+
+`.claude/rules/crypto.md` allows non-BLAKE3 hashes only at named
+boundaries. Phase B adds an exception entry with this scope:
+
+- SHA-256 appears only as the hash inside HKDF-SHA256 and inside
+  HPKE's DHKEM(X25519, HKDF-SHA256) and HKDF-SHA256 KDF.
+- It is never used as a content hash, and never as a commitment
+  compared in an accept/reject decision.
+- HKDF-SHA256 is already in use through `crypto::derive_key`. The
+  exception records that existing use as well.
 
 ## Performance Impact
 
@@ -489,8 +614,8 @@ Adversaries:
   recipient (dominated by one X25519 scalar multiplication each; to
   be benchmarked in `benches/crypto_benchmarks.rs`), plus one
   provider call per external wrapper.
-- **Space:** 111 bytes of envelope overhead (magic, suite, two
-  commitments, stanza count, nonce, length, tag), plus 8 bytes of
+- **Space:** 79 bytes of envelope overhead (magic, suite, DEK
+  commitment, stanza count, nonce, length, tag), plus 8 bytes of
   framing, plus 115 bytes per X25519 stanza, plus Padmé padding
   (≤ about 12%).
 
@@ -510,6 +635,14 @@ Adversaries:
 - Padmé framing round-trips, and malformed framing rejects.
 - The disclosed DEK opens exactly that version and no other.
 - A v2 file read by the v3 reader verifies exactly as under 1.0.1.
+- A signed entry moved to another `file_id` or mode ⇒ `verify_file`
+  rejects (key-free).
+- A confidential section re-signed by another author ⇒ every
+  recipient's open fails.
+- Writers emit stanzas in canonical order. A permuted or duplicated
+  stanza list ⇒ the parser rejects.
+- `VerifyPolicy { require_confidential }` rejects a public head, and
+  `min_format_version = 3` rejects v2.
 
 ### Unit and Known-Answer Tests
 
@@ -528,9 +661,12 @@ Adversaries:
 
 ### Phase A: Format v3, public mode, key-free commitment
 
-- Parser and serializer for v3 (v2 read support kept), the rules
-  commitment, the new signature domains, framing, and the Padmé
-  decoder.
+- Parser and serializer for v3, with v2 read support kept.
+- The rules commitment, and the v3 canonical version message with
+  `file_id`, format version, and mode.
+- The new `\0`-terminated signature domains, the framing, and the
+  Padmé decoder.
+- `VerifyPolicy` (minimum format version, replay tracking hook).
 - `RulesProtection::Public` only. `--public` replaces
   `--no-encryption`.
 - No new dependencies. This closes Problem Statement item 3 for every
@@ -540,10 +676,17 @@ Adversaries:
 
 - The envelope, HPKE stanzas, keystore X25519 key kind, and CLI
   `--recipient` / `--identity`.
-- **New dependency `hpke` 0.14.x** (MIT/Apache-2.0; pulls in
-  `x25519-dalek` 3.0, BSD-3-Clause; both on the allowlist). Before
-  merge it goes through `cargo deny`, `cargo audit`, the SBOM diff,
-  and the full fuzz suite, per `supply-chain.md`.
+- **New dependency `hpke` 0.14.x** (MIT/Apache-2.0), with only the
+  `x25519`, `chacha`, and `hkdfsha2` features enabled.
+  - Those features pull in `x25519-dalek` 3.0 (BSD-3-Clause), `hkdf`
+    0.13, and `sha2` 0.11. All are on the allowlist.
+  - The crate itself is on `hkdf` 0.12 and `sha2` 0.10. Phase B either
+    accepts duplicate versions or bumps ours, and a crypto-dependency
+    major bump goes through the full fuzz suite.
+  - Before merge: `cargo deny`, `cargo audit`, the SBOM diff, and the
+    fuzz suite, per `supply-chain.md`.
+- Add the SHA-256 exception from Security Considerations to
+  `.claude/rules/crypto.md`.
 - `hpke` requires Rust 1.85. That is already the effective minimum
   through `ed25519-dalek` 3.0, `rand` 0.10, and `chacha20poly1305`
   0.11, but `Cargo.toml` still declares `rust-version = "1.70"`.
@@ -562,7 +705,7 @@ Adversaries:
 
 1. **age instead of a native envelope?** age would remove our
    envelope parser and give mature plugin and KMS recipients. We
-   would lose the DEK-derived plaintext commitment and selective
+   would lose the documented per-version key for selective
    disclosure, and gain a second format in the trust base. Decide
    before Phase B.
 2. **Recipient-key privacy.** Storing `recipient_pk` in full lets
@@ -583,6 +726,10 @@ Adversaries:
 7. **Do enforcement receipts (RFC-0036) need a confidential-mode
    policy identity** that avoids the public commitment, so a receipt
    doesn't make two versions linkable?
+8. **Post-quantum confidentiality.** X25519 stanzas are open to
+   harvest-now-decrypt-later. `hpke` 0.14 also offers X-Wing (ML-KEM
+   plus X25519). Should suite `0x02` use it from the start, consistent
+   with RFC-0027's hybrid signatures?
 
 ## References
 
@@ -607,6 +754,24 @@ Adversaries:
   rules section, signed via `VersionEntry.rules_hash`.
 - **Key commitment:** `dek_commitment`, which binds every recipient
   to one DEK.
-- **Plaintext commitment:** a BLAKE3 keyed hash of the framed
-  plaintext under a DEK-derived key. It can be checked only by
-  holders of the DEK.
+- **ctx:** `file_id ‖ author_id ‖ version`, little-endian. The binding
+  context used in the HKDF salt, the AEAD aad, the HPKE `info`, and
+  the external-wrapper context.
+
+### Review history
+
+- **2026-10-23, `crypto-auditor`, round 1: BLOCK.** Findings and how
+  this draft resolves them:
+  - B1: the signed message lacked `file_id` and mode. Added to the v3
+    canonical message.
+  - B2: cross-author section plagiarism. Fixed by adding `author_id`
+    to `ctx`.
+  - S1: SHA-256 exception. Added.
+  - S2: `plaintext_commitment` was redundant. Removed.
+  - S3: key-commitment argument. Documented, and the "provably" claim
+    corrected.
+  - S4: downgrade and rollback. Added `VerifyPolicy`.
+  - S5: stanza caps, canonical order, and opaque errors. Added.
+  - S6: `\0` on every v3 domain, and the book's domain table
+    corrected.
+  - N1–N4: incorporated as notes.
