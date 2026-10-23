@@ -566,7 +566,8 @@ with a stability-page row "3.x: writes v4; reads v2, v3, v4."
 1. **Release vehicle.** RFC-0039 Phase B (confidential rules) is on main,
    unreleased. Shipped alone as 2.1.0, it would create confidential v3
    files whose messages and audit trail are forgeable. Recommendation:
-   release Phase B only together with v4, in 3.0.0. Owner to decide.
+   release Phase B only together with v4, in 3.0.0. **Decided
+   (2026-10-23):** Phase B and v4 ship together in 3.0.0.
 2. **CLI default for v2/v3.** Should `aion verify` warn, or fail unless
    `--allow-unsigned-metadata`, on v2/v3 files? Should
    `AcceptPolicy::min_format` default to v4 in 3.0.0?
