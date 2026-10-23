@@ -839,7 +839,9 @@ pub struct VerificationReport {
     pub structure_valid: bool,
     /// Whether the file integrity hash matches
     pub integrity_hash_valid: bool,
-    /// Whether the hash chain is intact
+    /// Whether the content hash chain is intact: the latest rules
+    /// payload matches its signed `rules_hash`, and every version entry
+    /// links to its parent
     pub hash_chain_valid: bool,
     /// Whether the embedded audit-trail hash chain is intact
     pub audit_chain_valid: bool,
@@ -1067,12 +1069,7 @@ pub fn verify_file(
         return Ok(report);
     };
 
-    match verify_hash_chain(&versions) {
-        Ok(()) => report.hash_chain_valid = true,
-        Err(e) => report
-            .errors
-            .push(format!("Hash chain verification failed: {e}")),
-    }
+    verify_content_chain_into_report(&parser, &versions, &mut report);
 
     let Some(signatures) = collect_signatures_into_report(&parser, &mut report)? else {
         emit_verify_outcome(&report);
@@ -1096,6 +1093,48 @@ pub fn verify_file(
         && report.signatures_valid;
     emit_verify_outcome(&report);
     Ok(report)
+}
+
+/// Validate the content hash chain, from the rules payload up through
+/// every version entry (GHSA-7625-44v8-v62f).
+///
+/// The payload link is checked by decrypting the stored rules and
+/// comparing them with the latest version's signed `rules_hash`. Only
+/// that comparison binds the bytes a reader will consume to what the
+/// author signed. The whole-file integrity hash cannot do it, because
+/// it is unkeyed and anyone can recompute it after substituting a
+/// payload.
+fn verify_content_chain_into_report(
+    parser: &AionParser<'_>,
+    versions: &[VersionEntry],
+    report: &mut VerificationReport,
+) {
+    if let Err(e) = verify_hash_chain(versions) {
+        report
+            .errors
+            .push(format!("Hash chain verification failed: {e}"));
+        return;
+    }
+    match verify_rules_payload(parser, versions) {
+        Ok(()) => report.hash_chain_valid = true,
+        Err(AionError::HashMismatch { .. }) => report
+            .errors
+            .push("Rules payload does not match the signed rules_hash".to_string()),
+        Err(e) => report.errors.push(format!("Rules payload unreadable: {e}")),
+    }
+}
+
+fn verify_rules_payload(parser: &AionParser<'_>, versions: &[VersionEntry]) -> Result<()> {
+    let latest = versions.last().ok_or_else(|| AionError::InvalidFormat {
+        reason: "Version chain is empty".to_string(),
+    })?;
+    decrypt_rules(
+        parser.encrypted_rules_bytes()?,
+        FileId(parser.header().file_id),
+        VersionNumber(latest.version_number),
+        latest.rules_hash,
+    )
+    .map(|_| ())
 }
 
 /// Validate the embedded audit-trail hash chain (RFC-0002, issue #141).
@@ -3220,6 +3259,116 @@ mod tests {
             // Valid file should have no errors
             assert_eq!(report.errors, Vec::<String>::new());
             assert!(report.is_valid);
+        }
+    }
+
+    /// GHSA-7625-44v8-v62f — `verify_file` must bind the stored rules
+    /// payload to the latest signed `rules_hash`.
+    mod payload_binding_tests {
+        use super::*;
+
+        fn init_with_rules(dir: &TempDir, rules: &[u8]) -> (std::path::PathBuf, KeyRegistry) {
+            let path = dir.path().join("bound.aion");
+            let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+            let author = AuthorId::new(70_001);
+            let registry = test_reg(author, &key);
+            let options = InitOptions {
+                author_id: author,
+                signing_key: &key,
+                message: "genesis",
+                timestamp: Some(1_700_000_000_000_000_000),
+            };
+            init_file(&path, rules, &options).unwrap_or_else(|_| std::process::abort());
+            (path, registry)
+        }
+
+        /// Replace the rules payload with an encryption of `substitute`
+        /// and recompute the unkeyed integrity hash. Needs no secret,
+        /// because the rules key derives from public header fields.
+        fn substitute_payload(path: &Path, substitute: &[u8]) {
+            let mut bytes = std::fs::read(path).unwrap_or_else(|_| std::process::abort());
+            let (file_id, version, offset, length) = {
+                let parser = AionParser::new(&bytes).unwrap_or_else(|_| std::process::abort());
+                let header = parser.header();
+                (
+                    FileId(header.file_id),
+                    VersionNumber(header.current_version),
+                    header.encrypted_rules_offset as usize,
+                    header.encrypted_rules_length as usize,
+                )
+            };
+            let (payload, _) = encrypt_rules(substitute, file_id, version)
+                .unwrap_or_else(|_| std::process::abort());
+            if payload.len() != length {
+                std::process::abort();
+            }
+            bytes[offset..offset.saturating_add(length)].copy_from_slice(&payload);
+            let body_len = bytes.len().saturating_sub(32);
+            let integrity = hash(&bytes[..body_len]);
+            bytes[body_len..].copy_from_slice(&integrity);
+            std::fs::write(path, &bytes).unwrap_or_else(|_| std::process::abort());
+        }
+
+        #[test]
+        fn verify_rejects_substituted_payload_with_recomputed_integrity_hash() {
+            let dir = TempDir::new().unwrap_or_else(|_| std::process::abort());
+            let (path, registry) = init_with_rules(&dir, b"refund_limit: 100");
+            substitute_payload(&path, b"refund_limit: 999");
+
+            let report = verify_file(&path, &registry).unwrap_or_else(|_| std::process::abort());
+            assert!(report.integrity_hash_valid, "attacker recomputed the hash");
+            assert!(!report.hash_chain_valid);
+            assert!(!report.is_valid);
+            assert_eq!(
+                report.errors,
+                vec!["Rules payload does not match the signed rules_hash".to_string()]
+            );
+        }
+
+        #[test]
+        fn verify_accepts_untouched_payload_after_commit() {
+            let dir = TempDir::new().unwrap_or_else(|_| std::process::abort());
+            let path = dir.path().join("committed.aion");
+            let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+            let author = AuthorId::new(70_002);
+            let registry = test_reg(author, &key);
+            std::fs::write(&path, create_test_file(&key, author))
+                .unwrap_or_else(|_| std::process::abort());
+            let options = CommitOptions {
+                author_id: author,
+                signing_key: &key,
+                message: "v2",
+                timestamp: Some(1_700_000_001_000_000_000),
+            };
+            commit_version(&path, b"second rules", &options, &registry)
+                .unwrap_or_else(|_| std::process::abort());
+
+            let report = verify_file(&path, &registry).unwrap_or_else(|_| std::process::abort());
+            assert!(report.is_valid, "{:?}", report.errors);
+        }
+
+        mod properties {
+            use super::*;
+            use hegel::generators as gs;
+
+            #[hegel::test]
+            fn prop_verify_rejects_any_substituted_payload(tc: hegel::TestCase) {
+                let original = tc.draw(gs::binary().min_size(1).max_size(1024));
+                let max_idx = original.len().saturating_sub(1);
+                let idx = tc.draw(gs::integers::<usize>().max_value(max_idx));
+                let flip = tc.draw(gs::integers::<u8>().min_value(1));
+                let mut substitute = original.clone();
+                substitute[idx] ^= flip;
+
+                let dir = TempDir::new().unwrap_or_else(|_| std::process::abort());
+                let (path, registry) = init_with_rules(&dir, &original);
+                substitute_payload(&path, &substitute);
+
+                let report =
+                    verify_file(&path, &registry).unwrap_or_else(|_| std::process::abort());
+                assert!(!report.is_valid);
+                assert!(!report.hash_chain_valid);
+            }
         }
     }
 

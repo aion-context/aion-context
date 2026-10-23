@@ -87,6 +87,14 @@ and the project follows [Semantic Versioning].
 
 ### Security
 
+- **GHSA-7625-44v8-v62f: `verify_file` did not bind the rules payload to
+  the signed `rules_hash`.** The rules key is public and the whole-file
+  integrity hash is unkeyed. So a substituted payload, with the
+  integrity hash recomputed, passed `verify_file`, `aion verify`, and
+  `aion archive verify`. `verify_file` now decrypts the latest payload
+  and compares it with the latest signed `rules_hash`. A mismatch fails
+  `hash_chain_valid` and `is_valid`. Reads through `show_current_rules`
+  were already fail-closed. Also fixed in 1.0.1.
 - Bumped `rustls` 0.23.39 → 0.23.46, `rustls-webpki` 0.103.13 →
   0.103.16, and `webpki-roots` 1.0.7 → 1.0.10 for RUSTSEC-2026-0285,
   -0346, -0348, -0349, -0381, and -0382. These are only reachable
