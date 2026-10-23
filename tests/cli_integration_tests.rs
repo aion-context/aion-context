@@ -2853,3 +2853,32 @@ fn test_cli_migrate_refuses_an_existing_dest_and_an_unpinned_author() {
     assert!(!dest.exists());
     cleanup_key(&key_id);
 }
+
+#[test]
+fn test_cli_verify_notes_unsigned_metadata_only_for_legacy_formats() {
+    let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/legacy");
+    let legacy = run_cli(&[
+        "verify",
+        path_str(&fixtures.join("v3.aion")),
+        "--registry",
+        path_str(&fixtures.join("v3-registry.json")),
+    ]);
+    assert!(legacy.status.success());
+    let stderr = String::from_utf8_lossy(&legacy.stderr);
+    assert!(
+        stderr.contains("does not sign its commit messages"),
+        "{stderr}"
+    );
+
+    let (temp_dir, key_id) = setup_test_env();
+    let (current, registry) = migration_source(&temp_dir, &key_id);
+    let output = run_cli(&[
+        "verify",
+        path_str(&current),
+        "--registry",
+        path_str(&registry),
+    ]);
+    cleanup_key(&key_id);
+    assert!(output.status.success());
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("does not sign"));
+}

@@ -74,8 +74,10 @@ Release 3.0.0. Each item below is deliberate (RFC-0040).
   messages and audit trail are unauthenticated: `VerifiedChain::
   metadata_signed`, `FileInfo::metadata_signed`, exports and compliance
   reports say so, and `aion migrate` writes a v4 file that continues
-  them. `AcceptPolicy::min_format(FormatVersion::V4)` (CLI
-  `--min-format 4`) refuses unsigned metadata.
+  them. `aion verify`, `aion show` and `aion commit` print a note on
+  v2/v3 files but still pass them. `AcceptPolicy::min_format(
+  FormatVersion::V4)` (CLI `aion accept --min-format 4`) refuses
+  unsigned metadata; it is opt-in.
 
 ### Added
 

@@ -1177,8 +1177,19 @@ fn cmd_verify(args: &VerifyArgs) -> Result<ExitCode> {
         OutputFormat::Yaml => println!("{}", serde_yaml::to_string(&report)?),
         OutputFormat::Text => print_verify_text_report(args, &report),
     }
+    if report.is_valid && !report.metadata_signed {
+        note_unsigned_metadata(&args.path);
+    }
 
     Ok(report.exit_code())
+}
+
+fn note_unsigned_metadata(path: &std::path::Path) {
+    eprintln!(
+        "note: {} does not sign its commit messages or audit trail (format v2/v3). \
+         `aion migrate` re-signs it as format v4.",
+        path.display()
+    );
 }
 
 fn cmd_accept(args: &AcceptArgs) -> Result<ExitCode> {
@@ -1481,11 +1492,7 @@ fn show_info_subcommand(args: &ShowArgs) -> Result<()> {
     let registry = load_registry_from_path(&args.registry)?;
     let info = show_file_info(&args.path, &registry)?;
     if !info.metadata_signed {
-        eprintln!(
-            "note: {} does not sign its commit messages or audit trail (format v2/v3). \
-             `aion migrate` re-signs it as format v4.",
-            args.path.display()
-        );
+        note_unsigned_metadata(&args.path);
     }
     match args.format {
         OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&info)?),
