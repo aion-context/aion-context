@@ -158,6 +158,24 @@ impl RulesMode {
     }
 }
 
+/// How a writer should protect the rules it is committing (RFC-0039).
+///
+/// There is no default: every `init` and `commit` names its protection,
+/// so choosing secrecy (or its absence) is always explicit.
+///
+/// `#[non_exhaustive]` because RFC-0039 Phase B adds `Confidential`, which
+/// carries an owned recipient list.
+///
+/// For a format-v2 file, `Public` keeps the file's existing v2 encoding:
+/// v2 has no rules modes, and its section is obfuscated, not confidential.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum RulesProtection {
+    /// Store the rules in the clear, framed and padded. Anyone holding the
+    /// file can read them; the signature still makes them tamper-evident.
+    Public,
+}
+
 /// Commit to a stored rules section (RFC-0039).
 ///
 /// `BLAKE3(RULES_COMMIT_DOMAIN ‖ mode ‖ section)`. The mode byte keeps the

@@ -24,8 +24,9 @@ every byte; this page is the operator-facing summary.
 │ String Table                          │
 │   null-delimited UTF-8 messages       │
 ├──────────────────────────────────────┤
-│ Encrypted Rules (ChaCha20-Poly1305)   │
-│   payload + nonce                     │
+│ Rules Section (latest version only)   │
+│   v3 public: framed, Padmé-padded     │
+│   v2: nonce + ChaCha20-Poly1305       │
 ├──────────────────────────────────────┤
 │ Integrity Hash                        │
 │   BLAKE3 over all preceding bytes     │
@@ -44,14 +45,36 @@ allocating. Internal entry types (`VersionEntry`,
 |---:|---:|---|
 | 0 | 8 | `version_number: u64` |
 | 8 | 32 | `parent_hash: [u8; 32]` (BLAKE3 of prior version's canonical bytes) |
-| 40 | 32 | `rules_hash: [u8; 32]` (BLAKE3 of plaintext rules) |
+| 40 | 32 | `rules_hash: [u8; 32]` (v3: BLAKE3 commitment to the stored rules section; v2: BLAKE3 of the plaintext rules) |
 | 72 | 8 | `author_id: u64` |
 | 80 | 8 | `timestamp: u64` (nanoseconds since epoch) |
 | 88 | 8 | `message_offset: u64` (into string table) |
 | 96 | 4 | `message_length: u32` |
-| 100 | 52 | `reserved` — must be zero |
+| 100 | 52 | `reserved`: v3 stores `rules_mode` in byte 100 (0 public, 1 confidential), and the rest must be zero. v2: all must be zero. |
 
-The `reserved` region is **strictly validated as zero**
+## Format versions
+
+The header's `version` field selects the format. Readers accept both;
+writers produce v3.
+
+- **v3 (RFC-0039).**
+  - Every version records its own rules mode, and the signature
+    covers it.
+  - The signed canonical message also binds the format version and
+    `file_id`, under `AION_V3_VERSION_SIGNATURE_V1\0`.
+  - `parent_hash` links to a v3 version hash under
+    `AION_V3_VERSION_HASH_V1\0`.
+  - The head's rules section must commit to its signed `rules_hash`,
+    and header flag bit 0 mirrors the head's mode. Both are checked
+    without any key.
+  - A public section is `u64_le(len) ‖ plaintext ‖ zero padding`,
+    padded to the Padmé size of `8 + len`.
+- **v2.** The original format. The rules section is obfuscated under a
+  key derived from public header fields, so it is not confidential.
+  Commits to a v2 file keep it v2; converting arrives with
+  `aion migrate` in RFC-0039 Phase C.
+
+The `reserved` region is **strictly validated**
 (post-PR #42). Tampering with reserved bytes would let an
 attacker plant data that the integrity hash detects but a
 subsequent `commit_version` could silently launder by

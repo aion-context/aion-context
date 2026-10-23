@@ -72,12 +72,13 @@ policy/document-shaped sibling those systems leave on the table — see
 ```rust
 use aion_context::crypto::SigningKey;
 use aion_context::key_registry::KeyRegistry;
+use aion_context::format::RulesProtection;
 use aion_context::operations::{init_file, verify_file, InitOptions};
 use aion_context::types::AuthorId;
 use std::path::Path;
 
 fn main() -> anyhow::Result<()> {
-    let key = SigningKey::generate();
+    let key = SigningKey::generate()?;
     let author = AuthorId::new(1);
     let mut registry = KeyRegistry::new();
     registry.register_author(author, key.verifying_key(), key.verifying_key(), 0)?;
@@ -85,7 +86,13 @@ fn main() -> anyhow::Result<()> {
     init_file(
         Path::new("/tmp/policy.aion"),
         b"allow: read\nallow: write",
-        &InitOptions { author_id: author, signing_key: &key, message: "v1", timestamp: None },
+        &InitOptions {
+            author_id: author,
+            signing_key: &key,
+            message: "v1",
+            timestamp: None,
+            protection: RulesProtection::Public,
+        },
     )?;
 
     let report = verify_file(Path::new("/tmp/policy.aion"), &registry)?;
@@ -123,7 +130,7 @@ aion --help
 |---|---|
 | **CLI** (`aion`) | `init` / `commit` / `verify` / `inspect` / `registry rotate \| revoke` / `release seal \| verify` / `archive verify` / `key generate` |
 | **Library** | `init_file` / `commit_version` / hardware-backed `commit_version_with_signer` / `verify_file` / `KeyRegistry` / `verify_multisig` (RFC-0021) / sealed releases (RFC-0032) / hardware attestation (RFC-0026) / hybrid PQC (RFC-0027) / transparency log (RFC-0025) |
-| **Format** | Zero-copy binary layout. One header, one chained signature history, one encrypted_rules section, one trailing integrity hash. The latest payload is always inline; historical payloads are addressed by their `rules_hash` for external archival. |
+| **Format** | Zero-copy binary layout. One header, one chained signature history, one rules section, one trailing integrity hash. Format v3 rules are public or, from RFC-0039 Phase B, confidential. The latest payload is always inline; historical payloads are addressed by their `rules_hash` for external archival. |
 | **Tracing** | `AION_LOG=info` produces structured per-event lines (`event=file_verified`, `event=signature_rejected reason=...`, etc.). `AION_LOG_FORMAT=json` for log-store ingest. |
 | **Examples** | `policy_loop`, `llm_policy_agent` (Claude as proposer + `.aion` as gate), `aegis_consortium` (5-party PQC quorum), `federation_hw_attest` (cross-domain TEE keys), `corpus_to_aion` (any git history → signed chain) |
 

@@ -573,6 +573,14 @@ pub enum Recipient<'a> {
 There is **no default**. Callers name the mode. This is a breaking
 change, and the next release is already 2.0.0.
 
+*Implementation note (Phase A2b):* `RulesProtection` and `Recipient`
+own their data rather than borrowing, so the shipped type is
+`RulesProtection` with no lifetime parameter, `#[non_exhaustive]`.
+With only `Public` in Phase A, a borrowed `'a` would have been unused.
+Adding the parameter later would have been a second breaking change.
+Phase B's `Confidential` variant holds an owned recipient list, with
+external wrappers held behind a shared pointer.
+
 `commit_version` never needs the previous version's plaintext.
 
 The CLI never carries recipients over silently. `aion commit` takes

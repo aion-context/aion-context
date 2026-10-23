@@ -265,6 +265,7 @@ fn test_cli_init_creates_file() {
     // Init file
     let output = run_cli(&[
         "init",
+        "--public",
         file_path.to_str().unwrap(),
         "--rules",
         rules_path.to_str().unwrap(),
@@ -287,6 +288,59 @@ fn test_cli_init_creates_file() {
 }
 
 #[test]
+fn test_cli_init_requires_named_rules_protection() {
+    let (temp_dir, key_id) = setup_test_env();
+    let file_path = temp_dir.path().join("unprotected.aion");
+    let rules_path = temp_dir.path().join("rules.txt");
+    fs::write(&rules_path, "threshold: 100").expect("Failed to write rules");
+
+    let output = run_cli(&[
+        "init",
+        file_path.to_str().unwrap(),
+        "--rules",
+        rules_path.to_str().unwrap(),
+        "--author",
+        "1001",
+        "--key",
+        &key_id,
+    ]);
+
+    assert!(!output.status.success(), "init must require --public");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("--public"));
+    assert!(!file_path.exists());
+    cleanup_key(&key_id);
+}
+
+#[test]
+fn test_cli_init_accepts_deprecated_no_encryption_alias() {
+    let (temp_dir, key_id) = setup_test_env();
+    let file_path = temp_dir.path().join("alias.aion");
+    let rules_path = temp_dir.path().join("rules.txt");
+    fs::write(&rules_path, "threshold: 100").expect("Failed to write rules");
+
+    let output = run_cli(&[
+        "init",
+        "--no-encryption",
+        file_path.to_str().unwrap(),
+        "--rules",
+        rules_path.to_str().unwrap(),
+        "--author",
+        "1001",
+        "--key",
+        &key_id,
+    ]);
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stderr).contains("deprecated"));
+    assert!(file_path.exists());
+    cleanup_key(&key_id);
+}
+
+#[test]
 fn test_cli_init_with_stdin_rules() {
     let (temp_dir, key_id) = setup_test_env();
     let file_path = temp_dir.path().join("stdin_test.aion");
@@ -295,6 +349,7 @@ fn test_cli_init_with_stdin_rules() {
     let output = run_cli_with_stdin(
         &[
             "init",
+            "--public",
             file_path.to_str().unwrap(),
             "--author",
             "1002",
@@ -325,6 +380,7 @@ fn test_cli_init_fails_if_file_exists() {
     let output = run_cli_with_stdin(
         &[
             "init",
+            "--public",
             file_path.to_str().unwrap(),
             "--author",
             "1003",
@@ -339,6 +395,7 @@ fn test_cli_init_fails_if_file_exists() {
     let output = run_cli_with_stdin(
         &[
             "init",
+            "--public",
             file_path.to_str().unwrap(),
             "--author",
             "1003",
@@ -372,6 +429,7 @@ fn test_cli_commit_adds_version() {
     let output = run_cli_with_stdin(
         &[
             "init",
+            "--public",
             file_path.to_str().unwrap(),
             "--author",
             "2001",
@@ -386,6 +444,7 @@ fn test_cli_commit_adds_version() {
     let output = run_cli_with_stdin(
         &[
             "commit",
+            "--public",
             file_path.to_str().unwrap(),
             "--author",
             "2001",
@@ -437,6 +496,7 @@ fn test_cli_commit_with_different_author() {
     let output = run_cli_with_stdin(
         &[
             "init",
+            "--public",
             file_path.to_str().unwrap(),
             "--author",
             "3001",
@@ -451,6 +511,7 @@ fn test_cli_commit_with_different_author() {
     let output = run_cli_with_stdin(
         &[
             "commit",
+            "--public",
             file_path.to_str().unwrap(),
             "--author",
             "3002",
@@ -496,6 +557,7 @@ fn test_cli_verify_valid_file() {
     let output = run_cli_with_stdin(
         &[
             "init",
+            "--public",
             file_path.to_str().unwrap(),
             "--author",
             "4001",
@@ -538,6 +600,7 @@ fn test_cli_verify_verbose_output() {
     run_cli_with_stdin(
         &[
             "init",
+            "--public",
             file_path.to_str().unwrap(),
             "--author",
             "4002",
@@ -578,6 +641,7 @@ fn test_cli_verify_corrupted_file_fails() {
     run_cli_with_stdin(
         &[
             "init",
+            "--public",
             file_path.to_str().unwrap(),
             "--author",
             "4003",
@@ -632,6 +696,7 @@ fn test_cli_verify_exit_code_matches_verdict() {
     run_cli_with_stdin(
         &[
             "init",
+            "--public",
             file_path.to_str().unwrap(),
             "--author",
             "4099",
@@ -699,6 +764,7 @@ fn test_cli_show_rules() {
     run_cli_with_stdin(
         &[
             "init",
+            "--public",
             file_path.to_str().unwrap(),
             "--author",
             "5001",
@@ -738,6 +804,7 @@ fn test_cli_show_history() {
     run_cli_with_stdin(
         &[
             "init",
+            "--public",
             file_path.to_str().unwrap(),
             "--author",
             "5002",
@@ -752,6 +819,7 @@ fn test_cli_show_history() {
     run_cli_with_stdin(
         &[
             "commit",
+            "--public",
             file_path.to_str().unwrap(),
             "--author",
             "5002",
@@ -793,6 +861,7 @@ fn test_cli_show_signatures() {
     run_cli_with_stdin(
         &[
             "init",
+            "--public",
             file_path.to_str().unwrap(),
             "--author",
             "5003",
@@ -830,6 +899,7 @@ fn test_cli_show_info() {
     run_cli_with_stdin(
         &[
             "init",
+            "--public",
             file_path.to_str().unwrap(),
             "--author",
             "5004",
@@ -877,6 +947,7 @@ fn test_cli_commit_rejects_unregistered_signer() {
     let output = run_cli_with_stdin(
         &[
             "init",
+            "--public",
             file_path.to_str().unwrap(),
             "--author",
             "6001",
@@ -893,6 +964,7 @@ fn test_cli_commit_rejects_unregistered_signer() {
     let output = run_cli_with_stdin(
         &[
             "commit",
+            "--public",
             file_path.to_str().unwrap(),
             "--author",
             "6999",
@@ -937,6 +1009,7 @@ fn test_cli_commit_rejects_wrong_operational_key() {
     run_cli_with_stdin(
         &[
             "init",
+            "--public",
             file_path.to_str().unwrap(),
             "--author",
             "6002",
@@ -952,6 +1025,7 @@ fn test_cli_commit_rejects_wrong_operational_key() {
     let output = run_cli_with_stdin(
         &[
             "commit",
+            "--public",
             file_path.to_str().unwrap(),
             "--author",
             "6002",
@@ -992,6 +1066,7 @@ fn test_cli_commit_force_unregistered_bypasses() {
     run_cli_with_stdin(
         &[
             "init",
+            "--public",
             file_path.to_str().unwrap(),
             "--author",
             "6003",
@@ -1006,6 +1081,7 @@ fn test_cli_commit_force_unregistered_bypasses() {
     let output = run_cli_with_stdin(
         &[
             "commit",
+            "--public",
             file_path.to_str().unwrap(),
             "--author",
             "6999",
@@ -1093,6 +1169,7 @@ fn test_cli_registry_rotate_happy_path() {
     run_cli_with_stdin(
         &[
             "init",
+            "--public",
             file_path.to_str().unwrap(),
             "--author",
             "7001",
@@ -1338,6 +1415,7 @@ fn test_cli_registry_revoke_happy_path() {
     run_cli_with_stdin(
         &[
             "init",
+            "--public",
             pre_file.to_str().unwrap(),
             "--author",
             "7003",
@@ -1666,6 +1744,7 @@ fn test_cli_archive_verify_finds_planted_anomalies() {
         run_cli_with_stdin(
             &[
                 "init",
+                "--public",
                 p.to_str().unwrap(),
                 "--author",
                 "9001",
@@ -1688,6 +1767,7 @@ fn test_cli_archive_verify_finds_planted_anomalies() {
     run_cli_with_stdin(
         &[
             "init",
+            "--public",
             other_path.to_str().unwrap(),
             "--author",
             "9999",
@@ -1753,6 +1833,7 @@ fn test_cli_archive_verify_clean_archive_exits_zero() {
         run_cli_with_stdin(
             &[
                 "init",
+                "--public",
                 p.to_str().unwrap(),
                 "--author",
                 "9002",
@@ -1799,6 +1880,7 @@ fn test_cli_archive_verify_detects_rotation() {
         run_cli_with_stdin(
             &[
                 "init",
+                "--public",
                 p.to_str().unwrap(),
                 "--author",
                 "9003",
@@ -1837,6 +1919,7 @@ fn test_cli_archive_verify_detects_rotation() {
     run_cli_with_stdin(
         &[
             "init",
+            "--public",
             post.to_str().unwrap(),
             "--author",
             "9003",
@@ -1911,6 +1994,7 @@ fn test_cli_commit_nonexistent_file_fails() {
     let output = run_cli_with_stdin(
         &[
             "commit",
+            "--public",
             "/nonexistent/path/file.aion",
             "--author",
             "9999",
@@ -1934,6 +2018,7 @@ fn test_cli_init_with_nonexistent_key_fails() {
     let output = run_cli_with_stdin(
         &[
             "init",
+            "--public",
             file_path.to_str().unwrap(),
             "--author",
             "1000",
@@ -2006,6 +2091,7 @@ fn test_verify_with_registry_accepts_matching_key() {
     let init_out = run_cli_with_stdin(
         &[
             "init",
+            "--public",
             file_path.to_str().unwrap(),
             "--author",
             &inspect_id,
@@ -2064,6 +2150,7 @@ fn test_verify_with_registry_rejects_mismatched_key() {
     let init_out = run_cli_with_stdin(
         &[
             "init",
+            "--public",
             file_path.to_str().unwrap(),
             "--author",
             &inspect_id,
@@ -2111,6 +2198,7 @@ fn test_verify_rejects_malformed_registry() {
     let init_out = run_cli_with_stdin(
         &[
             "init",
+            "--public",
             file_path.to_str().unwrap(),
             "--author",
             &key_id,

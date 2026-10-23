@@ -188,7 +188,7 @@ cargo clippy -- -D warnings
 cargo fmt --check
 
 # CLI
-cargo run --bin aion -- init rules.aion --rules policies.yaml
+cargo run --bin aion -- init --public rules.aion --rules policies.yaml
 cargo run --bin aion -- verify rules.aion
 
 # Perf / fuzz

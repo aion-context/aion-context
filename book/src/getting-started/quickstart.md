@@ -69,7 +69,7 @@ registry.
 ```bash
 echo "threshold: 75%" > rules.yaml
 
-aion init policy.aion \
+aion init --public policy.aion \
     --author 50001 \
     --key 50001 \
     --rules rules.yaml \
@@ -84,7 +84,7 @@ version):
 ```bash
 echo "threshold: 80%" > rules-v2.yaml
 
-aion commit policy.aion \
+aion commit --public policy.aion \
     --author 50001 \
     --key 50001 \
     --rules rules-v2.yaml \

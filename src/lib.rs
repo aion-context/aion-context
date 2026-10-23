@@ -16,6 +16,7 @@
 //! ```rust,no_run
 //! use aion_context::crypto::SigningKey;
 //! use aion_context::key_registry::KeyRegistry;
+//! use aion_context::format::RulesProtection;
 //! use aion_context::operations::{init_file, verify_file, InitOptions};
 //! use aion_context::types::AuthorId;
 //! use std::path::Path;
@@ -28,7 +29,7 @@
 //!     init_file(
 //!         Path::new("/tmp/policy.aion"),
 //!         b"allow: read\nallow: write",
-//!         &InitOptions { author_id: author, signing_key: &key, message: "v1", timestamp: None },
+//!         &InitOptions { author_id: author, signing_key: &key, message: "v1", timestamp: None, protection: RulesProtection::Public },
 //!     )?;
 //!     let report = verify_file(Path::new("/tmp/policy.aion"), &registry)?;
 //!     assert!(report.is_valid);

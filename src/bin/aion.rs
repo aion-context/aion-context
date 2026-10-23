@@ -12,7 +12,7 @@ use aion_context::operations::{
 };
 use aion_context::types::AuthorId;
 use anyhow::{Context, Result};
-use clap::{Args, Parser, Subcommand};
+use clap::{ArgGroup, Args, Parser, Subcommand};
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -62,6 +62,11 @@ enum Commands {
 }
 
 #[derive(Args, Debug)]
+#[command(group(
+    ArgGroup::new("protection")
+        .required(true)
+        .args(["public", "no_encryption"])
+))]
 struct InitArgs {
     /// Path to the AION file to create
     #[arg(value_name = "FILE")]
@@ -87,14 +92,19 @@ struct InitArgs {
     #[arg(long)]
     force: bool,
 
-    /// No effect; kept for CLI compatibility. The rules section is
-    /// always written the same way, and it is readable by anyone who
-    /// holds the file (tamper-evident, not confidential).
+    /// Store the rules in the clear (RFC-0039). Anyone holding the file
+    /// can read them; the signature makes them tamper-evident. Required:
+    /// the rules protection is always named explicitly.
     #[arg(long)]
+    public: bool,
+
+    /// Deprecated alias for `--public`.
+    #[arg(long, hide = true)]
     no_encryption: bool,
 }
 
 #[derive(Args, Debug)]
+#[command(group(ArgGroup::new("protection").required(true).args(["public"])))]
 struct CommitArgs {
     /// Path to the AION file
     #[arg(value_name = "FILE")]
@@ -132,6 +142,12 @@ struct CommitArgs {
     /// `aion verify --registry` until the registry is updated.
     #[arg(long)]
     force_unregistered: bool,
+
+    /// Store the new version's rules in the clear (RFC-0039). Required:
+    /// the rules protection is always named explicitly. For a format-v2
+    /// file, the file keeps its v2 encoding.
+    #[arg(long)]
+    public: bool,
 }
 
 #[derive(Args, Debug)]
@@ -708,6 +724,7 @@ fn cmd_init(args: &InitArgs) -> Result<ExitCode> {
         signing_key: &signing_key,
         message: &args.message,
         timestamp: None,
+        protection: aion_context::format::RulesProtection::Public,
     };
     if args.force && args.path.exists() {
         std::fs::remove_file(&args.path)
@@ -726,9 +743,9 @@ fn print_init_banner(args: &InitArgs) {
     println!("🚀 Initializing AION file: {}", args.path.display());
     println!("   Author: {}", args.author);
     println!("   Message: {}", args.message);
-    println!("   Rules: tamper-evident, readable by anyone holding the file");
+    println!("   Rules: public (tamper-evident, readable by anyone holding the file)");
     if args.no_encryption {
-        eprintln!("note: --no-encryption has no effect; the rules section is never confidential");
+        eprintln!("note: --no-encryption is deprecated; use --public");
     }
 }
 
@@ -776,6 +793,7 @@ fn cmd_commit(args: &CommitArgs) -> Result<ExitCode> {
         signing_key: &signing_key,
         message: &args.message,
         timestamp: None, // Use current time
+        protection: aion_context::format::RulesProtection::Public,
     };
 
     // Commit the new version

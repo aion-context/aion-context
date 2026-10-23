@@ -76,7 +76,7 @@ cp week-01.aion governance.aion
 #    chain. The operator running this loop is the current
 #    holder of the signing key.
 for week in 2 3 4 ... 13; do
-    aion commit governance.aion \
+    aion commit --public governance.aion \
         --author 50001 --key 50001 \
         --rules week-$week-rules.yaml \
         --message "(migrated from week-$week.aion)" \

@@ -99,7 +99,7 @@ risk_level: medium
 max_transaction: 50000" > rules.txt
 
 # Initialize AION file
-aion init policy.aion \
+aion init --public policy.aion \
   --author 1001 \
   --key 1001 \
   --rules rules.txt \
@@ -144,9 +144,10 @@ risk_level: high
 max_transaction: 25000" > rules_v2.txt
 
 # Commit new version
-aion commit policy.aion \
+aion commit --public policy.aion \
   --author 1001 \
   --key 1001 \
+  --registry registry.json \
   --rules rules_v2.txt \
   --message "Tightened fraud thresholds"
 ```
@@ -204,7 +205,7 @@ max_transaction: 25000
 Create a new AION file with initial rules.
 
 ```bash
-aion init <FILE> --author <ID> --key <KEY_ID> [OPTIONS]
+aion init <FILE> --author <ID> --key <KEY_ID> --public [OPTIONS]
 ```
 
 | Option | Required | Description |
@@ -214,20 +215,21 @@ aion init <FILE> --author <ID> --key <KEY_ID> [OPTIONS]
 | `-k, --key` | Yes | Signing key ID from keystore |
 | `-r, --rules` | No | Rules file (stdin if omitted) |
 | `-m, --message` | No | Commit message (default: "Genesis version") |
+| `--public` | Yes | Store the rules in the clear (format v3). Anyone holding the file can read them; the signature makes them tamper-evident. The rules protection has no default. |
 | `--force` | No | Overwrite existing file |
-| `--no-encryption` | No | No effect; kept for compatibility. Rules are readable by anyone holding the file. |
+| `--no-encryption` | No | Deprecated alias for `--public` |
 
 **Examples:**
 
 ```bash
 # From file
-aion init policy.aion -a 1001 -k 1001 -r rules.txt -m "Initial policy"
+aion init --public policy.aion -a 1001 -k 1001 -r rules.txt -m "Initial policy"
 
 # From stdin
-cat rules.json | aion init policy.aion -a 1001 -k 1001 -m "Initial policy"
+cat rules.json | aion init --public policy.aion -a 1001 -k 1001 -m "Initial policy"
 
 # Overwrite existing
-aion init policy.aion -a 1001 -k 1001 -r rules.txt --force
+aion init --public policy.aion -a 1001 -k 1001 -r rules.txt --force
 ```
 
 ### `aion commit` - Add New Version
@@ -235,7 +237,7 @@ aion init policy.aion -a 1001 -k 1001 -r rules.txt --force
 Commit a new version to an existing AION file.
 
 ```bash
-aion commit <FILE> --author <ID> --key <KEY_ID> --message <MSG> [OPTIONS]
+aion commit <FILE> --author <ID> --key <KEY_ID> --message <MSG> --registry <REGISTRY_FILE> --public [OPTIONS]
 ```
 
 | Option | Required | Description |
@@ -244,16 +246,18 @@ aion commit <FILE> --author <ID> --key <KEY_ID> --message <MSG> [OPTIONS]
 | `-a, --author` | Yes | Author ID (numeric) |
 | `-k, --key` | Yes | Signing key ID |
 | `-m, --message` | Yes | Commit message |
+| `--registry` | Yes | Trusted key registry (JSON) used to pre-verify the chain |
+| `--public` | Yes | Store the new version's rules in the clear. A v2 file keeps its v2 encoding. |
 | `-r, --rules` | No | New rules file (stdin if omitted) |
 
 **Examples:**
 
 ```bash
 # From file
-aion commit policy.aion -a 1001 -k 1001 -r new_rules.txt -m "Updated thresholds"
+aion commit --public policy.aion -a 1001 -k 1001 --registry registry.json -r new_rules.txt -m "Updated thresholds"
 
 # Different author (requires their key)
-aion commit policy.aion -a 2002 -k 2002 -r rules.txt -m "Compliance update"
+aion commit --public policy.aion -a 2002 -k 2002 --registry registry.json -r rules.txt -m "Compliance update"
 ```
 
 ### `aion verify` - Verify Integrity
@@ -374,14 +378,14 @@ aion key delete <KEY_ID> [--force]
 # Chief Pharmacologist creates initial rules
 aion key generate 5001 --description "Dr. Smith - Chief Pharmacologist"
 
-aion init drug_interactions.aion \
+aion init --public drug_interactions.aion \
   -a 5001 -k 5001 \
   -r interactions_v1.json \
   -m "Initial FDA-approved interaction database"
 
 # Monthly update after FDA guidance
-aion commit drug_interactions.aion \
-  -a 5001 -k 5001 \
+aion commit --public drug_interactions.aion \
+  -a 5001 -k 5001 --registry registry.json \
   -r interactions_v2.json \
   -m "Updated per FDA guidance 2024-12-01"
 
@@ -400,14 +404,14 @@ aion key generate 3001 --description "Alice - Senior Risk Analyst"
 aion key generate 3002 --description "Bob - Risk Manager"
 
 # Alice creates initial policy
-aion init fraud_policy.aion \
+aion init --public fraud_policy.aion \
   -a 3001 -k 3001 \
   -r fraud_rules.yaml \
   -m "Q4 2024 fraud detection baseline"
 
 # Bob updates after incident
-aion commit fraud_policy.aion \
-  -a 3002 -k 3002 \
+aion commit --public fraud_policy.aion \
+  -a 3002 -k 3002 --registry registry.json \
   -r fraud_rules_v2.yaml \
   -m "Tightened velocity checks after Dec-8 incident"
 
@@ -422,7 +426,7 @@ aion show fraud_policy.aion signatures
 
 ```bash
 # Create GDPR compliance rules
-aion init gdpr_rules.aion \
+aion init --public gdpr_rules.aion \
   -a 4001 -k 4001 \
   -r gdpr_v1.json \
   -m "GDPR compliance rules 2024"
@@ -487,10 +491,10 @@ Error: File policy.aion already exists
 **Solution:**
 ```bash
 # Use --force to overwrite
-aion init policy.aion -a 1001 -k 1001 -r rules.txt --force
+aion init --public policy.aion -a 1001 -k 1001 -r rules.txt --force
 
 # Or use commit to add a new version
-aion commit policy.aion -a 1001 -k 1001 -r rules.txt -m "Updated rules"
+aion commit --public policy.aion -a 1001 -k 1001 --registry registry.json -r rules.txt -m "Updated rules"
 ```
 
 ### Error: "Verification failed"
@@ -528,10 +532,10 @@ Error: Invalid author ID 'alice': must be a number
 Author IDs must be numeric:
 ```bash
 # Wrong
-aion init policy.aion -a alice -k 1001
+aion init --public policy.aion -a alice -k 1001
 
 # Correct
-aion init policy.aion -a 1001 -k 1001
+aion init --public policy.aion -a 1001 -k 1001
 ```
 
 ### Error: "Rules file not found"
@@ -547,10 +551,10 @@ Error: Could not read rules file: rules.txt
 ls -la rules.txt
 
 # Use absolute path
-aion init policy.aion -a 1001 -k 1001 -r /path/to/rules.txt
+aion init --public policy.aion -a 1001 -k 1001 -r /path/to/rules.txt
 
 # Or pipe from stdin
-cat rules.txt | aion init policy.aion -a 1001 -k 1001
+cat rules.txt | aion init --public policy.aion -a 1001 -k 1001
 ```
 
 ### Keyring Permission Issues (Linux)
