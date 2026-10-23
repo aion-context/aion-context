@@ -30,3 +30,9 @@ name = "fuzz_registry_json"
 path = "fuzz_targets/fuzz_registry_json.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "fuzz_verify_chain"
+path = "fuzz_targets/fuzz_verify_chain.rs"
+test = false
+doc = false

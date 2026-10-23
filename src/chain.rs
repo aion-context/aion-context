@@ -543,6 +543,29 @@ mod tests {
         ));
     }
 
+    /// GHSA-9c6x-g6hv-mpvr: an entry count larger than the file must be
+    /// rejected before any reader sizes a buffer from it.
+    #[test]
+    fn oversized_entry_counts_are_rejected_without_allocating() {
+        let dir = ok(TempDir::new());
+        let path = dir.path().join("counts.aion");
+        let key = ok(SigningKey::generate());
+        let registry = grow_v3(&path, &key, AuthorId::new(90_009), &[b"rules"]);
+        let original = ok(std::fs::read(&path));
+        for field in [128usize, 144, 160] {
+            for count in [1u64 << 32, u64::MAX] {
+                let mut bytes = original.clone();
+                bytes[field..field.saturating_add(8)].copy_from_slice(&count.to_le_bytes());
+                assert!(matches!(
+                    VerifiedChain::from_bytes(&bytes, &registry),
+                    Err(AionError::ChainRejected {
+                        reason: "structure_invalid"
+                    })
+                ));
+            }
+        }
+    }
+
     #[test]
     fn unpinned_signer_yields_no_chain() {
         let dir = ok(TempDir::new());

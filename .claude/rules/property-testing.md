@@ -64,6 +64,7 @@ blocks on a drop.
 |---------------------------------|---------------------------------------------------------------|
 | `src/parser.rs`                 | `AionParser::new(&[u8])` never panics on arbitrary bytes      |
 | `src/parser.rs`                 | Accessors on a successfully-constructed `AionParser` never panic |
+| `src/parser.rs`                 | GHSA-9c6x-g6hv-mpvr `AionParser::new` accepts an entry count only if `count × entry_size` fits in the file |
 | `src/crypto.rs`                 | `sign` → `verify` round-trip succeeds for any payload         |
 | `src/crypto.rs`                 | `verify` rejects a signature made by a different key          |
 | `src/crypto.rs`                 | `verify` rejects a tampered payload (single-bit flip)         |

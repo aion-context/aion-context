@@ -110,6 +110,23 @@ Reserved-byte validation at the entry level is exercised by
 analogous fuzz harnesses for `from_canonical_bytes` (manifest)
 and `from_trusted_json` (registry).
 
+Format-v3 verification is fuzzed by
+`fuzz/fuzz_targets/fuzz_verify_chain.rs`. It drives
+`VerifiedChain::from_bytes` and `format::unframe_rules` against a
+registry pinning one fixed fuzz-only key. The signed v3 seeds in
+`fuzz/seeds/fuzz_verify_chain/` carry that key, so mutations reach
+the rules-commitment, framing, and mode-byte checks that run after
+signature verification:
+
+```bash
+cd fuzz
+# corpus/ is gitignored scratch; seeds/ is the committed starting set.
+cargo +nightly fuzz run fuzz_verify_chain \
+  corpus/fuzz_verify_chain seeds/fuzz_verify_chain
+cargo +nightly fuzz run fuzz_file_parser \
+  corpus/fuzz_file_parser seeds/fuzz_verify_chain
+```
+
 ## Verification gates
 
 `verify_file` walks the file end-to-end and returns a

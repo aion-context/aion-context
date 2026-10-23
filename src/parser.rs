@@ -430,7 +430,45 @@ impl<'a> AionParser<'a> {
             );
         })?;
 
-        Ok(Self { data, header })
+        let parser = Self { data, header };
+        parser.validate_entry_counts().inspect_err(|_| {
+            tracing::warn!(
+                event = "parser_rejected",
+                bytes = data.len(),
+                reason = "section_out_of_bounds",
+            );
+        })?;
+        Ok(parser)
+    }
+
+    /// Reject a header whose entry counts do not fit inside the file.
+    ///
+    /// Readers size buffers and loops from these counts, so an
+    /// adversarial count must fail here rather than as an allocation
+    /// of `count × entry_size` bytes.
+    fn validate_entry_counts(&self) -> Result<()> {
+        self.version_chain_bytes()?;
+        self.signatures_bytes()?;
+        if self.header.audit_trail_count == 0 {
+            return Ok(());
+        }
+        let available = u64::try_from(self.audit_trail_bytes()?.len()).unwrap_or(u64::MAX);
+        let needed = self
+            .header
+            .audit_trail_count
+            .checked_mul(crate::serializer::AUDIT_ENTRY_SIZE as u64)
+            .ok_or_else(|| AionError::InvalidFormat {
+                reason: "Audit trail size overflow".to_string(),
+            })?;
+        if needed > available {
+            return Err(AionError::InvalidFormat {
+                reason: format!(
+                    "audit trail out of bounds: {} entries need {needed} bytes, section has {available}",
+                    self.header.audit_trail_count
+                ),
+            });
+        }
+        Ok(())
     }
 
     /// Get reference to the file header.
@@ -473,11 +511,10 @@ impl<'a> AionParser<'a> {
                 reason: "Version chain size overflow".to_string(),
             })?;
 
-        self.get_section(
-            header.version_chain_offset as usize,
-            size as usize,
-            "version chain",
-        )
+        let size = usize::try_from(size).map_err(|_| AionError::InvalidFormat {
+            reason: "Version chain size overflow".to_string(),
+        })?;
+        self.get_section(header.version_chain_offset as usize, size, "version chain")
     }
 
     /// Get signatures section as byte slice
@@ -495,11 +532,10 @@ impl<'a> AionParser<'a> {
                 reason: "Signatures size overflow".to_string(),
             })?;
 
-        self.get_section(
-            header.signatures_offset as usize,
-            size as usize,
-            "signatures",
-        )
+        let size = usize::try_from(size).map_err(|_| AionError::InvalidFormat {
+            reason: "Signatures size overflow".to_string(),
+        })?;
+        self.get_section(header.signatures_offset as usize, size, "signatures")
     }
 
     /// Get audit trail section as byte slice
@@ -796,7 +832,7 @@ impl<'a> AionParser<'a> {
         }
 
         let bytes = self.audit_trail_bytes()?;
-        let entry_size = 80; // AuditEntry is 80 bytes
+        let entry_size = crate::serializer::AUDIT_ENTRY_SIZE;
         let offset = index * entry_size;
         let entry_bytes = &bytes[offset..offset + entry_size];
 
@@ -1184,9 +1220,9 @@ mod tests {
             let middle = data.len() / 2;
             data[middle] ^= 0xFF;
 
-            let parser = AionParser::new(&data).unwrap();
-            let result = parser.verify_integrity();
-            assert!(result.is_err());
+            let detected =
+                AionParser::new(&data).map_or(true, |parser| parser.verify_integrity().is_err());
+            assert!(detected);
         }
 
         #[test]
@@ -1245,6 +1281,8 @@ mod tests {
 
     mod properties {
         use super::*;
+        use crate::serializer::{AionFile, AionSerializer};
+        use crate::types::FileId;
         use hegel::generators as gs;
 
         #[hegel::test]
@@ -1262,6 +1300,32 @@ mod tests {
                 let _ = parser.file_size();
                 let _ = parser.string_table_bytes();
                 let _ = parser.integrity_hash();
+            }
+        }
+
+        #[hegel::test]
+        fn prop_parser_rejects_entry_counts_beyond_the_file(tc: hegel::TestCase) {
+            let file = AionFile::builder()
+                .file_id(FileId::new(7))
+                .created_at(1_700_000_000_000_000_000)
+                .modified_at(1_700_000_000_000_000_000)
+                .build()
+                .unwrap_or_else(|_| std::process::abort());
+            let mut bytes =
+                AionSerializer::serialize(&file).unwrap_or_else(|_| std::process::abort());
+            let fields = [
+                (128usize, VERSION_ENTRY_SIZE),
+                (144, SIGNATURE_ENTRY_SIZE),
+                (160, crate::serializer::AUDIT_ENTRY_SIZE),
+            ];
+            let pick = tc.draw(gs::integers::<usize>().max_value(fields.len().saturating_sub(1)));
+            let (field, entry_size) = fields[pick];
+            let count = tc.draw(gs::integers::<u64>());
+            bytes[field..field.saturating_add(8)].copy_from_slice(&count.to_le_bytes());
+
+            if AionParser::new(&bytes).is_ok() {
+                let needed = u128::from(count).saturating_mul(entry_size as u128);
+                assert!(needed <= bytes.len() as u128);
             }
         }
 
