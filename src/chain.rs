@@ -543,9 +543,8 @@ mod tests {
         ));
     }
 
-    /// Fuzz regression (`fuzz_verify_chain`): an entry count of 2^32
-    /// asked for a 652 GB buffer and aborted; `u64::MAX` overflowed
-    /// capacity and panicked.
+    /// GHSA-9c6x-g6hv-mpvr: an entry count larger than the file must be
+    /// rejected before any reader sizes a buffer from it.
     #[test]
     fn oversized_entry_counts_are_rejected_without_allocating() {
         let dir = ok(TempDir::new());

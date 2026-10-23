@@ -7,9 +7,11 @@
 //! `Err` on adversary bytes, never panic.
 //!
 //! The registry pins one fixed fuzz-only key, so the seeds in
-//! `corpus/fuzz_verify_chain` (signed with that key) reach the checks
-//! that run after signature verification. Mutations then explore the
-//! commitment, framing, and mode-byte checks.
+//! `fuzz/seeds/fuzz_verify_chain/` (signed with that key) reach the
+//! checks that run after signature verification. Mutations then explore
+//! the commitment, framing, and mode-byte checks. The key is public by
+//! construction and gates nothing outside this target; see the fuzz-key
+//! exception in `.claude/rules/crypto.md`.
 //!
 //! Exercises:
 //!   1. `format::unframe_rules(arbitrary)`.
@@ -32,7 +34,7 @@ use aion_context::types::AuthorId;
 /// Fuzz-only key material. Never use outside this target.
 const FUZZ_OPERATIONAL_SEED: [u8; 32] = [0x11; 32];
 const FUZZ_MASTER_SEED: [u8; 32] = [0x22; 32];
-const FUZZ_AUTHOR: u64 = 1;
+const FUZZ_AUTHOR: u64 = 0xF022_F022_F022_F022;
 
 fn registry() -> Option<&'static KeyRegistry> {
     static REGISTRY: OnceLock<Option<KeyRegistry>> = OnceLock::new();

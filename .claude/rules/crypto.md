@@ -86,6 +86,15 @@ below with its scope.
     cannot turn a forgery into an accept, because acceptance is decided
     by Ed25519 signatures over BLAKE3 commitments.
 
+- **Fuzz-only keys (`fuzz/`)**: `fuzz/fuzz_targets/fuzz_verify_chain.rs`
+  derives a fixed Ed25519 key pair from constant seeds, with the
+  distinctive author id `0xF022_F022_F022_F022`. The seed files in
+  `fuzz/seeds/fuzz_verify_chain/` are signed with it so that mutations
+  reach the checks after signature verification. The key is public by
+  construction. The `fuzz` crate is `publish = false`, and the key
+  appears in no library, binary, example, or registry. A file signed by
+  it proves nothing and must never be pinned outside the fuzz target.
+
 ## Key material lifecycle
 
 - Keystore integration uses the OS keyring (`keyring` crate) or an

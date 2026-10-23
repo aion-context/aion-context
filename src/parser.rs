@@ -832,7 +832,7 @@ impl<'a> AionParser<'a> {
         }
 
         let bytes = self.audit_trail_bytes()?;
-        let entry_size = 80; // AuditEntry is 80 bytes
+        let entry_size = crate::serializer::AUDIT_ENTRY_SIZE;
         let offset = index * entry_size;
         let entry_bytes = &bytes[offset..offset + entry_size];
 

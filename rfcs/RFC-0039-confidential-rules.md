@@ -989,8 +989,8 @@ transport and key-derivation boundary only, gating no comparison.
   v3 file: the signature now commits to the stored bytes.
 - *Implementation note:* `fuzz_verify_chain` fuzzes
   `VerifiedChain::from_bytes` and `unframe_rules` from signed v3 seeds
-  in `fuzz/seeds/fuzz_verify_chain/`. The same seeds extend
-  `fuzz_file_parser` to v3 headers.
+  in `fuzz/seeds/fuzz_verify_chain/`. Passing that directory to
+  `fuzz_file_parser` as an extra corpus covers v3 headers there too.
 
 ### Phase B: Confidential mode with X25519 recipients
 

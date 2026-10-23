@@ -120,8 +120,11 @@ signature verification:
 
 ```bash
 cd fuzz
+# corpus/ is gitignored scratch; seeds/ is the committed starting set.
 cargo +nightly fuzz run fuzz_verify_chain \
   corpus/fuzz_verify_chain seeds/fuzz_verify_chain
+cargo +nightly fuzz run fuzz_file_parser \
+  corpus/fuzz_file_parser seeds/fuzz_verify_chain
 ```
 
 ## Verification gates
