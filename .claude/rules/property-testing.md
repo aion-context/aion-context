@@ -211,6 +211,7 @@ blocks on a drop.
 | `src/operations.rs`             | RFC-0039 any byte flip in a v3 rules section (either mode) ⇒ `verify_file` rejects |
 | `src/operations.rs`             | RFC-0039 v3 `init` + N `commit`s ⇒ valid chain, head readable, every entry Public |
 | `src/chain.rs`                  | RFC-0039 an archived section opens exactly against verified entries with the same commitment |
+| `src/acceptance.rs`             | RFC-0039 Tier-3 model: `MemoryStore` decisions match a reference model over main and fork chains (replay, equivocation, idempotence) |
 
 ## Tier 3 (model / stateful — required once the audit chain is stable)
 

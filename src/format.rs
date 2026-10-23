@@ -47,8 +47,9 @@ pub(crate) const FRAME_HEADER_LEN: usize = 8;
 /// An on-disk format version this crate understands.
 ///
 /// Not `#[non_exhaustive]`: a new on-disk format is a major-version event
-/// with its own RFC, so callers may match exhaustively.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// with its own RFC, so callers may match exhaustively. Ordered by age,
+/// so `V2 < V3`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum FormatVersion {
     /// Format v2: the rules section is obfuscated, not confidential, and
     /// `rules_hash` is BLAKE3 over the plaintext.

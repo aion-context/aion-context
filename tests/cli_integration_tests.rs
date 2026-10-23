@@ -2271,3 +2271,137 @@ fn test_verify_rejects_malformed_registry() {
     cleanup_key(&key_id);
     drop(temp_dir);
 }
+
+#[test]
+fn test_cli_accept_defends_against_replay() {
+    let (temp_dir, key_id) = setup_test_env();
+    let file_path = temp_dir.path().join("accepted.aion");
+    let v1_copy = temp_dir.path().join("accepted-v1.aion");
+    let registry_path = temp_dir.path().join("registry.json");
+    let state_path = temp_dir.path().join("state.json");
+    pin_author(&registry_path, "6001", &key_id);
+    let init = run_cli_with_stdin(
+        &[
+            "init",
+            "--public",
+            file_path.to_str().unwrap(),
+            "--author",
+            "6001",
+            "--key",
+            &key_id,
+        ],
+        b"v1 rules",
+    );
+    assert!(init.status.success());
+    fs::copy(&file_path, &v1_copy).expect("snapshot v1");
+
+    let accept = |path: &std::path::Path, extra: &[&str]| {
+        let mut args = vec![
+            "accept",
+            path.to_str().unwrap(),
+            "--registry",
+            registry_path.to_str().unwrap(),
+            "--state",
+            state_path.to_str().unwrap(),
+        ];
+        args.extend_from_slice(extra);
+        run_cli(&args)
+    };
+
+    let missing = accept(&file_path, &[]);
+    assert_eq!(
+        missing.status.code(),
+        Some(2),
+        "missing state is not a verdict"
+    );
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("store_missing"));
+
+    let first = accept(&file_path, &["--init-state"]);
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&first.stdout);
+    assert!(stdout.contains("Accepted at version 1"), "{stdout}");
+    let genesis = stdout
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("Genesis: "))
+        .expect("genesis hash printed")
+        .to_string();
+    assert!(
+        accept(&file_path, &[]).status.success(),
+        "idempotent re-accept"
+    );
+
+    let commit = run_cli_with_stdin(
+        &[
+            "commit",
+            "--public",
+            file_path.to_str().unwrap(),
+            "--author",
+            "6001",
+            "--key",
+            &key_id,
+            "--message",
+            "v2",
+            "--registry",
+            registry_path.to_str().unwrap(),
+        ],
+        b"v2 rules",
+    );
+    assert!(commit.status.success());
+    assert!(accept(&file_path, &["--pin", &genesis]).status.success());
+
+    let replay = accept(&v1_copy, &[]);
+    assert!(!replay.status.success(), "older version must be refused");
+    assert!(String::from_utf8_lossy(&replay.stderr).contains("version_replay"));
+
+    cleanup_key(&key_id);
+}
+
+#[test]
+fn test_cli_accept_pin_mismatch_persists_nothing() {
+    let (temp_dir, key_id) = setup_test_env();
+    let file_path = temp_dir.path().join("pinned.aion");
+    let registry_path = temp_dir.path().join("registry.json");
+    pin_author(&registry_path, "6002", &key_id);
+    let init = run_cli_with_stdin(
+        &[
+            "init",
+            "--public",
+            file_path.to_str().unwrap(),
+            "--author",
+            "6002",
+            "--key",
+            &key_id,
+        ],
+        b"rules",
+    );
+    assert!(init.status.success());
+
+    let fresh_state = temp_dir.path().join("fresh-state.json");
+    let fresh = |extra: &[&str]| {
+        let mut args = vec![
+            "accept",
+            file_path.to_str().unwrap(),
+            "--registry",
+            registry_path.to_str().unwrap(),
+            "--state",
+            fresh_state.to_str().unwrap(),
+            "--init-state",
+        ];
+        args.extend_from_slice(extra);
+        run_cli(&args)
+    };
+    let wrong_pin = "ab".repeat(32);
+    let conflict = fresh(&["--pin", &wrong_pin]);
+    assert_eq!(conflict.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&conflict.stderr);
+    assert!(stderr.contains("file_id_conflict"), "{stderr}");
+    assert!(
+        fresh(&[]).status.success(),
+        "a mismatched --pin must not have persisted anything"
+    );
+    cleanup_key(&key_id);
+}

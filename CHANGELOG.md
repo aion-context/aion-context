@@ -12,6 +12,38 @@ and the project follows [Semantic Versioning].
 
 ### Added
 
+- **RFC-0039 Phase A4: receiver-side acceptance with replay defense**
+  (`acceptance` module).
+  - `accept_file(path, &registry, &AcceptPolicy, &dyn
+    AcceptedVersionStore)` verifies the chain, applies the policy, and
+    only then consults the store, which is mandatory.
+  - The store keys records by `file_id`. It advances only along the
+    chain it already accepted, and rejects rollbacks
+    (`version_replay`), forks or equivocation
+    (`version_equivocation`), and a different genesis
+    (`file_id_conflict`) as `AionError::VersionRejected`. Re-accepting
+    the same head is idempotent.
+  - The decision table is the public pure function `decide`, so custom
+    stores apply it inside their own compare-and-swap.
+  - `AcceptPolicy` sets a minimum format and a required confidentiality
+    scope, rejecting as `AionError::PolicyRejected`.
+  - `AcceptedVersionStore: Send + Sync`. Two stores ship with the crate:
+    - `MemoryStore`.
+    - `FileStore`. `FileStore::open` requires an existing file
+      (`store_missing` otherwise), and `FileStore::create` refuses to
+      overwrite one. Every write holds an exclusive `<state>.lock`
+      (`store_locked` for a concurrent writer). Writes go to an
+      exclusive temp file (mode 0600 on Unix), which is fsynced and
+      renamed into place before the directory is fsynced.
+
+    Store failures fail closed with `AionError::StoreUnavailable`.
+  - `VerifiedEntry::version_hash()` is new.
+  - New CLI command: `aion accept <FILE> --registry … --state …
+    [--init-state] [--pin GENESIS] [--min-format 3]
+    [--require-confidential head|all]`.
+    - `--pin` is a check that never persists anything.
+    - Exit codes: 0 accepted, 1 not accepted, 2 state missing, locked,
+      or unreadable.
 - **RFC-0039 Phase A3: verified chains** (`chain` module).
   - `verify_file_chain(path, &registry)` and
     `VerifiedChain::from_bytes(&bytes, &registry)` run exactly

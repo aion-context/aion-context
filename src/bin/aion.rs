@@ -59,6 +59,51 @@ enum Commands {
 
     /// Bulk-verify a directory of `.aion` files (issue #48)
     Archive(ArchiveArgs),
+
+    /// Accept a verified file with replay defense (RFC-0039): refuses
+    /// older versions, forks, and foreign chains recorded in a state file
+    Accept(AcceptArgs),
+}
+
+#[derive(Args, Debug)]
+struct AcceptArgs {
+    /// Path to the AION file
+    #[arg(value_name = "FILE")]
+    path: PathBuf,
+
+    /// Path to a JSON registry file (RFC-0034)
+    #[arg(long, value_name = "REGISTRY_FILE")]
+    registry: PathBuf,
+
+    /// Accepted-version state file. Must already exist unless
+    /// `--init-state` is given; writers take an exclusive lock on it.
+    #[arg(long, value_name = "STATE_FILE")]
+    state: PathBuf,
+
+    /// Create the state file if it does not exist yet (first run only)
+    #[arg(long)]
+    init_state: bool,
+
+    /// Require this file's genesis version hash (64 hex characters). A
+    /// check only: nothing is persisted on a mismatch
+    #[arg(long, value_name = "GENESIS_HASH")]
+    pin: Option<String>,
+
+    /// Reject files whose format is older than this version (2 or 3)
+    #[arg(long, value_name = "VERSION")]
+    min_format: Option<u16>,
+
+    /// Require confidential rules for the head, or for every version
+    #[arg(long, value_enum, value_name = "SCOPE")]
+    require_confidential: Option<ConfidentialArg>,
+}
+
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum ConfidentialArg {
+    /// The latest version must be confidential
+    Head,
+    /// Every version must be confidential
+    All,
 }
 
 #[derive(Args, Debug)]
@@ -704,6 +749,7 @@ fn main() -> Result<ExitCode> {
         Commands::Registry(args) => cmd_registry(&args),
         Commands::Release(args) => cmd_release(&args),
         Commands::Archive(args) => cmd_archive(&args),
+        Commands::Accept(args) => cmd_accept(&args),
     }
 }
 
@@ -858,6 +904,102 @@ fn cmd_verify(args: &VerifyArgs) -> Result<ExitCode> {
     }
 
     Ok(report.exit_code())
+}
+
+fn cmd_accept(args: &AcceptArgs) -> Result<ExitCode> {
+    use aion_context::acceptance::accept_file;
+    use aion_context::AionError;
+    println!("📥 Accepting AION file: {}", args.path.display());
+    let registry = load_registry_from_path(&args.registry)?;
+    let policy = accept_policy(args)?;
+    let store = match open_state(args) {
+        Ok(store) => store,
+        Err(e) => return Ok(store_failure(&e)),
+    };
+    if let Some(pin) = &args.pin {
+        if let Some(code) = check_pin(args, &registry, &parse_hash32(pin)?) {
+            return Ok(code);
+        }
+    }
+    match accept_file(&args.path, &registry, &policy, &store) {
+        Ok(chain) => {
+            println!("✅ Accepted at version {}", chain.head().version().as_u64());
+            if let Some(genesis) = chain.entry(aion_context::types::VersionNumber::GENESIS) {
+                println!("   Genesis: {}", hex::encode(genesis.version_hash()));
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        Err(
+            e @ (AionError::ChainRejected { .. }
+            | AionError::PolicyRejected { .. }
+            | AionError::VersionRejected { .. }),
+        ) => {
+            eprintln!("❌ Not accepted: {e}");
+            Ok(ExitCode::FAILURE)
+        }
+        Err(e) => Ok(store_failure(&e)),
+    }
+}
+
+/// `--state` must already exist unless `--init-state` is given, so a
+/// typo or a deleted state file never silently restarts replay defense.
+fn open_state(
+    args: &AcceptArgs,
+) -> std::result::Result<aion_context::acceptance::FileStore, aion_context::AionError> {
+    use aion_context::acceptance::FileStore;
+    if args.init_state && !args.state.exists() {
+        return FileStore::create(&args.state);
+    }
+    if !args.state.exists() {
+        return Err(aion_context::AionError::StoreUnavailable {
+            reason: "store_missing",
+        });
+    }
+    Ok(FileStore::open(&args.state))
+}
+
+/// `--pin` is a check, not a write: the presented chain's genesis must
+/// equal it. A mismatch is reported as `file_id_conflict` and nothing is
+/// persisted, so a mistyped pin can never lock the state.
+fn check_pin(
+    args: &AcceptArgs,
+    registry: &aion_context::key_registry::KeyRegistry,
+    expected: &[u8; 32],
+) -> Option<ExitCode> {
+    let chain = aion_context::chain::verify_file_chain(&args.path, registry).ok()?;
+    let genesis = chain.entry(aion_context::types::VersionNumber::GENESIS)?;
+    if genesis.version_hash() == *expected {
+        return None;
+    }
+    eprintln!("❌ Not accepted: Version rejected: file_id_conflict (genesis does not match --pin)");
+    Some(ExitCode::FAILURE)
+}
+
+/// Exit 2: the store could not be used, so no verdict was reached.
+fn store_failure(error: &aion_context::AionError) -> ExitCode {
+    eprintln!("⚠️  Acceptance state unavailable: {error}");
+    ExitCode::from(2)
+}
+
+fn accept_policy(args: &AcceptArgs) -> Result<aion_context::acceptance::AcceptPolicy> {
+    use aion_context::acceptance::{AcceptPolicy, ConfidentialScope};
+    let mut policy = AcceptPolicy::new();
+    if let Some(version) = args.min_format {
+        policy = policy.min_format(aion_context::format::FormatVersion::from_u16(version)?);
+    }
+    policy = match args.require_confidential {
+        None => policy,
+        Some(ConfidentialArg::Head) => policy.require_confidential(ConfidentialScope::Head),
+        Some(ConfidentialArg::All) => policy.require_confidential(ConfidentialScope::AllVersions),
+    };
+    Ok(policy)
+}
+
+fn parse_hash32(text: &str) -> Result<[u8; 32]> {
+    let bytes = hex::decode(text.trim()).context("--pin must be hex")?;
+    bytes
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("--pin must be 32 bytes (64 hex characters)"))
 }
 
 fn load_registry_from_path(

@@ -66,6 +66,7 @@
 #![warn(missing_docs, unsafe_code, unused_must_use)]
 
 // Module structure (to be implemented in future issues)
+pub mod acceptance; // RFC-0039: Receiver-side acceptance
 pub mod aibom; // RFC-0029: AI Bill of Materials
 pub mod audit; // Issue #7: Audit trail
 pub mod chain; // RFC-0039: Verified chains
