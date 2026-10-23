@@ -26,8 +26,9 @@ Security patch release. No API, format, or CLI changes.
   `verify_file`, `aion verify`, `aion archive verify`, and the history
   readers abort on a huge allocation or panic with `capacity overflow`.
   `AionParser::new` now rejects such headers with `InvalidFormat` and a
-  `parser_rejected` / `section_out_of_bounds` trace event. Denial of
-  service only: no forged file is accepted.
+  `parser_rejected` / `section_out_of_bounds` trace event. The bug
+  does not affect signature or hash-chain verification: it crashes the
+  reader rather than making it accept a forged file.
 
 ## [1.0.1] — 2026-10-23
 
