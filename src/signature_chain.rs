@@ -1035,6 +1035,88 @@ mod tests {
             assert_eq!(actual, expected);
         }
 
+        /// RFC-0040: the v4 fields are the v3 fields with the metadata
+        /// commitment inserted after the mode byte.
+        fn golden_v4_fields() -> Vec<u8> {
+            let v3 = golden_v3_fields();
+            let mut fields = vec![0x04, 0x00];
+            fields.extend_from_slice(&v3[2..11]);
+            fields.extend_from_slice(&[0x5C; 32]);
+            fields.extend_from_slice(&v3[11..]);
+            fields
+        }
+
+        fn golden_v4_entry() -> VersionEntry {
+            golden_v3_entry().with_metadata_commitment([0x5C; 32])
+        }
+
+        #[test]
+        fn v4_version_message_matches_golden_layout() {
+            let mut expected = b"AION_V4_VERSION_SIGNATURE_V1\0".to_vec();
+            expected.extend_from_slice(&golden_v4_fields());
+            assert_eq!(expected.len(), 29 + 111 + 32);
+            let actual =
+                canonical_version_message_v4(&golden_v4_entry(), FileId::new(GOLDEN_FILE_ID))
+                    .unwrap_or_else(|_| std::process::abort());
+            assert_eq!(actual, expected);
+        }
+
+        #[test]
+        fn v4_version_hash_and_attestation_match_golden_layout() {
+            let mut input = b"AION_V4_VERSION_HASH_V1\0".to_vec();
+            input.extend_from_slice(&golden_v4_fields());
+            let actual = compute_version_hash_v4(&golden_v4_entry(), FileId::new(GOLDEN_FILE_ID))
+                .unwrap_or_else(|_| std::process::abort());
+            assert_eq!(actual, *blake3::hash(&input).as_bytes());
+
+            let mut expected = b"AION_V4_ATTESTATION_V1\0".to_vec();
+            expected.extend_from_slice(&golden_v4_fields());
+            expected.extend_from_slice(&[0xEF, 0xCD, 0xAB, 0x89, 0x67, 0x45, 0x23, 0x01]);
+            let attestation = canonical_attestation_message_v4(
+                &golden_v4_entry(),
+                FileId::new(GOLDEN_FILE_ID),
+                AuthorId::new(0x0123_4567_89AB_CDEF),
+            )
+            .unwrap_or_else(|_| std::process::abort());
+            assert_eq!(attestation, expected);
+        }
+
+        #[test]
+        fn v4_entries_are_not_valid_v3_entries_and_domains_do_not_prefix() {
+            let entry = golden_v4_entry();
+            assert!(canonical_version_message_v3(&entry, FileId::new(GOLDEN_FILE_ID)).is_err());
+            let domains: [&[u8]; 9] = [
+                SIGNATURE_DOMAIN,
+                ATTESTATION_DOMAIN,
+                SIGNATURE_DOMAIN_V3,
+                VERSION_HASH_DOMAIN_V3,
+                ATTESTATION_DOMAIN_V3,
+                SIGNATURE_DOMAIN_V4,
+                VERSION_HASH_DOMAIN_V4,
+                ATTESTATION_DOMAIN_V4,
+                crate::audit::AUDIT_ENTRY_DOMAIN_V4,
+            ];
+            for (i, a) in domains.iter().enumerate() {
+                for (j, b) in domains.iter().enumerate() {
+                    if i != j {
+                        assert!(!b.starts_with(a), "{i} prefixes {j}");
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn metadata_commitment_matches_golden_layout() {
+            let mut input = b"AION_V4_METADATA_COMMIT_V1\0".to_vec();
+            input.extend_from_slice(&7u64.to_le_bytes());
+            input.extend_from_slice(&5u32.to_le_bytes());
+            input.extend_from_slice(b"hello");
+            input.extend_from_slice(&[0xA5; 32]);
+            let actual = crate::format::metadata_commitment(7, b"hello", &[0xA5; 32])
+                .unwrap_or_else(|_| std::process::abort());
+            assert_eq!(actual, *blake3::hash(&input).as_bytes());
+        }
+
         #[test]
         fn should_include_domain_separator() {
             let version = VersionEntry::new(

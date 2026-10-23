@@ -48,6 +48,10 @@ pub const DSSE_PREAMBLE: &str = "DSSEv1";
 /// `payloadType` for aion version attestations (RFC-0021 carried via DSSE).
 pub const AION_ATTESTATION_TYPE: &str = "application/vnd.aion.attestation.v1+json";
 
+/// `payloadType` for format-v4 version attestations (RFC-0040). Binds the
+/// file, format, rules mode and metadata commitment, unlike the v1 payload.
+pub const AION_ATTESTATION_TYPE_V4: &str = "application/vnd.aion.version-attestation.v4+json";
+
 /// `payloadType` for aion external-artifact manifests (RFC-0022).
 pub const AION_MANIFEST_TYPE: &str = "application/vnd.aion.manifest.v1+json";
 
@@ -365,6 +369,74 @@ pub fn wrap_version_attestation(
     Ok(sign_envelope(&payload, AION_ATTESTATION_TYPE, signer, key))
 }
 
+/// Build the canonical JSON body for a format-v4 version attestation
+/// (RFC-0040). Unlike [`version_attestation_payload`], it binds the file's
+/// `file_id`, the format, the entry's rules mode, and its metadata
+/// commitment.
+///
+/// # Errors
+///
+/// Returns [`AionError::InvalidFormat`] if `context` is not format v4, the
+/// entry's reserved bytes are invalid, or serialization fails.
+pub fn version_attestation_payload_v4(
+    context: &crate::format::FileContext,
+    version: &VersionEntry,
+    signer: AuthorId,
+) -> Result<Vec<u8>> {
+    if !context.format().signs_metadata() {
+        return Err(AionError::InvalidFormat {
+            reason: "the v4 attestation payload needs a format-v4 file".to_string(),
+        });
+    }
+    let mode = crate::format::RulesMode::of(version, context.format())?;
+    let json = serde_json::json!({
+        "_type": "https://aion-context.dev/attestation/v4",
+        "file": {
+            "format_version": context.format().as_u16(),
+            "file_id": format!("{:016x}", context.file_id().as_u64()),
+        },
+        "version": {
+            "version_number": version.version_number,
+            "parent_hash": hex32(&version.parent_hash),
+            "rules_commitment": hex32(&version.rules_hash),
+            "rules_mode": match mode {
+                crate::format::RulesMode::Public => "public",
+                crate::format::RulesMode::Confidential => "confidential",
+            },
+            "metadata_commitment": hex32(&crate::format::stored_metadata_commitment(version)),
+            "author_id": version.author_id,
+            "timestamp": version.timestamp,
+            "message_offset": version.message_offset,
+            "message_length": version.message_length,
+        },
+        "signer": signer.as_u64(),
+    });
+    serde_json::to_vec(&json).map_err(|e| AionError::InvalidFormat {
+        reason: format!("version attestation payload serialization failed: {e}"),
+    })
+}
+
+/// Sign a format-v4 version attestation as a DSSE envelope with payload
+/// type [`AION_ATTESTATION_TYPE_V4`] (RFC-0040).
+///
+/// # Errors
+///
+/// As [`version_attestation_payload_v4`].
+pub fn wrap_version_attestation_v4(
+    context: &crate::format::FileContext,
+    version: &VersionEntry,
+    signer: AuthorId,
+    key: &SigningKey,
+) -> Result<DsseEnvelope> {
+    let payload = version_attestation_payload_v4(context, version, signer)?;
+    Ok(sign_envelope(
+        &payload,
+        AION_ATTESTATION_TYPE_V4,
+        signer,
+        key,
+    ))
+}
+
 /// Wrap an artifact manifest into a DSSE envelope signed by `signer`.
 ///
 /// # Errors
@@ -496,6 +568,40 @@ mod tests {
         let json = env.to_json().unwrap();
         // Expect base64-standard-no-padding of [0xff, 0x00, 0x7f] = "/wB/"
         assert!(json.contains("\"payload\":\"/wB/\""));
+    }
+
+    #[test]
+    fn v4_attestation_binds_file_and_metadata_and_needs_v4() {
+        use crate::format::{FileContext, FormatVersion};
+        let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+        let signer = AuthorId::new(77);
+        let entry = VersionEntry::new(
+            crate::types::VersionNumber(2),
+            [1; 32],
+            [2; 32],
+            signer,
+            9,
+            0,
+            0,
+        )
+        .with_rules_mode(crate::format::RulesMode::Public)
+        .with_metadata_commitment([3; 32]);
+        let v4 = FileContext::new(FormatVersion::V4, crate::types::FileId::new(0xABCD));
+        let envelope = wrap_version_attestation_v4(&v4, &entry, signer, &key)
+            .unwrap_or_else(|_| std::process::abort());
+        assert_eq!(envelope.payload_type, AION_ATTESTATION_TYPE_V4);
+        let body: serde_json::Value =
+            serde_json::from_slice(&envelope.payload).unwrap_or_else(|_| std::process::abort());
+        assert_eq!(body["file"]["file_id"], "000000000000abcd");
+        assert_eq!(body["file"]["format_version"], 4);
+        assert_eq!(body["version"]["rules_mode"], "public");
+        assert_eq!(
+            body["version"]["metadata_commitment"],
+            hex::encode([3u8; 32])
+        );
+
+        let v3 = FileContext::new(FormatVersion::V3, crate::types::FileId::new(0xABCD));
+        assert!(version_attestation_payload_v4(&v3, &entry, signer).is_err());
     }
 
     mod properties {

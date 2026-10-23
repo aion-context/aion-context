@@ -4998,7 +4998,10 @@ mod tests {
             let registry = test_reg(author_id, &signing_key);
             let chain = crate::chain::verify_file_chain(&file_path, &registry).unwrap();
             let versions = crate::chain::verified_history(&chain);
-            assert!(show_version_history(&file_path).is_err(), "v4 history needs verification");
+            assert!(
+                show_version_history(&file_path).is_err(),
+                "v4 history needs verification"
+            );
             assert_eq!(versions[0].message, long_message);
         }
     }

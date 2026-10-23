@@ -394,6 +394,22 @@ verify_migration(&migrated, &original, &MigrationPolicy::SameAuthor)?;
 - **v4 → v3 downgrade.** Impossible to pass off: the format is in the
   signed message, and v3 rejects the non-zero reserved bytes.
 
+### Implementation notes
+
+- **Audit entries are checked as stored.** The parser rebuilds each audit
+  entry from its fields and drops the three reserved fields, so a v4
+  verifier also requires each entry's stored 80 bytes to equal the
+  rebuilt entry (reserved bytes zero). Found by the byte-flip property
+  test; without it, 18 bytes per entry were editable.
+- **Contiguous layout.** v4 requires sections back to back in their fixed
+  order (header, rules, versions, signatures, audit, string table,
+  integrity hash), with one signature per version, so no byte lies
+  outside a checked section.
+- **One bounded reason.** A v4 metadata failure reports
+  `audit_chain_valid = false` and classifies as `metadata_invalid`; the
+  specific code (`audit_version_mismatch`, `string_table_noncanonical`,
+  `metadata_commitment_mismatch`, `header_mismatch`) is in the error text.
+
 ## Rationale and Alternatives
 
 ### Why This Approach?

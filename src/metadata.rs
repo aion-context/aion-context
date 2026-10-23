@@ -58,12 +58,15 @@ pub fn verify_v4_metadata(
             "audit_version_mismatch: audit count != version count",
         ));
     }
+    check_contiguous_layout(parser)?;
     let table = parser.string_table_bytes()?;
     let mut cursor = TableCursor { table, offset: 0 };
     let mut previous = [0u8; 32];
     let mut verified = Vec::with_capacity(versions.len());
+    let audit_section = parser.audit_trail_bytes()?;
     for (index, version) in versions.iter().enumerate() {
         let audit = parser.get_audit_entry(index)?;
+        check_canonical_audit(audit_section, index, &audit)?;
         check_agreement(index, version, &audit, &previous)?;
         let message = cursor.take(version.message_offset, version.message_length)?;
         let details = take_details(&mut cursor, &audit)?;
@@ -98,6 +101,27 @@ pub fn audit_hash_v4(audit: &AuditEntry, details: &[u8]) -> Result<[u8; 32]> {
     hasher.update(&details_len.to_le_bytes());
     hasher.update(details);
     Ok(*hasher.finalize().as_bytes())
+}
+
+/// The stored 80 bytes of audit entry `index` must be exactly the entry the
+/// parser decoded. The parser rebuilds entries from their fields and drops
+/// the reserved bytes, so this is what makes those bytes zero and the hash
+/// cover what is on disk.
+fn check_canonical_audit(section: &[u8], index: usize, audit: &AuditEntry) -> Result<()> {
+    let size = crate::serializer::AUDIT_ENTRY_SIZE;
+    let start = index
+        .checked_mul(size)
+        .ok_or_else(|| rejected("audit_version_mismatch: index"))?;
+    let stored = section
+        .get(start..start.saturating_add(size))
+        .ok_or_else(|| rejected("audit_version_mismatch: truncated entry"))?;
+    if stored == audit.as_bytes() {
+        Ok(())
+    } else {
+        Err(rejected(
+            "audit_version_mismatch: non-canonical audit entry",
+        ))
+    }
 }
 
 /// Audit entry `index` must belong to `version`: same author and timestamp,
@@ -137,6 +161,68 @@ fn take_details(cursor: &mut TableCursor<'_>, audit: &AuditEntry) -> Result<Stri
         (0, _) => Err(rejected("string_table_noncanonical: details range")),
         (_, false) => Err(rejected("audit_version_mismatch: unexpected details")),
         (length, true) => cursor.take(audit.details_offset(), length),
+    }
+}
+
+/// Sections must sit back to back in their fixed order, with the integrity
+/// hash immediately after the string table, so no byte lies outside a
+/// checked section.
+fn check_contiguous_layout(parser: &AionParser<'_>) -> Result<()> {
+    let h = parser.header();
+    let after = |offset: u64, count: u64, size: usize| {
+        count
+            .checked_mul(size as u64)
+            .and_then(|length| offset.checked_add(length))
+    };
+    let expected = [
+        (
+            h.encrypted_rules_offset,
+            Some(crate::parser::HEADER_SIZE as u64),
+        ),
+        (
+            h.version_chain_offset,
+            h.encrypted_rules_offset
+                .checked_add(h.encrypted_rules_length),
+        ),
+        (
+            h.signatures_offset,
+            after(
+                h.version_chain_offset,
+                h.version_chain_count,
+                crate::parser::VERSION_ENTRY_SIZE,
+            ),
+        ),
+        (
+            h.audit_trail_offset,
+            after(
+                h.signatures_offset,
+                h.signatures_count,
+                crate::parser::SIGNATURE_ENTRY_SIZE,
+            ),
+        ),
+        (
+            h.string_table_offset,
+            after(
+                h.audit_trail_offset,
+                h.audit_trail_count,
+                crate::serializer::AUDIT_ENTRY_SIZE,
+            ),
+        ),
+        (
+            parser.file_size().saturating_sub(32) as u64,
+            h.string_table_offset.checked_add(h.string_table_length),
+        ),
+    ];
+    let contiguous = h.signatures_count == h.version_chain_count
+        && expected
+            .iter()
+            .all(|(actual, wanted)| Some(*actual) == *wanted);
+    if contiguous {
+        Ok(())
+    } else {
+        Err(rejected(
+            "string_table_noncanonical: sections are not contiguous",
+        ))
     }
 }
 
@@ -389,5 +475,121 @@ mod tests {
         }
         .take(0, 2)
         .is_err());
+    }
+
+    /// RFC-0040: a v4 file relabelled as v3 must not verify.
+    #[test]
+    fn a_v4_file_relabelled_v3_is_rejected() {
+        let fixture = v4_file();
+        let mut bytes = ok(std::fs::read(&fixture.path));
+        bytes[4] = 3;
+        recompute_integrity(&mut bytes);
+        ok(std::fs::write(&fixture.path, &bytes));
+        let verdict = verify_file(&fixture.path, &fixture.registry);
+        assert!(verdict.map_or(true, |report| !report.is_valid));
+    }
+
+    /// Found by the byte-flip property: the parser rebuilds audit entries
+    /// and drops their reserved bytes, so v4 checks the stored bytes.
+    #[test]
+    fn a_nonzero_audit_reserved_byte_fails_v4() {
+        let fixture = v4_file();
+        let mut bytes = ok(std::fs::read(&fixture.path));
+        let audit_at = {
+            let parser = ok(AionParser::new(&bytes));
+            parser.header().audit_trail_offset as usize
+        };
+        bytes[audit_at + 18] ^= 1;
+        recompute_integrity(&mut bytes);
+        assert!(!verify_bytes_of(&fixture, &bytes).is_valid);
+    }
+
+    mod properties {
+        use super::*;
+        use hegel::generators as gs;
+
+        fn draw_message(tc: &hegel::TestCase) -> String {
+            let raw = tc.draw(gs::text().max_size(48));
+            raw.replace('\0', "")
+        }
+
+        fn grow(tc: &hegel::TestCase) -> (Fixture, Vec<String>) {
+            let dir = ok(TempDir::new());
+            let path = dir.path().join("p.aion");
+            let key = ok(SigningKey::generate());
+            let master = ok(SigningKey::generate());
+            let author = AuthorId::new(40_100);
+            let mut registry = KeyRegistry::new();
+            ok(registry.register_author(author, master.verifying_key(), key.verifying_key(), 0));
+            let count = tc.draw(gs::integers::<usize>().min_value(1).max_value(4));
+            let messages: Vec<String> = (0..count).map(|_| draw_message(tc)).collect();
+            for (index, message) in messages.iter().enumerate() {
+                if index == 0 {
+                    let init = InitOptions {
+                        author_id: author,
+                        signing_key: &key,
+                        message,
+                        timestamp: None,
+                        protection: RulesProtection::Public,
+                    };
+                    ok(init_file(&path, b"r", &init));
+                } else {
+                    let commit = CommitOptions {
+                        author_id: author,
+                        signing_key: &key,
+                        message,
+                        timestamp: None,
+                        protection: RulesProtection::Public,
+                    };
+                    ok(commit_version(&path, b"r", &commit, &registry));
+                }
+            }
+            (
+                Fixture {
+                    _dir: dir,
+                    path,
+                    registry,
+                },
+                messages,
+            )
+        }
+
+        #[hegel::test]
+        fn prop_v4_history_round_trips_exactly_the_signed_messages(tc: hegel::TestCase) {
+            let (fixture, messages) = grow(&tc);
+            let chain = ok(crate::chain::verify_file_chain(
+                &fixture.path,
+                &fixture.registry,
+            ));
+            assert!(chain.metadata_signed());
+            let shown: Vec<String> = crate::chain::verified_history(&chain)
+                .into_iter()
+                .map(|v| v.message)
+                .collect();
+            assert_eq!(shown, messages);
+        }
+
+        #[hegel::test]
+        fn prop_any_string_table_or_audit_byte_flip_fails_v4(tc: hegel::TestCase) {
+            let (fixture, _) = grow(&tc);
+            let mut bytes = ok(std::fs::read(&fixture.path));
+            let (start, end) = {
+                let parser = ok(AionParser::new(&bytes));
+                let header = parser.header();
+                let start = header.audit_trail_offset as usize;
+                let end = (header.string_table_offset + header.string_table_length) as usize;
+                (start, end)
+            };
+            if end <= start {
+                return;
+            }
+            let index = tc.draw(gs::integers::<usize>().min_value(start).max_value(end - 1));
+            let flip = tc.draw(gs::integers::<u8>().min_value(1));
+            bytes[index] ^= flip;
+            recompute_integrity(&mut bytes);
+            ok(std::fs::write(&fixture.path, &bytes));
+            let verdict = verify_file(&fixture.path, &fixture.registry);
+            assert!(verdict.map_or(true, |report| !report.is_valid));
+        }
     }
 }
