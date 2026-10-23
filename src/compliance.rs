@@ -71,6 +71,7 @@ pub struct ComplianceReport {
 
 /// Verification summary for reports
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct VerificationSummary {
     /// Overall validity
     pub is_valid: bool,
@@ -86,6 +87,7 @@ pub struct VerificationSummary {
     pub temporal_warning_count: usize,
     /// Whether commit messages and the audit trail are signed (RFC-0040).
     /// False for format v2/v3: their version messages are unauthenticated.
+    #[serde(default)]
     pub metadata_signed: bool,
 }
 

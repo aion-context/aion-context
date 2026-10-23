@@ -204,6 +204,9 @@ impl AuthorSet {
 ///
 /// That the migrating author is pinned in the registry follows from the
 /// destination having been verified with it; the policy only names who.
+///
+/// Not `#[non_exhaustive]`: callers match on it, and a new kind of policy
+/// would be an RFC change and a major version.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MigrationPolicy {
     /// The migrating author authored the source's head version.
@@ -215,16 +218,6 @@ pub enum MigrationPolicy {
 }
 
 impl MigrationPolicy {
-    /// [`MigrationPolicy::AnyOf`] over `authors`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`AionError::MigrationRejected`] (`empty_author_set`) if
-    /// `authors` is empty.
-    pub fn any_of(authors: Vec<AuthorId>) -> Result<Self> {
-        AuthorSet::new(authors).map(Self::AnyOf)
-    }
-
     fn admits(&self, migrating: AuthorId, source_head_author: AuthorId) -> bool {
         match self {
             Self::SameAuthor => migrating == source_head_author,
@@ -245,27 +238,55 @@ impl MigrationPolicy {
 /// # Errors
 ///
 /// Returns [`AionError::MigrationRejected`] with `not_migrated`,
-/// `link_malformed`, `source_mismatch`, or `policy_unmet`.
+/// `self_migration` (both chains share a `file_id`), `link_malformed`,
+/// `source_mismatch`, or `policy_unmet`.
+///
+/// # Example
+///
+/// ```no_run
+/// use aion_context::chain::verify_file_chain;
+/// use aion_context::key_registry::KeyRegistry;
+/// use aion_context::migration::{verify_migration, MigrationPolicy};
+/// use aion_context::types::AuthorId;
+/// use std::path::Path;
+///
+/// # fn example(registry: &KeyRegistry) -> aion_context::Result<()> {
+/// let migrated = verify_file_chain(Path::new("policy-v4.aion"), registry)?;
+/// let original = verify_file_chain(Path::new("policy.aion"), registry)?;
+/// let policy = MigrationPolicy::Author(AuthorId::new(42));
+/// verify_migration(&migrated, &original, &policy)?;
+/// # Ok(())
+/// # }
+/// ```
 pub fn verify_migration(
     dest: &VerifiedChain,
     source: &VerifiedChain,
     policy: &MigrationPolicy,
 ) -> Result<MigrationLink> {
     let outcome = check_migration(dest, source, policy);
-    let file_id = crate::obs::short_hex(&dest.context().file_id().as_u64().to_le_bytes());
-    match &outcome {
-        Ok(link) => tracing::info!(
-            event = "migration_verified",
-            file_id = %file_id,
-            version = link.source_head_version().as_u64(),
-        ),
-        Err(AionError::MigrationRejected { reason }) => {
-            tracing::warn!(event = "migration_rejected", file_id = %file_id, reason = *reason);
+    let short = |chain: &VerifiedChain| {
+        crate::obs::short_hex(&chain.context().file_id().as_u64().to_le_bytes())
+    };
+    let (file_id, source_file_id) = (short(dest), short(source));
+    let reason = match &outcome {
+        Ok(_) => {
+            tracing::info!(
+                event = "migration_verified",
+                file_id = %file_id,
+                source_file_id = %source_file_id,
+                source_version = source.head().version().as_u64(),
+            );
+            return outcome;
         }
-        Err(_) => {
-            tracing::warn!(event = "migration_rejected", file_id = %file_id, reason = "error");
-        }
-    }
+        Err(AionError::MigrationRejected { reason }) => *reason,
+        Err(_) => "error",
+    };
+    tracing::warn!(
+        event = "migration_rejected",
+        file_id = %file_id,
+        source_file_id = %source_file_id,
+        reason,
+    );
     outcome
 }
 
@@ -275,6 +296,9 @@ fn check_migration(
     policy: &MigrationPolicy,
 ) -> Result<MigrationLink> {
     let details = dest.migration_details().ok_or(rejected("not_migrated"))?;
+    if dest.context().file_id() == source.context().file_id() {
+        return Err(rejected("self_migration"));
+    }
     let link = MigrationLink::parse(details)?;
     if link != MigrationLink::of(source) {
         return Err(rejected("source_mismatch"));
@@ -422,15 +446,15 @@ mod tests {
         assert!(unmet(&MigrationPolicy::SameAuthor));
         assert!(unmet(&MigrationPolicy::Author(world.alice.author)));
         assert!(verdict(&MigrationPolicy::Author(world.bob.author)).is_ok());
-        let both = ok(MigrationPolicy::any_of(vec![
+        let both = MigrationPolicy::AnyOf(ok(AuthorSet::new(vec![
             world.alice.author,
             world.bob.author,
-        ]));
+        ])));
         assert!(verdict(&both).is_ok());
-        let alice_only = ok(MigrationPolicy::any_of(vec![world.alice.author]));
+        let alice_only = MigrationPolicy::AnyOf(ok(AuthorSet::new(vec![world.alice.author])));
         assert!(unmet(&alice_only));
         assert!(matches!(
-            MigrationPolicy::any_of(Vec::new()),
+            AuthorSet::new(Vec::new()),
             Err(AionError::MigrationRejected {
                 reason: "empty_author_set"
             })
@@ -636,6 +660,48 @@ mod tests {
                 file_id: FileId::new(tc.draw(gs::integers::<u64>())),
                 head_version: VersionNumber(tc.draw(gs::integers::<u64>().min_value(1))),
                 head_hash: ok(<[u8; 32]>::try_from(hash.as_slice())),
+            }
+        }
+
+        /// `verify_migration` admits exactly the authors each policy names,
+        /// and only against the true source.
+        #[hegel::test]
+        fn prop_policies_admit_exactly_their_authors(tc: hegel::TestCase) {
+            let mut world = world();
+            let carol = signer(&mut world.registry, 60_003);
+            let signers = [&world.alice, &world.bob, &carol];
+            let migrating = tc.draw(gs::integers::<usize>().max_value(2));
+            let from = source(&world, "a.aion");
+            let other = source(&world, "c.aion");
+            let to = migrate(&world, &from, "b.aion", signers[migrating]);
+            let named: Vec<usize> = tc.draw(
+                gs::vecs(gs::integers::<usize>().max_value(2))
+                    .min_size(1)
+                    .max_size(3),
+            );
+            let authors: Vec<AuthorId> = named.iter().map(|&i| signers[i].author).collect();
+            let (policy, admitted) = match tc.draw(gs::integers::<u8>().max_value(2)) {
+                0 => (MigrationPolicy::SameAuthor, migrating == 0),
+                1 => (MigrationPolicy::Author(authors[0]), named[0] == migrating),
+                _ => (
+                    MigrationPolicy::AnyOf(ok(AuthorSet::new(authors))),
+                    named.contains(&migrating),
+                ),
+            };
+            let true_source = tc.draw(gs::booleans());
+            let claimed = chain(&world, if true_source { &from } else { &other });
+            let verdict = verify_migration(&chain(&world, &to), &claimed, &policy);
+            let expected = match (true_source, admitted) {
+                (false, _) => Some("source_mismatch"),
+                (true, false) => Some("policy_unmet"),
+                (true, true) => None,
+            };
+            match (verdict, expected) {
+                (Ok(_), None) => {}
+                (Err(AionError::MigrationRejected { reason }), Some(want)) => {
+                    assert_eq!(reason, want);
+                }
+                _ => std::process::abort(),
             }
         }
 

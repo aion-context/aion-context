@@ -140,8 +140,11 @@ pub fn init_file(path: &Path, initial_rules: &[u8], options: &InitOptions) -> Re
 /// action [`ActionCode::MigratedFrom`] and the
 /// [`crate::migration::MigrationLink`] to `source`'s head as its details,
 /// and the genesis signature covers both. `source` must already be
-/// verified; it is not modified. `rules` become the new genesis rules,
-/// usually `source`'s head rules. No history is imported.
+/// verified; it is not modified. `rules` are the new genesis rules as
+/// plaintext, usually `source`'s head rules opened with
+/// [`crate::chain::open_current_rules`]; they are not compared with the
+/// source, since a migrating author may change them. No history is
+/// imported.
 ///
 /// A receiver checks the result with
 /// [`crate::migration::verify_migration`].
@@ -258,7 +261,12 @@ fn build_genesis_file(
     let message_offset = offsets.first().copied().unwrap_or(0);
     let (action, details_offset, details_length) = match (&details, offsets.get(1)) {
         (Some(text), Some(&offset)) => (ActionCode::MigratedFrom, offset, text.len() as u32),
-        _ => (ActionCode::CreateGenesis, 0, 0),
+        (None, _) => (ActionCode::CreateGenesis, 0, 0),
+        (Some(_), None) => {
+            return Err(AionError::InvalidFormat {
+                reason: "migration details missing from the string table".to_string(),
+            })
+        }
     };
 
     let audit_entry = AuditEntry::new(
@@ -305,11 +313,27 @@ fn build_genesis_file(
         .build()
 }
 
+/// Create `path` and write `file`, refusing an existing entry (including a
+/// symlink) rather than truncating it, so the existence check before it
+/// cannot be raced.
 fn write_serialized_file(file: &AionFile, path: &Path) -> Result<()> {
+    use std::io::Write;
     let file_bytes = AionSerializer::serialize(file)?;
-    std::fs::write(path, &file_bytes).map_err(|e| AionError::FileWriteError {
-        path: path.to_path_buf(),
-        source: e,
+    let write = || -> std::io::Result<()> {
+        let mut out = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)?;
+        out.write_all(&file_bytes)
+    };
+    write().map_err(|e| match e.kind() {
+        std::io::ErrorKind::AlreadyExists => AionError::FileExists {
+            path: path.to_path_buf(),
+        },
+        _ => AionError::FileWriteError {
+            path: path.to_path_buf(),
+            source: e,
+        },
     })
 }
 
@@ -1130,7 +1154,11 @@ impl std::fmt::Display for TemporalWarning {
 }
 
 /// Detailed verification report for an AION file
+///
+/// `#[non_exhaustive]`: reports grow fields; build one with
+/// [`VerificationReport::new`].
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 #[allow(clippy::struct_excessive_bools)] // Report struct legitimately needs multiple bool flags
 pub struct VerificationReport {
     /// File ID
@@ -1153,6 +1181,7 @@ pub struct VerificationReport {
     /// the audit trail (RFC-0040). True for format v4; false for v2 and
     /// v3, whose metadata is unauthenticated (GHSA-69cp-fwrw-82vh). Derived
     /// from the format, never read from the file.
+    #[serde(default)]
     pub metadata_signed: bool,
     /// Overall verification result
     pub is_valid: bool,
@@ -1677,7 +1706,10 @@ pub struct SignatureInfo {
 }
 
 /// Complete file information for inspection
+///
+/// `#[non_exhaustive]`: built only by [`show_file_info`].
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct FileInfo {
     /// File ID
     pub file_id: u64,
@@ -1692,6 +1724,7 @@ pub struct FileInfo {
     /// Whether the commit messages and audit trail are covered by the
     /// signatures (RFC-0040): true for format v4. For v2 and v3 the
     /// messages in `versions` are unauthenticated (GHSA-69cp-fwrw-82vh).
+    #[serde(default)]
     pub metadata_signed: bool,
 }
 
@@ -1772,10 +1805,13 @@ pub fn show_current_rules(path: &Path) -> Result<Vec<u8>> {
     )
 }
 
-/// Get version history for all versions in the file
+/// Get version history for all versions in the file, without verifying it.
 ///
 /// Returns detailed information about each version including
-/// author, timestamp, message, and hashes.
+/// author, timestamp, message, and hashes. Format v2 and v3 messages
+/// are unauthenticated. A format-v4 file is refused, because its signed
+/// messages are shown only from a verified chain: use
+/// [`crate::chain::verify_file_chain`] and [`crate::chain::verified_history`].
 ///
 /// # Arguments
 ///
@@ -1789,7 +1825,7 @@ pub fn show_current_rules(path: &Path) -> Result<Vec<u8>> {
 /// # Errors
 ///
 /// - `AionError::FileReadError` - Cannot read the file
-/// - `AionError::InvalidFormat` - File format is invalid
+/// - `AionError::InvalidFormat` - File format is invalid, or it is format v4
 ///
 /// # Example
 ///
@@ -4008,6 +4044,152 @@ pub(crate) mod tests {
     /// writers land in A2b, so these files are assembled from the format
     /// primitives. A confidential section here is opaque stand-in bytes:
     /// verification is key-free and never opens it.
+    mod migration_tests {
+        use super::*;
+        use crate::chain::{open_current_rules, verify_file_chain, RecipientKeys};
+        use crate::format::FileContext;
+        use crate::migration::{verify_migration, MigrationLink, MigrationPolicy};
+
+        fn ok<T, E>(result: std::result::Result<T, E>) -> T {
+            result.unwrap_or_else(|_| std::process::abort())
+        }
+
+        const AT: u64 = 1_700_000_000_000_000_000;
+
+        /// A genesis for an arbitrary context, built the way `init` builds
+        /// one, so tests can choose the format and `file_id`.
+        fn write_genesis(
+            path: &Path,
+            context: &FileContext,
+            key: &SigningKey,
+            author: AuthorId,
+            link: Option<&MigrationLink>,
+        ) {
+            let options = InitOptions {
+                author_id: author,
+                signing_key: key,
+                message: "genesis",
+                timestamp: Some(AT),
+                protection: RulesProtection::Public,
+            };
+            let encoded = ok(encode_rules(
+                context,
+                &options.protection,
+                b"rules",
+                VersionNumber::GENESIS,
+                author,
+            ));
+            let file = ok(build_genesis_file(context, AT, encoded, &options, link));
+            ok(std::fs::write(path, ok(AionSerializer::serialize(&file))));
+        }
+
+        /// A pinned author signing a v4 genesis under the source's own
+        /// `file_id` must not be able to squat that id through migration.
+        #[test]
+        fn a_destination_reusing_the_source_file_id_is_refused() {
+            let dir = ok(TempDir::new());
+            let key = ok(SigningKey::generate());
+            let author = AuthorId::new(97_001);
+            let registry = test_reg(author, &key);
+            let source_path = dir.path().join("source.aion");
+            write_genesis(
+                &source_path,
+                &FileContext::new(FormatVersion::V4, FileId::new(0x5150)),
+                &key,
+                author,
+                None,
+            );
+            let source = ok(verify_file_chain(&source_path, &registry));
+            let dest_path = dir.path().join("dest.aion");
+            let squat = FileContext::new(FormatVersion::V4, source.context().file_id());
+            let link = MigrationLink::of(&source);
+            write_genesis(&dest_path, &squat, &key, author, Some(&link));
+            let dest = ok(verify_file_chain(&dest_path, &registry));
+            assert!(matches!(
+                verify_migration(&dest, &source, &MigrationPolicy::SameAuthor),
+                Err(AionError::MigrationRejected {
+                    reason: "self_migration"
+                })
+            ));
+            let store = crate::acceptance::MemoryStore::new();
+            let accepted = crate::acceptance::accept_migration(
+                &dest_path,
+                &source,
+                &registry,
+                &crate::acceptance::AcceptPolicy::new(),
+                &MigrationPolicy::SameAuthor,
+                &store,
+            );
+            assert!(accepted.is_err());
+            assert_eq!(ok(store.record(source.context().file_id())), None);
+            assert_eq!(ok(store.migration(source.context().file_id())), None);
+        }
+
+        #[test]
+        fn a_v2_file_migrates_to_v4() {
+            let dir = ok(TempDir::new());
+            let key = ok(SigningKey::generate());
+            let author = AuthorId::new(97_002);
+            let registry = test_reg(author, &key);
+            let source_path = dir.path().join("v2.aion");
+            let v2 = FileContext::new(FormatVersion::V2, FileId::new(0x0202));
+            write_genesis(&source_path, &v2, &key, author, None);
+            let source = ok(verify_file_chain(&source_path, &registry));
+            assert_eq!(source.context().format(), FormatVersion::V2);
+            let rules = ok(open_current_rules(&source, &RecipientKeys::none()));
+            let dest_path = dir.path().join("v4.aion");
+            let options = InitOptions {
+                author_id: author,
+                signing_key: &key,
+                message: "migrate",
+                timestamp: None,
+                protection: RulesProtection::Public,
+            };
+            ok(migrate_file(
+                &source, &rules, &dest_path, &options, &registry,
+            ));
+            let dest = ok(verify_file_chain(&dest_path, &registry));
+            let link = ok(verify_migration(
+                &dest,
+                &source,
+                &MigrationPolicy::SameAuthor,
+            ));
+            assert_eq!(link.source_format(), FormatVersion::V2);
+            let carried = ok(open_current_rules(&dest, &RecipientKeys::none()));
+            assert_eq!(carried.as_slice(), b"rules");
+        }
+
+        #[test]
+        fn init_refuses_to_replace_an_existing_entry() {
+            let dir = ok(TempDir::new());
+            let key = ok(SigningKey::generate());
+            let path = dir.path().join("taken.aion");
+            ok(std::fs::write(&path, b"keep"));
+            let options = InitOptions {
+                author_id: AuthorId::new(97_003),
+                signing_key: &key,
+                message: "genesis",
+                timestamp: None,
+                protection: RulesProtection::Public,
+            };
+            let context = FileContext::new(FormatVersion::V4, FileId::new(1));
+            let encoded = ok(encode_rules(
+                &context,
+                &options.protection,
+                b"r",
+                VersionNumber::GENESIS,
+                options.author_id,
+            ));
+            let file = ok(build_genesis_file(&context, AT, encoded, &options, None));
+            assert!(matches!(
+                write_serialized_file(&file, &path),
+                Err(AionError::FileExists { .. })
+            ));
+            assert!(init_file(&path, b"r", &options).is_err());
+            assert_eq!(ok(std::fs::read(&path)), b"keep");
+        }
+    }
+
     pub mod format_v3_read_tests {
         use super::*;
         use crate::format::{rules_commitment, FileContext, FormatVersion, RulesMode};

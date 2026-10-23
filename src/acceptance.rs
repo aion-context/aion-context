@@ -404,6 +404,20 @@ impl MigrationRecord {
 /// # Errors
 ///
 /// Returns [`AionError::VersionRejected`] for a conflicting destination.
+///
+/// # Example
+///
+/// ```no_run
+/// use aion_context::acceptance::{decide_migration, ChainSummary, MigrationRecord};
+/// use aion_context::chain::VerifiedChain;
+///
+/// # fn example(dest: &VerifiedChain, stored: Option<MigrationRecord>) -> aion_context::Result<()> {
+/// if let Some(record) = decide_migration(stored.as_ref(), ChainSummary::new(dest))? {
+///     println!("record destination {}", record.dest_file_id().as_u64());
+/// }
+/// # Ok(())
+/// # }
+/// ```
 pub fn decide_migration(
     record: Option<&MigrationRecord>,
     dest: ChainSummary<'_>,
@@ -417,6 +431,13 @@ pub fn decide_migration(
 }
 
 /// Durable memory of which version a receiver accepted for each file.
+///
+/// # Compatibility
+///
+/// RFC-0040 added [`AcceptedVersionStore::check_and_advance_migration`] and
+/// [`AcceptedVersionStore::clear_migration`] with defaults that fail closed
+/// (`migration_unsupported`). A store written for 2.x still compiles, but
+/// [`accept_migration`] refuses until it overrides both.
 ///
 /// Implementations must make [`AcceptedVersionStore::check_and_advance`]
 /// atomic, as a compare-and-swap: read the record, call [`decide`], and
@@ -444,9 +465,11 @@ pub trait AcceptedVersionStore: Send + Sync {
     /// [`AionError::StoreUnavailable`].
     fn check_and_advance(&self, chain: ChainSummary<'_>) -> Result<StoreDecision>;
 
-    /// Atomically, in one compare-and-swap: apply [`decide_migration`] to
-    /// `source`'s migration record and [`decide`] to `dest`'s record, and
-    /// persist both or neither.
+    /// Atomically, in one compare-and-swap: check `source` against its own
+    /// record if the store has one (read-only: a replayed, forked, or
+    /// foreign source is refused), apply [`decide_migration`] to `source`'s
+    /// migration record and [`decide`] to `dest`'s record, and persist both
+    /// or neither. A `dest` sharing `source`'s `file_id` is refused.
     ///
     /// The default fails closed with `migration_unsupported`, so a store
     /// that predates RFC-0040 refuses migrations instead of accepting them
@@ -459,7 +482,7 @@ pub trait AcceptedVersionStore: Send + Sync {
     fn check_and_advance_migration(
         &self,
         dest: ChainSummary<'_>,
-        source: FileId,
+        source: ChainSummary<'_>,
     ) -> Result<StoreDecision> {
         let _ = (dest, source);
         Err(store_error("migration_unsupported"))
@@ -480,6 +503,18 @@ pub trait AcceptedVersionStore: Send + Sync {
     }
 }
 
+/// Remove `source`'s migration record. Lifting first-claim protection is
+/// an operator decision, so it is always traced.
+fn clear_migration_record(state: &mut StoreState, source: FileId) -> bool {
+    let removed = state.migrations.remove(&source).is_some();
+    tracing::warn!(
+        event = "migration_cleared",
+        source_file_id = %crate::obs::short_hex(&source.as_u64().to_le_bytes()),
+        removed,
+    );
+    removed
+}
+
 /// Everything a store keeps, under one lock: version records and migration
 /// records change together when a migration is accepted.
 #[derive(Debug, Default)]
@@ -491,8 +526,17 @@ struct StoreState {
 fn advance_migration(
     state: &mut StoreState,
     dest: ChainSummary<'_>,
-    source: FileId,
+    source: ChainSummary<'_>,
 ) -> Result<(StoreDecision, bool)> {
+    if dest.file_id() == source.file_id() {
+        return Err(AionError::MigrationRejected {
+            reason: "self_migration",
+        });
+    }
+    if let Some(record) = state.records.get(&source.file_id()) {
+        decide(Some(record), source)?;
+    }
+    let source = source.file_id();
     let migration = decide_migration(state.migrations.get(&source), dest)?;
     let transition = decide(state.records.get(&dest.file_id()), dest)?;
     let changed = migration.is_some() || transition.record.is_some();
@@ -587,7 +631,7 @@ impl AcceptedVersionStore for MemoryStore {
     fn check_and_advance_migration(
         &self,
         dest: ChainSummary<'_>,
-        source: FileId,
+        source: ChainSummary<'_>,
     ) -> Result<StoreDecision> {
         let mut state = self.state.lock().map_err(|_| lock_poisoned())?;
         advance_migration(&mut state, dest, source).map(|(decision, _)| decision)
@@ -595,7 +639,7 @@ impl AcceptedVersionStore for MemoryStore {
 
     fn clear_migration(&self, source: FileId) -> Result<bool> {
         let mut state = self.state.lock().map_err(|_| lock_poisoned())?;
-        Ok(state.migrations.remove(&source).is_some())
+        Ok(clear_migration_record(&mut state, source))
     }
 }
 
@@ -758,14 +802,14 @@ impl AcceptedVersionStore for FileStore {
     fn check_and_advance_migration(
         &self,
         dest: ChainSummary<'_>,
-        source: FileId,
+        source: ChainSummary<'_>,
     ) -> Result<StoreDecision> {
         self.locked_update(|state| advance_migration(state, dest, source))
     }
 
     fn clear_migration(&self, source: FileId) -> Result<bool> {
         self.locked_update(|state| {
-            let removed = state.migrations.remove(&source).is_some();
+            let removed = clear_migration_record(state, source);
             Ok((removed, removed))
         })
     }
@@ -805,10 +849,16 @@ const fn store_error(reason: &'static str) -> AionError {
     AionError::StoreUnavailable { reason }
 }
 
+/// Only the canonical decimal spelling, so two keys can never name the
+/// same `file_id`.
 fn parse_file_id(text: &str) -> Result<FileId> {
-    text.parse::<u64>()
-        .map(FileId::new)
-        .map_err(|_| store_error("store_corrupt"))
+    let id = text
+        .parse::<u64>()
+        .map_err(|_| store_error("store_corrupt"))?;
+    if id.to_string() != text {
+        return Err(store_error("store_corrupt"));
+    }
+    Ok(FileId::new(id))
 }
 
 fn decode_hash(text: &str) -> Result<[u8; 32]> {
@@ -985,8 +1035,35 @@ pub fn accept_file(
 ///
 /// Returns [`AionError::ChainRejected`], [`AionError::MigrationRejected`],
 /// [`AionError::PolicyRejected`], [`AionError::VersionRejected`]
-/// (including [`VersionRejectReason::MigrationConflict`]), or
+/// (including [`VersionRejectReason::MigrationConflict`], or a replay or
+/// fork of `source` when the store tracks it), or
 /// [`AionError::StoreUnavailable`].
+///
+/// # Example
+///
+/// ```no_run
+/// use aion_context::acceptance::{accept_file, accept_migration, AcceptPolicy, FileStore};
+/// use aion_context::format::FormatVersion;
+/// use aion_context::key_registry::KeyRegistry;
+/// use aion_context::migration::MigrationPolicy;
+/// use std::path::Path;
+///
+/// # fn example(registry: &KeyRegistry) -> aion_context::Result<()> {
+/// let store = FileStore::open("accepted.json");
+/// let policy = AcceptPolicy::new().min_format(FormatVersion::V4);
+/// let source = accept_file(Path::new("policy.aion"), registry, &AcceptPolicy::new(), &store)?;
+/// let migrated = accept_migration(
+///     Path::new("policy-v4.aion"),
+///     &source,
+///     registry,
+///     &policy,
+///     &MigrationPolicy::SameAuthor,
+///     &store,
+/// )?;
+/// assert!(migrated.metadata_signed());
+/// # Ok(())
+/// # }
+/// ```
 pub fn accept_migration(
     dest_path: &Path,
     source: &VerifiedChain,
@@ -995,22 +1072,26 @@ pub fn accept_migration(
     migration_policy: &crate::migration::MigrationPolicy,
     store: &dyn AcceptedVersionStore,
 ) -> Result<VerifiedChain> {
+    let source_file_id = crate::obs::short_hex(&source.context().file_id().as_u64().to_le_bytes());
     let dest = verify_file_chain(dest_path, registry).inspect_err(|e| {
         tracing::warn!(
             event = "migration_not_accepted",
+            source_file_id = %source_file_id,
             reason = rejection_reason(e)
         );
     })?;
     let file_id = crate::obs::short_hex(&dest.context().file_id().as_u64().to_le_bytes());
-    let source_id = source.context().file_id();
     let outcome = crate::migration::verify_migration(&dest, source, migration_policy)
         .and_then(|_| policy.check(&dest))
-        .and_then(|()| store.check_and_advance_migration(ChainSummary::new(&dest), source_id));
+        .and_then(|()| {
+            store.check_and_advance_migration(ChainSummary::new(&dest), ChainSummary::new(source))
+        });
     match outcome {
         Ok(decision) => {
             tracing::info!(
                 event = "migration_accepted",
                 file_id = %file_id,
+                source_file_id = %source_file_id,
                 version = dest.head().version().as_u64(),
                 idempotent = decision == StoreDecision::AcceptedIdempotent,
             );
@@ -1020,6 +1101,7 @@ pub fn accept_migration(
             tracing::warn!(
                 event = "migration_not_accepted",
                 file_id = %file_id,
+                source_file_id = %source_file_id,
                 reason = rejection_reason(&e),
             );
             Err(e)
@@ -1642,6 +1724,107 @@ mod tests {
             ok(accept_as(&w, &first, &AcceptPolicy::new(), &old));
             assert!(ok(old.record(FileId::new(42))).is_some());
             assert!(ok(old.migration(source_id)).is_some());
+        }
+
+        /// A store tracking the source refuses a migration anchored on a
+        /// stale copy of it, and writes nothing.
+        #[test]
+        fn a_stale_source_is_refused_when_the_store_tracks_it() {
+            let w = world();
+            let stale = w.dir.path().join("stale.aion");
+            ok(std::fs::copy(&w.source, &stale));
+            commit(&w, &w.source);
+            let store = MemoryStore::new();
+            ok(accept_file(
+                &w.source,
+                &w.registry,
+                &AcceptPolicy::new(),
+                &store,
+            ));
+            let old = ok(verify_file_chain(&stale, &w.registry));
+            let rules = ok(open_current_rules(&old, &RecipientKeys::none()));
+            let dest = w.dir.path().join("from-stale.aion");
+            let options = InitOptions {
+                author_id: AuthorId::new(AUTHOR),
+                signing_key: &w.key,
+                message: "migrate",
+                timestamp: None,
+                protection: RulesProtection::Public,
+            };
+            ok(migrate_file(&old, &rules, &dest, &options, &w.registry));
+            let accepted = accept_migration(
+                &dest,
+                &old,
+                &w.registry,
+                &AcceptPolicy::new(),
+                &MigrationPolicy::SameAuthor,
+                &store,
+            );
+            assert!(matches!(
+                accepted,
+                Err(AionError::VersionRejected {
+                    reason: VersionRejectReason::Replay
+                })
+            ));
+            assert_eq!(ok(store.migration(old.context().file_id())), None);
+            let dest_id = ok(verify_file_chain(&dest, &w.registry))
+                .context()
+                .file_id();
+            assert_eq!(ok(store.record(dest_id)), None);
+        }
+
+        fn commit(w: &World, path: &Path) {
+            let options = CommitOptions {
+                author_id: AuthorId::new(AUTHOR),
+                signing_key: &w.key,
+                message: "next",
+                timestamp: None,
+                protection: RulesProtection::Public,
+            };
+            ok(commit_version(path, b"r2", &options, &w.registry));
+        }
+
+        mod properties {
+            use super::*;
+            use hegel::generators as gs;
+
+            /// RFC-0040 store model: per source, the first accepted
+            /// destination is recorded; the same one again is idempotent;
+            /// any other conflicts until the record is cleared.
+            #[hegel::test]
+            fn prop_migration_records_follow_a_first_claim_model(tc: hegel::TestCase) {
+                let w = world();
+                let dests: Vec<PathBuf> = (0..3)
+                    .map(|i| migrated(&w, &format!("d{i}.aion"), AUTHOR, &w.key))
+                    .collect();
+                let ids: Vec<FileId> = dests
+                    .iter()
+                    .map(|d| ok(verify_file_chain(d, &w.registry)).context().file_id())
+                    .collect();
+                let source_id = source_chain(&w).context().file_id();
+                let store = MemoryStore::new();
+                let mut model: Option<usize> = None;
+                let steps = tc.draw(gs::integers::<usize>().min_value(1).max_value(8));
+                for _ in 0..steps {
+                    let op = tc.draw(gs::integers::<usize>().max_value(3));
+                    if let Some(dest) = dests.get(op) {
+                        let result = accept_as(&w, dest, &AcceptPolicy::new(), &store);
+                        match model {
+                            None => {
+                                assert!(result.is_ok());
+                                model = Some(op);
+                            }
+                            Some(held) if held == op => assert!(result.is_ok()),
+                            Some(_) => assert!(conflict(&result)),
+                        }
+                    } else {
+                        assert_eq!(ok(store.clear_migration(source_id)), model.is_some());
+                        model = None;
+                    }
+                    let recorded = ok(store.migration(source_id)).map(|r| r.dest_file_id());
+                    assert_eq!(recorded, model.and_then(|i| ids.get(i).copied()));
+                }
+            }
         }
 
         /// A store that predates RFC-0040 refuses migrations.

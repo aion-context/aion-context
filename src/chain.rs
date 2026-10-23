@@ -249,7 +249,7 @@ impl VerifiedChain {
     /// `MigratedFrom`, unparsed. [`crate::migration::verify_migration`]
     /// parses and checks it.
     #[must_use]
-    pub fn migration_details(&self) -> Option<&str> {
+    pub(crate) fn migration_details(&self) -> Option<&str> {
         self.migration_details.as_deref()
     }
 
@@ -358,7 +358,8 @@ impl VerifiedEntry<'_> {
     }
 
     /// The version's commit message: signed in format v4, unauthenticated
-    /// in v2 and v3 (see [`VerifiedChain::metadata_signed`]).
+    /// in v2 and v3 (see [`VerifiedChain::metadata_signed`]): anyone holding
+    /// a v2 or v3 file can rewrite it without breaking verification.
     #[must_use]
     pub fn message(&self) -> &str {
         &self.checked.message

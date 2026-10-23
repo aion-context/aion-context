@@ -410,19 +410,40 @@ verify_migration(&migrated, &original, &MigrationPolicy::SameAuthor)?;
     refuses, before writing, an author/key pair the registry does not
     pin for the new genesis, as `commit_version` does.
   - Errors are `AionError::MigrationRejected` with `not_migrated`,
-    `link_malformed`, `source_mismatch`, `policy_unmet`, or
-    `empty_author_set`. `VersionRejectReason::MigrationConflict` is the
-    store's first-claim-wins rejection.
-  - `AcceptedVersionStore` gains `check_and_advance_migration` (the
-    migration record and the destination's version record in one
-    compare-and-swap) and `clear_migration`. Both default to failing
+    `self_migration`, `link_malformed`, `source_mismatch`,
+    `policy_unmet`, or `empty_author_set`.
+    `VersionRejectReason::MigrationConflict` is the store's
+    first-claim-wins rejection.
+  - A destination may not share its source's `file_id`
+    (`self_migration`), checked in `verify_migration` and again in the
+    store. Otherwise a pinned author could sign a v4 genesis under the
+    source's id and, on a store that had not seen the source, squat it
+    (crypto review of P3, finding M1).
+  - When the store has a record for the source, the compare-and-swap
+    also checks the presented source against it (read-only), so a
+    migration anchored on a stale or forked copy of a tracked source is
+    refused as `version_replay` or `version_equivocation`.
+  - `AcceptedVersionStore` gains `check_and_advance_migration(dest,
+    source)` (both as `ChainSummary`; the migration record and the
+    destination's version record in one compare-and-swap) and
+    `clear_migration`, which is always traced (`migration_cleared`). Both default to failing
     closed with `migration_unsupported`, so a custom store written for
     2.x refuses migrations rather than accepting them unrecorded.
   - `FileStore` saves `{"records", "migrations"}` and still reads the
     flat 2.x layout; a 2.x reader of the new layout fails closed.
-  - `VerifiedChain::migration_details()` is the raw signed text;
+  - The chain keeps the raw signed details text (crate-internal);
     `MigrationLink::parse` checks it, so a malformed link fails
     `verify_migration`, not chain verification.
+  - Argument order puts the subject first: `migrate_file(source, …,
+    dest)` writes `dest` from `source`, as the CLI's `migrate SOURCE
+    DEST` does; `verify_migration(dest, source, …)` and
+    `accept_migration(dest_path, source, …)` check `dest`, as
+    `accept_file(path, …)` does.
+  - The `VersionEntry.reserved` layout, including the metadata
+    commitment at bytes 1–32, is public by design (this RFC and the
+    book), so `stored_metadata_commitment` and
+    `with_metadata_commitment` stay `pub` for third-party verifiers and
+    writers.
 - **One bounded reason.** A v4 metadata failure reports
   `audit_chain_valid = false` and classifies as `metadata_invalid`; the
   specific code (`audit_version_mismatch`, `string_table_noncanonical`,

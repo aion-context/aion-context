@@ -38,6 +38,7 @@ pub struct ExportData {
 
 /// Exported file information
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct ExportFileInfo {
     /// File ID (hex string)
     pub file_id: String,
@@ -47,6 +48,7 @@ pub struct ExportFileInfo {
     pub current_version: u64,
     /// Whether commit messages and the audit trail are signed (RFC-0040):
     /// true for format v4; for v2/v3 the messages below are unauthenticated.
+    #[serde(default)]
     pub metadata_signed: bool,
 }
 

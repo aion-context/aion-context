@@ -269,6 +269,11 @@ pub enum AionError {
     /// A migrated file's link does not match its claimed source, is
     /// malformed, or its migrating author is not allowed by the
     /// [`crate::migration::MigrationPolicy`] (RFC-0040).
+    ///
+    /// The reasons are a closed set: `not_migrated`, `self_migration`,
+    /// `link_malformed`, `source_mismatch`, `policy_unmet`, and
+    /// `empty_author_set` (an [`crate::migration::AuthorSet`] cannot be
+    /// empty).
     #[error("Migration rejected: {reason}")]
     MigrationRejected {
         /// Bounded reason code, e.g. `source_mismatch`
