@@ -1121,6 +1121,20 @@ Four PRs, each reviewed by `crypto-auditor` and `api-reviewer`:
   `RulesUnopenable` split, `open_current_rules` /
   `open_rules_section` for confidential sections, and
   `disclose_version_key`.
+  - *Implementation note:* `Recipient` lives in `format`;
+    `EncryptionKem`, `EncryptionIdentity` and `VersionKey` in the now
+    public `confidential` module, whose sealing and opening functions
+    stay crate-internal.
+  - The disclosed key is opened with `open_rules_section_with_key`,
+    a separate function rather than an overload of
+    `open_rules_section`.
+  - `VerifiedChain::head_recipients` serves `--keep-recipients`.
+  - Writers refuse framed rules over 16 MiB
+    (`format::MAX_CONFIDENTIAL_RULES_LEN`); readers check the same
+    bound before decrypting. `verify_file` parses a confidential head's
+    envelope key-free.
+  - Empty recipients and confidential protection on a format-v2 file
+    are `AionError::NoRecipients`.
 - **B4, keystore and CLI.** The encryption-identity key kind (X-Wing
   default), `aion key generate --encryption`, `--recipient`,
   `--keep-recipients`, and `--identity`.

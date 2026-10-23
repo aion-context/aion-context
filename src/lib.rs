@@ -71,7 +71,7 @@ pub mod aibom; // RFC-0029: AI Bill of Materials
 pub mod audit; // Issue #7: Audit trail
 pub mod chain; // RFC-0039: Verified chains
 pub mod compliance; // Issue #33: Compliance reporting
-pub(crate) mod confidential; // RFC-0039: Confidential key schedule and stanzas
+pub mod confidential; // RFC-0039: Confidential key schedule and stanzas
 pub mod conflict; // Issue #30: Conflict resolution
 pub mod crypto; // Issue #4: Cryptography
 pub mod dsse; // RFC-0023: DSSE envelope support

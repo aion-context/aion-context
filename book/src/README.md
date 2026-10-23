@@ -13,7 +13,7 @@ the fact:
 
 The file format binds together: a hash-chained version log, a set
 of Ed25519 signatures over each version, an audit trail, the rules
-payload (tamper-evident, not confidential), and (in the supply-chain story) an AIBOM,
+payload (tamper-evident; confidential only when sealed to named recipients), and (in the supply-chain story) an AIBOM,
 SLSA provenance, DSSE envelopes, OCI manifests, and transparency-log
 entries with inclusion proofs. A pinned `KeyRegistry` resolves which
 operational key was active for each signer at each version, so

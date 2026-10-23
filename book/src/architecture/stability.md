@@ -54,8 +54,11 @@ The pinned primitives are:
 - **BLAKE3** (via `blake3`) — file hashing, hash-chain links, integrity hash
 - **ChaCha20-Poly1305** (via `chacha20poly1305`) — format-v2 rules-section encoding.
   This is not a confidentiality boundary: see
-  [crypto.md](crypto.md#the-rules-section-is-not-confidential).
+  [crypto.md](crypto.md#public-rules-are-not-confidential).
 - **HKDF-SHA-256** (via `hkdf` / `sha2`) — key derivation
+- **HPKE** (RFC 9180 base mode, via `hpke`) with **DHKEM(X25519)** and
+  **X-Wing** (ML-KEM-768 + X25519, via `ml-kem` / `x-wing`) — RFC-0039
+  confidential-rules recipient stanzas
 - **ML-DSA-65** (via `pqcrypto-mldsa`) — RFC-0027 hybrid PQC signatures
 
 Replacing any of these is a major version bump and requires an RFC.

@@ -44,6 +44,10 @@ pub const RULES_COMMIT_DOMAIN: &[u8] = b"AION_V3_RULES_COMMIT_V1\0";
 /// Length in bytes of the framing header (plaintext length, `u64` LE).
 pub(crate) const FRAME_HEADER_LEN: usize = 8;
 
+/// Largest framed confidential rules section a writer produces and a reader
+/// opens, in bytes (RFC-0039). Readers check it before decrypting.
+pub const MAX_CONFIDENTIAL_RULES_LEN: usize = 16 * 1024 * 1024;
+
 /// An on-disk format version this crate understands.
 ///
 /// Not `#[non_exhaustive]`: a new on-disk format is a major-version event
@@ -164,17 +168,106 @@ impl RulesMode {
 /// There is no default: every `init` and `commit` names its protection,
 /// so choosing secrecy (or its absence) is always explicit.
 ///
-/// `#[non_exhaustive]` because RFC-0039 Phase B adds `Confidential`, which
-/// carries an owned recipient list.
+/// `#[non_exhaustive]` because RFC-0039 Phase C adds external key wrappers
+/// to the confidential recipients.
 ///
 /// For a format-v2 file, `Public` keeps the file's existing v2 encoding:
 /// v2 has no rules modes, and its section is obfuscated, not confidential.
+/// `Confidential` needs format v3.
+///
+/// # Example
+///
+/// ```
+/// use aion_context::confidential::{EncryptionIdentity, EncryptionKem};
+/// use aion_context::format::RulesProtection;
+///
+/// let auditor = EncryptionIdentity::generate(EncryptionKem::XWing)?;
+/// let protection = RulesProtection::Confidential {
+///     recipients: vec![auditor.recipient()],
+/// };
+/// assert!(matches!(protection, RulesProtection::Confidential { .. }));
+/// # Ok::<(), aion_context::AionError>(())
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum RulesProtection {
     /// Store the rules in the clear, framed and padded. Anyone holding the
     /// file can read them; the signature still makes them tamper-evident.
     Public,
+    /// Encrypt the rules to `recipients` (RFC-0039). Verification stays
+    /// key-free; only a listed recipient can read them. Must be non-empty;
+    /// duplicate recipients are written once.
+    Confidential {
+        /// Who can read this version's rules.
+        recipients: Vec<Recipient>,
+    },
+}
+
+/// A public encryption key a writer seals one version's rules to
+/// (RFC-0039).
+///
+/// `#[non_exhaustive]`: RFC-0039 Phase C adds external key wrappers, and a
+/// later X-Wing revision would add a variant.
+#[derive(Clone, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum Recipient {
+    /// An X25519 public key (stanza kind `0x01`). Not post-quantum.
+    X25519([u8; 32]),
+    /// An X-Wing (ML-KEM-768 + X25519) public key (stanza kind `0x03`).
+    XWing(Box<[u8; 1216]>),
+}
+
+impl std::fmt::Debug for Recipient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let prefix = self.public_key().get(..8).unwrap_or_default();
+        write!(f, "Recipient::{:?}({}…)", self.kem(), hex::encode(prefix))
+    }
+}
+
+impl Recipient {
+    /// Build a recipient from a public key of the given KEM.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AionError::InvalidPublicKey`] if `public_key` has the wrong
+    /// length for `kem`. Whether the key is a valid point or ML-KEM key is
+    /// checked when sealing.
+    pub fn from_public_key(
+        kem: crate::confidential::EncryptionKem,
+        public_key: &[u8],
+    ) -> Result<Self> {
+        use crate::confidential::EncryptionKem;
+        let wrong_length = || AionError::InvalidPublicKey {
+            reason: "recipient public key has the wrong length for its KEM".to_string(),
+        };
+        match kem {
+            EncryptionKem::X25519 => Ok(Self::X25519(
+                public_key.try_into().map_err(|_| wrong_length())?,
+            )),
+            EncryptionKem::XWing => {
+                let key: [u8; 1216] = public_key.try_into().map_err(|_| wrong_length())?;
+                Ok(Self::XWing(Box::new(key)))
+            }
+        }
+    }
+
+    /// The recipient's KEM.
+    #[must_use]
+    pub const fn kem(&self) -> crate::confidential::EncryptionKem {
+        match self {
+            Self::X25519(_) => crate::confidential::EncryptionKem::X25519,
+            Self::XWing(_) => crate::confidential::EncryptionKem::XWing,
+        }
+    }
+
+    /// The recipient's public key bytes.
+    #[must_use]
+    pub fn public_key(&self) -> &[u8] {
+        match self {
+            Self::X25519(key) => key,
+            Self::XWing(key) => key.as_slice(),
+        }
+    }
 }
 
 /// Commit to a stored rules section (RFC-0039).

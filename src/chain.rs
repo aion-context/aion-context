@@ -12,9 +12,11 @@
 //! - replacing the file on disk after verification changes nothing,
 //!   because reads come from the owned bytes, never from the path.
 //!
-//! [`RecipientKeys`] carries the identities a reader holds. Confidential
-//! writers arrive in RFC-0039 Phase B; until then, [`RecipientKeys::none`]
-//! opens public and format-v2 rules.
+//! [`RecipientKeys`] carries the encryption identities a reader holds.
+//! [`RecipientKeys::none`] opens public and format-v2 rules; confidential
+//! rules need an identity the head version lists as a recipient.
+//! [`disclose_version_key`] and [`open_rules_section_with_key`] support
+//! selective disclosure of one version.
 //!
 //! # Example
 //!
@@ -46,7 +48,11 @@ use std::path::Path;
 
 use zeroize::Zeroizing;
 
-use crate::format::{rules_commitment, unframe_rules, FileContext, FormatVersion, RulesMode};
+use crate::confidential::{EncryptionIdentity, VersionKey};
+use crate::envelope::{Envelope, StanzaRecipient};
+use crate::format::{
+    rules_commitment, unframe_rules, FileContext, FormatVersion, Recipient, RulesMode,
+};
 use crate::key_registry::KeyRegistry;
 use crate::parser::AionParser;
 use crate::serializer::VersionEntry;
@@ -218,6 +224,37 @@ impl VerifiedChain {
             checked,
         })
     }
+
+    /// The head version's recipients, so the next version can be sealed to
+    /// the same set. Read from the verified head section, never re-read.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AionError::NoRecipients`] if the head version is not
+    /// confidential, and [`AionError::InvalidFormat`] if any of its
+    /// recipients cannot be carried over from the file alone (an external
+    /// wrapper or an unknown stanza kind).
+    pub fn head_recipients(&self) -> Result<Vec<Recipient>> {
+        if self.head.mode != Some(RulesMode::Confidential) {
+            return Err(AionError::NoRecipients);
+        }
+        let envelope = crate::confidential::bounded_envelope(&self.head_section)?;
+        envelope
+            .stanzas()
+            .iter()
+            .map(|stanza| match stanza.recipient() {
+                StanzaRecipient::X25519 { recipient_pk, .. } => {
+                    Ok(Recipient::X25519(*recipient_pk))
+                }
+                StanzaRecipient::XWing { recipient_pk, .. } => {
+                    Ok(Recipient::XWing(Box::new(*recipient_pk)))
+                }
+                _ => Err(AionError::InvalidFormat {
+                    reason: "head version has a recipient that cannot be carried over".to_string(),
+                }),
+            })
+            .collect()
+    }
 }
 
 fn empty_chain() -> AionError {
@@ -287,18 +324,58 @@ impl VerifiedEntry<'_> {
 
 /// Identities a reader holds to open confidential rules (RFC-0039).
 ///
-/// `#[non_exhaustive]`: RFC-0039 Phase B adds X25519 identities and
-/// external unwrappers. Until then, [`RecipientKeys::none`] opens public
-/// and format-v2 rules only.
+/// `#[non_exhaustive]`: RFC-0039 Phase C adds external unwrappers.
+///
+/// # Example
+///
+/// ```
+/// use aion_context::chain::RecipientKeys;
+/// use aion_context::confidential::{EncryptionIdentity, EncryptionKem};
+///
+/// let auditor = EncryptionIdentity::generate(EncryptionKem::XWing)?;
+/// let keys = RecipientKeys::from(auditor);
+/// assert!(!keys.is_empty());
+/// assert!(RecipientKeys::none().is_empty());
+/// # Ok::<(), aion_context::AionError>(())
+/// ```
 #[derive(Debug, Default, Clone)]
 #[non_exhaustive]
-pub struct RecipientKeys {}
+pub struct RecipientKeys {
+    identities: Vec<EncryptionIdentity>,
+}
 
 impl RecipientKeys {
     /// No identities: opens public and format-v2 rules only.
     #[must_use]
     pub const fn none() -> Self {
-        Self {}
+        Self {
+            identities: Vec::new(),
+        }
+    }
+
+    /// Hold `identities`; opening tries each one listed by the section.
+    #[must_use]
+    pub const fn new(identities: Vec<EncryptionIdentity>) -> Self {
+        Self { identities }
+    }
+
+    /// Add one more identity.
+    #[must_use]
+    pub fn with(mut self, identity: EncryptionIdentity) -> Self {
+        self.identities.push(identity);
+        self
+    }
+
+    /// Whether no identity is held.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.identities.is_empty()
+    }
+}
+
+impl From<EncryptionIdentity> for RecipientKeys {
+    fn from(identity: EncryptionIdentity) -> Self {
+        Self::new(vec![identity])
     }
 }
 
@@ -387,6 +464,15 @@ fn open_v3_section(
     entry: VerifiedEntry<'_>,
     keys: &RecipientKeys,
 ) -> Result<Zeroizing<Vec<u8>>> {
+    match bound_mode(section, entry)? {
+        RulesMode::Public => Ok(Zeroizing::new(unframe_rules(section)?.to_vec())),
+        RulesMode::Confidential => open_confidential(section, entry, keys),
+    }
+}
+
+/// Bind a format-v3 section to its verified entry: recompute the
+/// commitment under the entry's signed mode and compare.
+fn bound_mode(section: &[u8], entry: VerifiedEntry<'_>) -> Result<RulesMode> {
     let mode = entry.rules_mode().ok_or_else(|| AionError::InvalidFormat {
         reason: "format-v3 entry without a rules mode".to_string(),
     })?;
@@ -397,21 +483,124 @@ fn open_v3_section(
             actual: commitment,
         });
     }
-    match mode {
-        RulesMode::Public => Ok(Zeroizing::new(unframe_rules(section)?.to_vec())),
-        RulesMode::Confidential => open_confidential(section, entry, keys),
-    }
+    Ok(mode)
 }
 
-/// Confidential envelopes are opened in RFC-0039 Phase B. Until then no
-/// [`RecipientKeys`] can hold an identity, so every confidential section
-/// needs one.
-const fn open_confidential(
-    _section: &[u8],
-    _entry: VerifiedEntry<'_>,
-    _keys: &RecipientKeys,
+/// A confidential section bound to `entry`, parsed and size-checked.
+fn bound_confidential<'s>(section: &'s [u8], entry: VerifiedEntry<'_>) -> Result<Envelope<'s>> {
+    if entry.context().format() != FormatVersion::V3
+        || bound_mode(section, entry)? != RulesMode::Confidential
+    {
+        return Err(AionError::InvalidFormat {
+            reason: "only confidential format-v3 rules have a version key".to_string(),
+        });
+    }
+    crate::confidential::bounded_envelope(section)
+}
+
+const fn binding_context(entry: VerifiedEntry<'_>) -> [u8; crate::confidential::CTX_LEN] {
+    crate::confidential::binding_context(entry.context().file_id(), entry.author(), entry.version())
+}
+
+fn open_confidential(
+    section: &[u8],
+    entry: VerifiedEntry<'_>,
+    keys: &RecipientKeys,
 ) -> Result<Zeroizing<Vec<u8>>> {
-    Err(AionError::RecipientKeyRequired)
+    let envelope = crate::confidential::bounded_envelope(section)?;
+    if keys.is_empty() {
+        return Err(AionError::RecipientKeyRequired);
+    }
+    let framed =
+        crate::confidential::open_section(&envelope, &keys.identities, &binding_context(entry))
+            .inspect_err(|e| log_unopened(entry, e))?;
+    unframed_secret(&framed).inspect_err(|e| log_unopened(entry, e))
+}
+
+/// Unframe decrypted rules. A bad frame behind a valid AEAD tag is still
+/// `RulesUnopenable`, so the error never says which step failed.
+fn unframed_secret(framed: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
+    unframe_rules(framed)
+        .map(|rules| Zeroizing::new(rules.to_vec()))
+        .map_err(|_| AionError::RulesUnopenable)
+}
+
+fn log_unopened(entry: VerifiedEntry<'_>, error: &AionError) {
+    let reason = match error {
+        AionError::NotARecipient => "not_a_recipient",
+        AionError::RulesUnopenable => "rules_unopenable",
+        _ => "malformed_section",
+    };
+    tracing::warn!(
+        event = "confidential_rules_not_opened",
+        version = entry.version().as_u64(),
+        author = %crate::obs::author_short(entry.author()),
+        reason,
+    );
+}
+
+/// Return the data-encryption key of one confidential version, for
+/// selective disclosure (RFC-0039).
+///
+/// The key opens `section` and no other: each version's key is independent
+/// random bytes. Give it to the party that should read this one version,
+/// who opens the section with [`open_rules_section_with_key`].
+///
+/// # Errors
+///
+/// [`AionError::HashMismatch`] if `section` does not belong to `entry`;
+/// [`AionError::InvalidFormat`] if the version is not confidential;
+/// [`AionError::RecipientKeyRequired`], [`AionError::NotARecipient`], or
+/// [`AionError::RulesUnopenable`] as for [`open_rules_section`].
+///
+/// # Example
+///
+/// ```no_run
+/// use aion_context::chain::{disclose_version_key, open_rules_section_with_key, verify_file_chain, RecipientKeys};
+/// use aion_context::key_registry::KeyRegistry;
+/// use std::path::Path;
+///
+/// # fn example(registry: &KeyRegistry, keys: &RecipientKeys, section: &[u8]) -> aion_context::Result<()> {
+/// let chain = verify_file_chain(Path::new("policy.aion"), registry)?;
+/// let key = disclose_version_key(chain.head(), section, keys)?;
+/// let rules = open_rules_section_with_key(section, chain.head(), &key)?;
+/// # Ok(())
+/// # }
+/// ```
+pub fn disclose_version_key(
+    entry: VerifiedEntry<'_>,
+    section: &[u8],
+    keys: &RecipientKeys,
+) -> Result<VersionKey> {
+    let envelope = bound_confidential(section, entry)?;
+    if keys.is_empty() {
+        return Err(AionError::RecipientKeyRequired);
+    }
+    crate::confidential::unwrap_for(&envelope, &keys.identities, &binding_context(entry))
+        .map(VersionKey::from_dek)
+        .inspect_err(|e| log_unopened(entry, e))
+}
+
+/// Open one confidential version's rules with a disclosed [`VersionKey`]
+/// (RFC-0039).
+///
+/// The section is bound to `entry` first, and the key is checked against
+/// the section's key commitment, so a key for any other version fails.
+///
+/// # Errors
+///
+/// [`AionError::HashMismatch`] if `section` does not belong to `entry`;
+/// [`AionError::InvalidFormat`] if the version is not confidential;
+/// [`AionError::RulesUnopenable`] if `key` is not this version's key.
+pub fn open_rules_section_with_key(
+    section: &[u8],
+    entry: VerifiedEntry<'_>,
+    key: &VersionKey,
+) -> Result<Zeroizing<Vec<u8>>> {
+    let envelope = bound_confidential(section, entry)?;
+    let framed = crate::confidential::open_with_dek(&envelope, key.dek(), &binding_context(entry))
+        .inspect_err(|e| log_unopened(entry, e))?;
+    unframed_secret(&framed).inspect_err(|e| log_unopened(entry, e))
 }
 
 #[cfg(test)]
@@ -420,6 +609,7 @@ mod tests {
     use super::*;
     use crate::crypto::{hash, SigningKey};
     use crate::format::{frame_rules, RulesProtection};
+    use crate::key_registry::KeyRegistry;
     use crate::operations::{commit_version, init_file, CommitOptions, InitOptions};
     use crate::serializer::{AionFile, AionSerializer};
     use crate::signature_chain::{create_genesis_version, sign_version};
@@ -674,13 +864,32 @@ mod tests {
     }
 
     #[test]
-    fn confidential_head_needs_a_recipient_key() {
+    fn a_malformed_confidential_envelope_fails_key_free_verification() {
         let dir = ok(TempDir::new());
         let path = dir.path().join("confidential.aion");
         let key = ok(SigningKey::generate());
         let author = AuthorId::new(90_007);
-        let context = FileContext::new(FormatVersion::V3, FileId::new(90_007));
-        let section = b"AIONENV1 opaque stand-in".to_vec();
+        write_single_confidential(
+            &path,
+            FileId::new(90_007),
+            b"AIONENV1 opaque stand-in",
+            author,
+            &key,
+        );
+        assert!(verify_file_chain(&path, &registry_for(author, &key)).is_err());
+    }
+
+    /// A one-version v3 file whose head is `section`, signed as confidential
+    /// by `author`. Builds what a malicious author could produce.
+    fn write_single_confidential(
+        path: &Path,
+        file_id: FileId,
+        section: &[u8],
+        author: AuthorId,
+        key: &SigningKey,
+    ) {
+        let context = FileContext::new(FormatVersion::V3, file_id);
+        let section = section.to_vec();
         let commitment = rules_commitment(RulesMode::Confidential, &section);
         let genesis = create_genesis_version(commitment, author, 1, 0, 0)
             .with_rules_mode(RulesMode::Confidential);
@@ -694,22 +903,350 @@ mod tests {
             .created_at(1)
             .modified_at(1)
             .encrypted_rules(section)
-            .add_signature(ok(context.sign_version(&genesis, &key)))
+            .add_signature(ok(context.sign_version(&genesis, key)))
             .add_version(genesis)
             .build());
-        ok(std::fs::write(&path, ok(AionSerializer::serialize(&file))));
+        ok(std::fs::write(path, ok(AionSerializer::serialize(&file))));
+    }
 
-        let chain = ok(verify_file_chain(&path, &registry_for(author, &key)));
+    /// RFC-0039: a malicious author copies a victim's confidential section
+    /// verbatim and signs it under their own name. Verification passes,
+    /// because the copier really signed those bytes, but no recipient can
+    /// open it: `author_id` is in the binding context.
+    #[test]
+    fn a_section_re_signed_by_another_author_opens_for_no_recipient() {
+        let dir = ok(TempDir::new());
+        let victim_path = dir.path().join("victim.aion");
+        let victim_key = ok(SigningKey::generate());
+        let victim = AuthorId::new(90_015);
+        let reader = identity(EncryptionKem::XWing);
+        let registry = grow_confidential(
+            &victim_path,
+            &victim_key,
+            victim,
+            &[(b"victim's rules", vec![reader.recipient()])],
+        );
+        let original = ok(verify_file_chain(&victim_path, &registry));
+
+        let copier_path = dir.path().join("copier.aion");
+        let copier_key = ok(SigningKey::generate());
+        let copier = AuthorId::new(90_016);
+        write_single_confidential(
+            &copier_path,
+            original.context().file_id(),
+            &original.head_section,
+            copier,
+            &copier_key,
+        );
+        let forged_chain = ok(verify_file_chain(
+            &copier_path,
+            &registry_for(copier, &copier_key),
+        ));
+        assert!(matches!(
+            open_current_rules(&forged_chain, &RecipientKeys::from(reader)),
+            Err(AionError::RulesUnopenable)
+        ));
+    }
+
+    #[test]
+    fn confidential_rules_over_the_size_limit_are_refused() {
+        let dir = ok(TempDir::new());
+        let key = ok(SigningKey::generate());
+        let author = AuthorId::new(90_017);
+        let reader = identity(EncryptionKem::X25519);
+        let confidential = || RulesProtection::Confidential {
+            recipients: vec![reader.recipient()],
+        };
+        let too_big = vec![b'x'; crate::format::MAX_CONFIDENTIAL_RULES_LEN];
+        let init = InitOptions {
+            author_id: author,
+            signing_key: &key,
+            message: "genesis",
+            timestamp: None,
+            protection: confidential(),
+        };
+        let result = init_file(&dir.path().join("big.aion"), &too_big, &init);
+        assert!(
+            matches!(&result, Err(AionError::InvalidFormat { reason }) if reason.contains("16 MiB")),
+            "{result:?}"
+        );
+    }
+
+    use crate::confidential::{EncryptionIdentity, EncryptionKem};
+
+    fn identity(kem: EncryptionKem) -> EncryptionIdentity {
+        ok(EncryptionIdentity::generate(kem))
+    }
+
+    /// A confidential v3 file: one version per `(rules, recipients)`.
+    fn grow_confidential(
+        path: &Path,
+        key: &SigningKey,
+        author: AuthorId,
+        versions: &[(&[u8], Vec<Recipient>)],
+    ) -> KeyRegistry {
+        let registry = registry_for(author, key);
+        for (index, (rules, recipients)) in versions.iter().enumerate() {
+            let protection = if recipients.is_empty() {
+                RulesProtection::Public
+            } else {
+                RulesProtection::Confidential {
+                    recipients: recipients.clone(),
+                }
+            };
+            if index == 0 {
+                let init = InitOptions {
+                    author_id: author,
+                    signing_key: key,
+                    message: "genesis",
+                    timestamp: None,
+                    protection,
+                };
+                ok(init_file(path, rules, &init));
+            } else {
+                let commit = CommitOptions {
+                    author_id: author,
+                    signing_key: key,
+                    message: "next",
+                    timestamp: None,
+                    protection,
+                };
+                ok(commit_version(path, rules, &commit, &registry));
+            }
+        }
+        registry
+    }
+
+    #[test]
+    fn every_recipient_of_both_kems_opens_the_head() {
+        let dir = ok(TempDir::new());
+        let path = dir.path().join("confidential.aion");
+        let key = ok(SigningKey::generate());
+        let author = AuthorId::new(90_010);
+        let (x, w) = (
+            identity(EncryptionKem::X25519),
+            identity(EncryptionKem::XWing),
+        );
+        let recipients = vec![x.recipient(), w.recipient()];
+        let registry = grow_confidential(&path, &key, author, &[(b"refund: 5000", recipients)]);
+
+        let chain = ok(verify_file_chain(&path, &registry));
         assert_eq!(chain.head().rules_mode(), Some(RulesMode::Confidential));
+        for reader in [x, w] {
+            let rules = ok(open_current_rules(&chain, &RecipientKeys::from(reader)));
+            assert_eq!(rules.as_slice(), b"refund: 5000");
+        }
+    }
+
+    #[test]
+    fn readers_get_the_three_distinct_errors() {
+        let dir = ok(TempDir::new());
+        let path = dir.path().join("errors.aion");
+        let key = ok(SigningKey::generate());
+        let author = AuthorId::new(90_011);
+        let reader = identity(EncryptionKem::XWing);
+        let registry = grow_confidential(
+            &path,
+            &key,
+            author,
+            &[(b"secret", vec![reader.recipient()])],
+        );
+        let chain = ok(verify_file_chain(&path, &registry));
+
         assert!(matches!(
             open_current_rules(&chain, &RecipientKeys::none()),
             Err(AionError::RecipientKeyRequired)
         ));
+        let stranger = RecipientKeys::from(identity(EncryptionKem::XWing));
+        assert!(matches!(
+            open_current_rules(&chain, &stranger),
+            Err(AionError::NotARecipient)
+        ));
+        assert!(matches!(
+            crate::operations::show_current_rules(&path),
+            Err(AionError::RecipientKeyRequired)
+        ));
+        let both = RecipientKeys::from(identity(EncryptionKem::X25519)).with(reader);
+        assert_eq!(ok(open_current_rules(&chain, &both)).as_slice(), b"secret");
+    }
+
+    #[test]
+    fn a_disclosed_key_opens_exactly_its_own_version() {
+        let dir = ok(TempDir::new());
+        let path = dir.path().join("disclose.aion");
+        let key = ok(SigningKey::generate());
+        let author = AuthorId::new(90_012);
+        let reader = identity(EncryptionKem::XWing);
+        let to = || vec![reader.recipient()];
+        let registry = grow_confidential(&path, &key, author, &[(b"v1 rules", to())]);
+        let v1_section = ok(verify_file_chain(&path, &registry)).head_section;
+        let commit = CommitOptions {
+            author_id: author,
+            signing_key: &key,
+            message: "v2",
+            timestamp: None,
+            protection: RulesProtection::Confidential { recipients: to() },
+        };
+        ok(commit_version(&path, b"v2 rules", &commit, &registry));
+
+        let chain = ok(verify_file_chain(&path, &registry));
+        let keys = RecipientKeys::from(reader.clone());
+        let v1 = chain
+            .entry(VersionNumber(1))
+            .unwrap_or_else(|| std::process::abort());
+        let v1_key = ok(disclose_version_key(v1, &v1_section, &keys));
+        let opened = ok(open_rules_section_with_key(&v1_section, v1, &v1_key));
+        assert_eq!(opened.as_slice(), b"v1 rules");
+
+        let v2_key = ok(disclose_version_key(
+            chain.head(),
+            &chain.head_section,
+            &keys,
+        ));
+        assert!(matches!(
+            open_rules_section_with_key(&v1_section, v1, &v2_key),
+            Err(AionError::RulesUnopenable)
+        ));
+        assert!(open_rules_section_with_key(&v1_section, chain.head(), &v1_key).is_err());
+        let rebuilt = VersionKey::from_bytes(v1_key.to_bytes());
+        assert_eq!(
+            ok(open_rules_section_with_key(&v1_section, v1, &rebuilt)).as_slice(),
+            b"v1 rules"
+        );
+    }
+
+    #[test]
+    fn head_recipients_carry_over_and_public_heads_have_none() {
+        let dir = ok(TempDir::new());
+        let path = dir.path().join("keep.aion");
+        let key = ok(SigningKey::generate());
+        let author = AuthorId::new(90_013);
+        let (x, w) = (
+            identity(EncryptionKem::X25519),
+            identity(EncryptionKem::XWing),
+        );
+        let registry = grow_confidential(
+            &path,
+            &key,
+            author,
+            &[
+                (b"public", Vec::new()),
+                (b"secret", vec![w.recipient(), x.recipient()]),
+            ],
+        );
+        let chain = ok(verify_file_chain(&path, &registry));
+        let kept = ok(chain.head_recipients());
+        assert_eq!(kept.len(), 2);
+        assert!(kept.contains(&x.recipient()) && kept.contains(&w.recipient()));
+        assert_eq!(
+            chain.entry(VersionNumber(1)).map(|e| e.rules_mode()),
+            Some(Some(RulesMode::Public))
+        );
+
+        let public_path = dir.path().join("public.aion");
+        let registry = grow_confidential(&public_path, &key, author, &[(b"public", Vec::new())]);
+        let public = ok(verify_file_chain(&public_path, &registry));
+        assert!(matches!(
+            public.head_recipients(),
+            Err(AionError::NoRecipients)
+        ));
+    }
+
+    #[test]
+    fn writers_refuse_empty_recipients_and_dedupe_repeats() {
+        let dir = ok(TempDir::new());
+        let key = ok(SigningKey::generate());
+        let author = AuthorId::new(90_014);
+        let init = |protection| InitOptions {
+            author_id: author,
+            signing_key: &key,
+            message: "genesis",
+            timestamp: None,
+            protection,
+        };
+        let empty = RulesProtection::Confidential {
+            recipients: Vec::new(),
+        };
+        assert!(matches!(
+            init_file(&dir.path().join("empty.aion"), b"r", &init(empty)),
+            Err(AionError::NoRecipients)
+        ));
+        let reader = identity(EncryptionKem::X25519);
+        let repeated = RulesProtection::Confidential {
+            recipients: vec![reader.recipient(), reader.recipient()],
+        };
+        let path = dir.path().join("dedupe.aion");
+        ok(init_file(&path, b"r", &init(repeated)));
+        let chain = ok(verify_file_chain(&path, &registry_for(author, &key)));
+        assert_eq!(ok(chain.head_recipients()).len(), 1);
     }
 
     mod properties {
         use super::*;
         use hegel::generators as gs;
+
+        #[hegel::test]
+        fn prop_mixed_mode_chains_verify_key_free_and_open_for_every_recipient(
+            tc: hegel::TestCase,
+        ) {
+            let count = tc.draw(gs::integers::<usize>().min_value(1).max_value(3));
+            let readers = [
+                identity(EncryptionKem::X25519),
+                identity(EncryptionKem::XWing),
+            ];
+            let mut versions: Vec<(Vec<u8>, Vec<Recipient>)> = Vec::new();
+            for _ in 0..count {
+                let rules = tc.draw(gs::binary().max_size(256));
+                let mask = tc.draw(gs::integers::<u8>().max_value(3));
+                let recipients: Vec<Recipient> = readers
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| mask & (1 << i) != 0)
+                    .map(|(_, r)| r.recipient())
+                    .collect();
+                versions.push((rules, recipients));
+            }
+            let dir = ok(TempDir::new());
+            let path = dir.path().join("mixed.aion");
+            let key = ok(SigningKey::generate());
+            let author = AuthorId::new(90_100);
+            let refs: Vec<(&[u8], Vec<Recipient>)> = versions
+                .iter()
+                .map(|(rules, recipients)| (rules.as_slice(), recipients.clone()))
+                .collect();
+            let registry = grow_confidential(&path, &key, author, &refs);
+
+            let report = ok(crate::operations::verify_file(&path, &registry));
+            assert!(report.is_valid, "{:?}", report.errors);
+            let chain = ok(verify_file_chain(&path, &registry));
+            for (entry, (_, recipients)) in chain.entries().zip(&versions) {
+                let expected = if recipients.is_empty() {
+                    RulesMode::Public
+                } else {
+                    RulesMode::Confidential
+                };
+                assert_eq!(entry.rules_mode(), Some(expected));
+            }
+            let (head_rules, head_recipients) =
+                versions.last().unwrap_or_else(|| std::process::abort());
+            if head_recipients.is_empty() {
+                let rules = ok(open_current_rules(&chain, &RecipientKeys::none()));
+                assert_eq!(rules.as_slice(), head_rules.as_slice());
+                return;
+            }
+            assert!(matches!(
+                crate::operations::show_current_rules(&path),
+                Err(AionError::RecipientKeyRequired)
+            ));
+            for reader in &readers {
+                let opened = open_current_rules(&chain, &RecipientKeys::from(reader.clone()));
+                if head_recipients.contains(&reader.recipient()) {
+                    assert_eq!(ok(opened).as_slice(), head_rules.as_slice());
+                } else {
+                    assert!(matches!(opened, Err(AionError::NotARecipient)));
+                }
+            }
+        }
 
         #[hegel::test]
         fn prop_archived_sections_open_exactly_against_matching_entries(tc: hegel::TestCase) {

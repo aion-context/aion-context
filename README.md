@@ -56,10 +56,12 @@ policy payload in a versioned signature chain with integrity checks.
 The technical details matter, but the outcome is simple: policy changes
 become provable instead of assumed.
 
-> **Tamper-evident, not secret.** Anyone who holds an `.aion` file
-> can read its rules. Keep credentials and regulated personal data
-> out of policy payloads, or encrypt the whole file when the policy
-> itself is sensitive. See [crypto](book/src/architecture/crypto.md#the-rules-section-is-not-confidential).
+> **Tamper-evident always; secret only when you ask.** Public rules,
+> and every format-v2 file, can be read by anyone who holds the file.
+> Format-v3 rules sealed with `RulesProtection::Confidential` are
+> readable only by the X25519 or X-Wing recipients you name, and still
+> verify without any key (library API now; `aion --recipient` arrives
+> with RFC-0039 Phase B4). See [crypto](book/src/architecture/crypto.md#confidential-rules).
 
 It is *not* a replacement for sigstore, in-toto, or SLSA. It is the
 policy/document-shaped sibling those systems leave on the table — see
@@ -130,7 +132,7 @@ aion --help
 |---|---|
 | **CLI** (`aion`) | `init` / `commit` / `verify` / `inspect` / `registry rotate \| revoke` / `release seal \| verify` / `archive verify` / `key generate` |
 | **Library** | `init_file` / `commit_version` / hardware-backed `commit_version_with_signer` / `verify_file` / `KeyRegistry` / `verify_multisig` (RFC-0021) / sealed releases (RFC-0032) / hardware attestation (RFC-0026) / hybrid PQC (RFC-0027) / transparency log (RFC-0025) |
-| **Format** | Zero-copy binary layout. One header, one chained signature history, one rules section, one trailing integrity hash. Format v3 rules are public or, from RFC-0039 Phase B, confidential. The latest payload is always inline; historical payloads are addressed by their `rules_hash` for external archival. |
+| **Format** | Zero-copy binary layout. One header, one chained signature history, one rules section, one trailing integrity hash. Format v3 rules are public or confidential to named recipients (RFC-0039). The latest payload is always inline; historical payloads are addressed by their `rules_hash` for external archival. |
 | **Tracing** | `AION_LOG=info` produces structured per-event lines (`event=file_verified`, `event=signature_rejected reason=...`, etc.). `AION_LOG_FORMAT=json` for log-store ingest. |
 | **Examples** | `policy_loop`, `llm_policy_agent` (Claude as proposer + `.aion` as gate), `aegis_consortium` (5-party PQC quorum), `federation_hw_attest` (cross-domain TEE keys), `corpus_to_aion` (any git history → signed chain) |
 

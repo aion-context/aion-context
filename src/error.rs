@@ -280,6 +280,23 @@ pub enum AionError {
     #[error("Rules are confidential: a recipient key is required to read them")]
     RecipientKeyRequired,
 
+    /// None of the supplied identities is a recipient of this confidential
+    /// rules section (RFC-0039). Recipient identities are public in the
+    /// section, so this reveals nothing.
+    #[error("None of the supplied identities is a recipient of these rules")]
+    NotARecipient,
+
+    /// A stanza addressed to a supplied identity exists, but the rules
+    /// could not be opened (RFC-0039). Deliberately opaque about which step
+    /// failed: unwrap, key commitment, decryption, or framing.
+    #[error("Confidential rules could not be opened")]
+    RulesUnopenable,
+
+    /// Confidential protection was requested with no recipients, or for a
+    /// format that has no confidential mode (RFC-0039)
+    #[error("Confidential rules need format v3 and at least one recipient")]
+    NoRecipients,
+
     /// Invalid private key
     #[error("Invalid private key: {reason}")]
     InvalidPrivateKey {

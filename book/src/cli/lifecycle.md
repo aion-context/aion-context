@@ -20,8 +20,10 @@ aion init <FILE> \
 `init` writes a format-v3 file (RFC-0039). The rules protection has no
 default, so `--public` is required: it stores the rules in the clear,
 framed and padded, where anyone holding the file can read them. The
-signature makes them tamper-evident, not secret. Confidential rules,
-readable only by named recipients, arrive with RFC-0039 Phase B.
+signature makes them tamper-evident, not secret. The library already
+seals confidential rules to named recipients
+(`RulesProtection::Confidential`); the CLI's `--recipient` arrives with
+RFC-0039 Phase B4.
 `--no-encryption` is a deprecated alias for `--public` and will be
 removed in 3.0.
 
