@@ -14,8 +14,12 @@ aion init <FILE> \
     [--rules <RULES_FILE> | --rules -]   # stdin if `-`
     [--message <MESSAGE>]                # defaults to "Genesis version"
     [--force]                            # overwrite if FILE exists
-    [--no-encryption]
+    [--no-encryption]                    # no effect; kept for compatibility
 ```
+
+The rules payload is readable by anyone who holds the file. It is
+tamper-evident, not confidential; see
+[crypto](../architecture/crypto.md#the-rules-section-is-not-confidential).
 
 `init` deliberately does **not** take a registry. Genesis trust
 flows from the original signing key alone; the registry is

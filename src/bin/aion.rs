@@ -87,7 +87,9 @@ struct InitArgs {
     #[arg(long)]
     force: bool,
 
-    /// Disable encryption (not recommended for production)
+    /// No effect; kept for CLI compatibility. The rules section is
+    /// always written the same way, and it is readable by anyone who
+    /// holds the file (tamper-evident, not confidential).
     #[arg(long)]
     no_encryption: bool,
 }
@@ -724,14 +726,10 @@ fn print_init_banner(args: &InitArgs) {
     println!("🚀 Initializing AION file: {}", args.path.display());
     println!("   Author: {}", args.author);
     println!("   Message: {}", args.message);
-    println!(
-        "   Encryption: {}",
-        if args.no_encryption {
-            "disabled"
-        } else {
-            "enabled"
-        }
-    );
+    println!("   Rules: tamper-evident, readable by anyone holding the file");
+    if args.no_encryption {
+        eprintln!("note: --no-encryption has no effect; the rules section is never confidential");
+    }
 }
 
 fn load_signing_key_for_init(args: &InitArgs) -> Result<aion_context::crypto::SigningKey> {

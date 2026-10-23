@@ -237,6 +237,14 @@ static_assert!(sizeof(AuditEntry) == 80);
 - **Audit Trail:** Tamper-proof event log
 - **Confidentiality:** Encrypted rules (optional)
 
+> **Errata (2026-10).** Threat 4 and the confidentiality guarantee do
+> not hold for the implementation. The rules key is derived from the
+> public `file_id` and version alone. See the Key Storage bullet
+> "Master encryption key derived from file ID" above. So anyone
+> holding the file can read its rules. See the RFC-0003 errata and
+> `book/src/architecture/crypto.md` § "The rules section is not
+> confidential".
+
 **NOT Guaranteed:**
 - **Availability:** No redundancy in single-file design
 - **Access Control:** File-level only (OS permissions)

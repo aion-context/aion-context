@@ -215,7 +215,7 @@ aion init <FILE> --author <ID> --key <KEY_ID> [OPTIONS]
 | `-r, --rules` | No | Rules file (stdin if omitted) |
 | `-m, --message` | No | Commit message (default: "Genesis version") |
 | `--force` | No | Overwrite existing file |
-| `--no-encryption` | No | Disable encryption (not recommended) |
+| `--no-encryption` | No | No effect; kept for compatibility. Rules are readable by anyone holding the file. |
 
 **Examples:**
 
