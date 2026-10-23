@@ -23,13 +23,15 @@ can now reject replayed and forked versions with `accept_file` and
 - **Upgrade readers before writers.** 2.0.0 reads, verifies, and
   commits format-v2 files. 1.0.x rejects format-v3 files with
   `UnsupportedVersion`.
+- 2.0.0 includes the fixes for GHSA-7625-44v8-v62f (1.0.1) and
+  GHSA-9c6x-g6hv-mpvr (1.0.2).
 - Add `protection: RulesProtection::Public` to `InitOptions`,
   `CommitOptions`, and `ExternalCommitOptions`, and `--public` to
   `aion init` and `aion commit`.
 - `SigningKey::generate`, `crypto::generate_nonce`,
   `HybridSigningKey::generate`, and four `dsse` payload builders return
   `Result`. Add `?`.
-- The minimum supported Rust version is 1.85.
+- The minimum supported Rust version is 1.87.
 - Rules are not confidential in either format. Format-v3 public rules
   are stored in the clear. Confidential rules are RFC-0039 Phase B.
 
@@ -287,6 +289,24 @@ can now reject replayed and forked versions with `accept_file` and
 - `unsafe-libyaml` (RUSTSEC-2024-0449, via the deprecated `serde_yaml`)
   is ignored with a written reason pending migration to a safe-Rust
   YAML crate.
+
+## [1.0.2] — 2026-10-23
+
+Security patch release. No API, format, or CLI changes.
+
+### Security
+
+- **GHSA-9c6x-g6hv-mpvr: unbounded header entry counts let a crafted
+  `.aion` file abort the verifying process.** `AionParser::new` did not
+  check `version_chain_count`, `signatures_count`, or
+  `audit_trail_count` against the file length, and readers sized
+  buffers from them. A file of a few hundred bytes, with no key, made
+  `verify_file`, `aion verify`, `aion archive verify`, and the history
+  readers abort on a huge allocation or panic with `capacity overflow`.
+  `AionParser::new` now rejects such headers with `InvalidFormat` and a
+  `parser_rejected` / `section_out_of_bounds` trace event. The bug
+  does not affect signature or hash-chain verification: it crashes the
+  reader rather than making it accept a forged file.
 
 ## [1.0.1] — 2026-10-23
 
