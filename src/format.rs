@@ -347,17 +347,26 @@ const RECIPIENT_TEXT_PREFIX: &str = "aion-recipient:";
 /// ```
 impl std::fmt::Display for Recipient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match (self, self.kem(), self.public_key()) {
-            (_, Some(kem), Some(key)) => {
-                write!(f, "{RECIPIENT_TEXT_PREFIX}{kem}:{}", hex::encode(key))
-            }
-            (Self::External(wrapper), ..) => write!(
+        use crate::confidential::EncryptionKem;
+        match self {
+            Self::X25519(key) => write!(
+                f,
+                "{RECIPIENT_TEXT_PREFIX}{}:{}",
+                EncryptionKem::X25519,
+                hex::encode(key)
+            ),
+            Self::XWing(key) => write!(
+                f,
+                "{RECIPIENT_TEXT_PREFIX}{}:{}",
+                EncryptionKem::XWing,
+                hex::encode(key.as_slice())
+            ),
+            Self::External(wrapper) => write!(
                 f,
                 "aion-external:{}:{}",
                 wrapper.provider_id(),
                 wrapper.key_ref()
             ),
-            _ => f.write_str("aion-recipient:unknown"),
         }
     }
 }

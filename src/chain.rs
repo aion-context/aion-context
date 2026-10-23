@@ -1170,6 +1170,60 @@ mod tests {
         ));
     }
 
+    /// A provider failure, or two different handles naming the same key,
+    /// refuses the commit and leaves the file byte-identical.
+    #[test]
+    fn external_wrapper_failures_leave_the_file_unchanged() {
+        struct Failing;
+        impl crate::confidential::DekWrapper for Failing {
+            #[allow(clippy::unnecessary_literal_bound)] // the trait fixes the signature
+            fn provider_id(&self) -> &str {
+                "local-kms"
+            }
+            #[allow(clippy::unnecessary_literal_bound)] // the trait fixes the signature
+            fn key_ref(&self) -> &str {
+                "down"
+            }
+            fn wrap(&self, _dek: &[u8; 32], _context: &[u8]) -> Result<Vec<u8>> {
+                Err(AionError::EncryptionFailed {
+                    reason: "kms unavailable".to_string(),
+                })
+            }
+        }
+        let dir = ok(TempDir::new());
+        let path = dir.path().join("unchanged.aion");
+        let key = ok(SigningKey::generate());
+        let author = AuthorId::new(90_031);
+        let reader = identity(EncryptionKem::X25519);
+        let registry = grow_confidential(&path, &key, author, &[(b"v1", vec![reader.recipient()])]);
+        let before = ok(std::fs::read(&path));
+
+        let twin = |key_ref: &'static str| {
+            std::sync::Arc::new(crate::confidential::tests::LocalKms {
+                key: [9; 32],
+                key_ref,
+            })
+        };
+        let attempts = [
+            vec![Recipient::external(std::sync::Arc::new(Failing))],
+            vec![
+                Recipient::external(twin("same")),
+                Recipient::external(twin("same")),
+            ],
+        ];
+        for recipients in attempts {
+            let commit = CommitOptions {
+                author_id: author,
+                signing_key: &key,
+                message: "v2",
+                timestamp: None,
+                protection: RulesProtection::Confidential { recipients },
+            };
+            assert!(commit_version(&path, b"v2", &commit, &registry).is_err());
+            assert_eq!(ok(std::fs::read(&path)), before);
+        }
+    }
+
     #[test]
     fn confidential_rules_over_the_size_limit_are_refused() {
         let dir = ok(TempDir::new());

@@ -907,7 +907,7 @@ fn confidential_to(recipients: Vec<Recipient>) -> RulesProtection {
         .any(|r| r.kem() == Some(EncryptionKem::XWing));
     let classical = recipients
         .iter()
-        .any(|r| r.kem() != Some(EncryptionKem::XWing));
+        .any(|r| r.kem() == Some(EncryptionKem::X25519));
     if xwing && classical {
         eprintln!(
             "note: this version mixes X-Wing and non-post-quantum recipients; it is only as \

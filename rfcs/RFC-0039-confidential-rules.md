@@ -1195,8 +1195,7 @@ Dependencies (B2):
   - **Library only.** No provider adapter ships in the crate, so the CLI
     does not take `kms:` recipients yet; `--keep-recipients` refuses a
     head with an external stanza, as specified.
-- *C2 (`aion migrate`) waits for RFC-0040*, which makes the migration
-  link a signed field.
+- *C2 (`aion migrate`) follows in a later change.*
 
 ### Phase D (conditional on Unresolved Question 3)
 

@@ -643,8 +643,15 @@ fn seal_confidential(
 ) -> Result<Vec<u8>> {
     let mut distinct: Vec<crate::format::Recipient> = Vec::with_capacity(recipients.len());
     for recipient in recipients {
-        if !distinct.iter().any(|kept| same_recipient(kept, recipient)) {
-            distinct.push(recipient.clone());
+        match distinct.iter().find(|kept| same_recipient(kept, recipient)) {
+            None => distinct.push(recipient.clone()),
+            Some(kept) if distinct_handles(kept, recipient) => {
+                return Err(AionError::EncryptionFailed {
+                    reason: "two different external wrappers report the same provider and key"
+                        .to_string(),
+                });
+            }
+            Some(_) => {}
         }
     }
     if distinct.is_empty() {
@@ -661,6 +668,17 @@ fn seal_confidential(
         return Err(too_big());
     }
     crate::confidential::seal_section(&framed, &distinct, ctx)
+}
+
+/// Two external recipients name the same provider and key but are
+/// different handles, so dropping one could drop a different service.
+fn distinct_handles(a: &crate::format::Recipient, b: &crate::format::Recipient) -> bool {
+    match (a, b) {
+        (crate::format::Recipient::External(x), crate::format::Recipient::External(y)) => {
+            !std::sync::Arc::ptr_eq(x, y)
+        }
+        _ => false,
+    }
 }
 
 /// Two recipients are the same reader: the same KEM and public key

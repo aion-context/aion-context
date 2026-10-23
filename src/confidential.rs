@@ -543,7 +543,16 @@ impl<'a> ExternalStanza<'a> {
 /// author's section. The implementation owns its timeouts and retries:
 /// this crate is synchronous and never calls a provider concurrently.
 ///
+/// `provider_id` and `key_ref` **identify the recipient**: they must be
+/// stable for the life of the handle, and two handles that report the same
+/// pair are the same recipient. A writer given two *different* handles
+/// with the same pair refuses to seal rather than silently dropping one.
+/// The encoded stanza (`5 + provider_id + key_ref + blob` bytes) must fit
+/// in 4096 bytes.
+///
 /// # Example
+///
+/// A demonstration only: a real provider encrypts under its own key.
 ///
 /// ```
 /// use aion_context::confidential::DekWrapper;
@@ -553,7 +562,7 @@ impl<'a> ExternalStanza<'a> {
 ///     fn provider_id(&self) -> &str { "example-escrow" }
 ///     fn key_ref(&self) -> &str { "policy-key-1" }
 ///     fn wrap(&self, dek: &[u8; 32], _context: &[u8]) -> aion_context::Result<Vec<u8>> {
-///         Ok(dek.to_vec()) // a real provider encrypts under its key
+///         Ok(dek.to_vec())
 ///     }
 /// }
 /// ```
@@ -568,7 +577,8 @@ pub trait DekWrapper: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Any provider failure; the commit then writes nothing.
+    /// Return [`AionError::EncryptionFailed`] for any provider failure;
+    /// the commit then writes nothing.
     fn wrap(&self, dek: &[u8; 32], context: &[u8]) -> Result<Vec<u8>>;
 }
 
@@ -577,9 +587,35 @@ pub trait DekWrapper: Send + Sync {
 /// The returned DEK is always checked against the section's DEK commitment
 /// before use, so a provider bug or a substituted blob cannot make readers
 /// see different rules.
+///
+/// # Example
+///
+/// ```
+/// use aion_context::confidential::{DekUnwrapper, ExternalStanza};
+/// use zeroize::Zeroizing;
+///
+/// struct Escrow;
+/// impl DekUnwrapper for Escrow {
+///     fn accepts(&self, stanza: &ExternalStanza<'_>) -> bool {
+///         stanza.provider_id() == "example-escrow" && stanza.key_ref() == "policy-key-1"
+///     }
+///     fn unwrap_dek(&self, stanza: &ExternalStanza<'_>, _context: &[u8])
+///         -> aion_context::Result<Zeroizing<[u8; 32]>> {
+///         let mut dek = Zeroizing::new([0u8; 32]);
+///         let blob = stanza.blob();
+///         if blob.len() != 32 {
+///             return Err(aion_context::AionError::DecryptionFailed { reason: "bad blob".into() });
+///         }
+///         dek.copy_from_slice(blob);
+///         Ok(dek)
+///     }
+/// }
+/// ```
 pub trait DekUnwrapper: Send + Sync {
-    /// Whether this unwrapper can handle `stanza`, typically by matching
-    /// its provider and key reference.
+    /// Whether this unwrapper handles `stanza`. Match the provider and key
+    /// reference **exactly**: both come from the file. Do not treat
+    /// `key_ref` as a resource path without validating it, since every
+    /// accepted stanza costs a provider call.
     fn accepts(&self, stanza: &ExternalStanza<'_>) -> bool;
 
     /// Unwrap the DEK from `stanza`, bound to the same `context` the writer
@@ -587,8 +623,13 @@ pub trait DekUnwrapper: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Any provider failure; it is reported as `RulesUnopenable`.
-    fn unwrap(&self, stanza: &ExternalStanza<'_>, context: &[u8]) -> Result<Zeroizing<[u8; 32]>>;
+    /// Return [`AionError::DecryptionFailed`] for any provider failure. The
+    /// reader sees it as `RulesUnopenable`; the cause is logged.
+    fn unwrap_dek(
+        &self,
+        stanza: &ExternalStanza<'_>,
+        context: &[u8],
+    ) -> Result<Zeroizing<[u8; 32]>>;
 }
 
 /// The context an external wrapper binds: `info ‖ ctx ‖ dek_commitment`.
@@ -618,11 +659,22 @@ fn wrap_external(
         .ok()
         .filter(|len| (1..=1024).contains(len))
         .ok_or_else(|| invalid("external key_ref must be 1-1024 bytes"))?;
+    let header_len = 5usize
+        .saturating_add(provider_id.len())
+        .saturating_add(key_ref.len());
+    if header_len >= crate::envelope::MAX_STANZA_BODY {
+        return Err(invalid(
+            "external provider_id and key_ref leave no room for a blob",
+        ));
+    }
     let blob = wrapper.wrap(dek.as_bytes(), &external_context(ctx, &dek.commitment()))?;
     let blob_len = u16::try_from(blob.len())
         .ok()
         .filter(|len| (1..=4096).contains(len))
         .ok_or_else(|| invalid("external wrapper returned a blob outside 1-4096 bytes"))?;
+    if header_len.saturating_add(blob.len()) > crate::envelope::MAX_STANZA_BODY {
+        return Err(invalid("external stanza exceeds 4096 bytes"));
+    }
     let mut body = Vec::with_capacity(
         5usize
             .saturating_add(provider_id.len())
@@ -646,12 +698,19 @@ fn unwrap_external(
     dek_commitment: &[u8; 32],
 ) -> Result<Dek> {
     let bytes = unwrapper
-        .unwrap(stanza, &external_context(ctx, dek_commitment))
-        .map_err(|_| unopenable())?;
+        .unwrap_dek(stanza, &external_context(ctx, dek_commitment))
+        .map_err(|_| {
+            tracing::warn!(event = "external_unwrap_failed", reason = "provider_error");
+            unopenable()
+        })?;
     let dek = Dek::from_bytes(bytes);
     if bool::from(dek.commitment().ct_eq(dek_commitment)) {
         Ok(dek)
     } else {
+        tracing::warn!(
+            event = "external_unwrap_failed",
+            reason = "commitment_mismatch"
+        );
         Err(unopenable())
     }
 }
@@ -1234,7 +1293,7 @@ pub(crate) mod tests {
         fn accepts(&self, stanza: &ExternalStanza<'_>) -> bool {
             stanza.provider_id() == "local-kms" && stanza.key_ref() == self.key_ref
         }
-        fn unwrap(
+        fn unwrap_dek(
             &self,
             stanza: &ExternalStanza<'_>,
             context: &[u8],
@@ -1259,7 +1318,7 @@ pub(crate) mod tests {
         fn accepts(&self, _stanza: &ExternalStanza<'_>) -> bool {
             true
         }
-        fn unwrap(
+        fn unwrap_dek(
             &self,
             _stanza: &ExternalStanza<'_>,
             _context: &[u8],
@@ -1386,6 +1445,120 @@ pub(crate) mod tests {
             });
             assert!(seal_section(&framed, &[Recipient::external(wrapper)], &ctx()).is_err());
         }
+    }
+
+    /// A provider that stores the DEK in the clear and ignores the context.
+    struct CarelessKms;
+
+    impl DekWrapper for CarelessKms {
+        #[allow(clippy::unnecessary_literal_bound)] // the trait fixes the signature
+        fn provider_id(&self) -> &str {
+            "careless"
+        }
+        #[allow(clippy::unnecessary_literal_bound)] // the trait fixes the signature
+        fn key_ref(&self) -> &str {
+            "k"
+        }
+        fn wrap(&self, dek: &[u8; 32], _context: &[u8]) -> Result<Vec<u8>> {
+            Ok(dek.to_vec())
+        }
+    }
+
+    impl DekUnwrapper for CarelessKms {
+        fn accepts(&self, stanza: &ExternalStanza<'_>) -> bool {
+            stanza.provider_id() == "careless"
+        }
+        fn unwrap_dek(
+            &self,
+            stanza: &ExternalStanza<'_>,
+            _context: &[u8],
+        ) -> Result<Zeroizing<[u8; 32]>> {
+            let mut dek = Zeroizing::new([0u8; 32]);
+            if stanza.blob().len() != 32 {
+                return Err(unopenable());
+            }
+            dek.copy_from_slice(stanza.blob());
+            Ok(dek)
+        }
+    }
+
+    /// An unwrapper whose provider always fails.
+    struct DownKms;
+
+    impl DekUnwrapper for DownKms {
+        fn accepts(&self, _stanza: &ExternalStanza<'_>) -> bool {
+            true
+        }
+        fn unwrap_dek(
+            &self,
+            _stanza: &ExternalStanza<'_>,
+            _context: &[u8],
+        ) -> Result<Zeroizing<[u8; 32]>> {
+            Err(AionError::DecryptionFailed {
+                reason: "kms throttled".to_string(),
+            })
+        }
+    }
+
+    #[test]
+    fn a_failing_unwrapper_is_unopenable_and_the_next_one_is_tried() {
+        let vault = kms("policy-key");
+        let bytes = seal_to(&[Recipient::external(vault.clone())], &ctx());
+        let down: Vec<std::sync::Arc<dyn DekUnwrapper>> = vec![std::sync::Arc::new(DownKms)];
+        assert!(matches!(
+            open_with(&bytes, &[], &down, &ctx()),
+            Err(AionError::RulesUnopenable)
+        ));
+        let both: Vec<std::sync::Arc<dyn DekUnwrapper>> = vec![std::sync::Arc::new(DownKms), vault];
+        assert_eq!(ok(open_with(&bytes, &[], &both, &ctx())), b"kms rules");
+    }
+
+    /// A provider that ignores the context only weakens its own stanza:
+    /// the content AEAD still binds `ctx`, so a moved section fails.
+    #[test]
+    fn a_context_ignoring_provider_still_cannot_open_a_moved_section() {
+        let careless = std::sync::Arc::new(CarelessKms);
+        let bytes = seal_to(&[Recipient::external(careless.clone())], &ctx());
+        let unwrappers: Vec<std::sync::Arc<dyn DekUnwrapper>> = vec![careless];
+        assert_eq!(
+            ok(open_with(&bytes, &[], &unwrappers, &ctx())),
+            b"kms rules"
+        );
+        let moved = binding_context(FileId(1), AuthorId(77), VersionNumber(3));
+        assert!(matches!(
+            open_with(&bytes, &[], &unwrappers, &moved),
+            Err(AionError::RulesUnopenable)
+        ));
+    }
+
+    #[test]
+    fn key_ref_and_total_size_bounds_are_enforced_before_encoding() {
+        struct Sized(String, usize);
+        impl DekWrapper for Sized {
+            #[allow(clippy::unnecessary_literal_bound)] // the trait fixes the signature
+            fn provider_id(&self) -> &str {
+                "p"
+            }
+            fn key_ref(&self) -> &str {
+                &self.0
+            }
+            fn wrap(&self, _dek: &[u8; 32], _context: &[u8]) -> Result<Vec<u8>> {
+                Ok(vec![1; self.1])
+            }
+        }
+        let framed = ok(crate::format::frame_rules(b"r"));
+        let seal = |key_ref: usize, blob: usize| {
+            let wrapper = std::sync::Arc::new(Sized("k".repeat(key_ref), blob));
+            seal_section(&framed, &[Recipient::external(wrapper)], &ctx())
+        };
+        assert!(seal(0, 16).is_err());
+        assert!(seal(1025, 16).is_err());
+        assert!(seal(1024, 16).is_ok());
+        assert!(matches!(
+            seal(1024, 4096),
+            Err(AionError::EncryptionFailed { .. })
+        ));
+        assert!(seal(1024, 4096 - 5 - 1 - 1024).is_ok());
     }
 
     mod properties {

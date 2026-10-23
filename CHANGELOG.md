@@ -75,8 +75,13 @@ and the project follows [Semantic Versioning].
     `0x02`, bound to `"AION_V3_DEK_WRAP_V1\0" ‖ ctx ‖ dek_commitment` as
     its encryption context.
   - Writers: `Recipient::External(Arc<dyn DekWrapper>)` /
-    `Recipient::external(..)`; repeated `(provider, key)` pairs are
-    written once; out-of-range provider output refuses to seal.
+    `Recipient::external(..)`; a repeated handle is written once, while two
+    *different* handles reporting the same `(provider, key)` refuse to
+    seal; out-of-range provider output (including a stanza over 4096
+    bytes) refuses to seal before encoding, and nothing is written.
+  - Readers: unwrappers implement `accepts` (exact match) and
+    `unwrap_dek`; a provider failure or a commitment mismatch is logged
+    as `external_unwrap_failed` with a bounded reason.
   - Readers: `RecipientKeys::with_unwrapper(..)`. The unwrapped DEK is
     always checked against the key commitment, so a lying or buggy
     provider gets `RulesUnopenable`, never different rules.
