@@ -11,22 +11,22 @@ explicit about this.
 |---|---|---|
 | Signing | `ed25519-dalek` | Every signature: versions, attestations, manifests, DSSE envelopes, rotation records, revocation records |
 | Hashing | `blake3` | Version hashes, parent_hash chain, integrity hash, leaf hashes for transparency log, manifest IDs |
-| Symmetric AEAD | `chacha20poly1305` (ChaCha20-Poly1305, 96-bit nonce) | Rules section in `.aion` files — encoding only, see [below](#the-rules-section-is-not-confidential) |
-| Key derivation | `hkdf` (HKDF-SHA256) | Rules-section key from `file_id` + version (both public) |
+| Symmetric AEAD | `chacha20poly1305` (ChaCha20-Poly1305, 96-bit nonce) | Confidential rules content; format-v2 rules encoding only, see [below](#public-rules-are-not-confidential) |
+| Key derivation | `hkdf` (HKDF-SHA256) | Confidential content key from the per-version DEK; v2 rules key from `file_id` + version (both public) |
+| Recipient key wrapping | `hpke` 0.14.1 (RFC 9180 base mode) | DEK wrapped per recipient: DHKEM(X25519) or X-Wing (ML-KEM-768 + X25519, via `ml-kem` and `x-wing`) |
 | Password-based KDF | `argon2` | Keystore password protection |
 | Constant-time compare | `subtle::ConstantTimeEq` | Public-key comparisons (post-PR #43) |
 | Randomness | `rand::rngs::OsRng` | Nonces, key generation |
 | Post-quantum signing | `pqcrypto-mldsa` (ML-DSA-65) | Hybrid signatures (RFC-0027) |
 
-## The rules section is not confidential
+## Public rules are not confidential
 
-**Format v3 (written since RFC-0039 Phase A):** rules written with
+**Format v3, public mode:** rules written with
 `RulesProtection::Public` / `--public` are stored in the clear, framed
 and Padmé-padded. The version entry signs a BLAKE3 commitment to those
 exact stored bytes, so any change fails `verify_file` without any key.
 Public means public: the signature makes the rules tamper-evident,
-not secret. Confidential rules, readable only by named recipients,
-arrive with RFC-0039 Phase B.
+not secret. For secrecy, use [confidential rules](#confidential-rules).
 
 **Format v2 (files written before format v3):** the rules payload is
 stored as ChaCha20-Poly1305 ciphertext, but **anyone who holds an
@@ -56,10 +56,43 @@ If the policy itself must be kept confidential, encrypt the whole
 (age, a KMS envelope, disk encryption).
 
 For either format, real confidentiality needs a key that isn't
-stored in the file. RFC-0039 (accepted) specifies it: confidential
-v3 sections are encrypted under a per-version key wrapped for each
-named recipient. `aion init --no-encryption` is now a deprecated
-alias for `--public`.
+stored in the file: that is [confidential rules](#confidential-rules).
+`aion init --no-encryption` is now a deprecated alias for `--public`.
+
+## Confidential rules
+
+Format-v3 rules written with `RulesProtection::Confidential` (RFC-0039)
+are readable only by the recipients the writer names, and verification
+stays key-free.
+
+- **Per version:** a fresh random 32-byte DEK. The content key is
+  HKDF-SHA256 of the DEK, salted with `ctx = file_id ‖ author_id ‖
+  version`; the framed rules are sealed with ChaCha20-Poly1305 under
+  `AION_V3_RULES_AAD_V1\0 ‖ ctx`.
+- **Per recipient:** the DEK is sealed with HPKE base mode, `info =
+  AION_V3_DEK_WRAP_V1\0 ‖ ctx` and `aad = dek_commitment`, using
+  DHKEM(X25519) or X-Wing (ML-KEM-768 + X25519).
+- **Key commitment:** `dek_commitment = BLAKE3::derive_key("aion-context
+  v3 2026-10 dek commitment", DEK)` is checked before any decryption,
+  so every recipient who can open the rules reads the same bytes.
+- **Signed:** the version signs the BLAKE3 commitment to the whole
+  sealed section, so verification needs no key, and a section copied
+  into another author's file or version opens for no one.
+
+Readers use `chain::open_current_rules` with `RecipientKeys` holding
+their `confidential::EncryptionIdentity`. Errors are deliberately
+coarse: `RecipientKeyRequired` (no identity supplied), `NotARecipient`
+(none of yours is listed), and `RulesUnopenable` (listed, but opening
+failed at any step). `chain::disclose_version_key` releases one
+version's DEK for selective disclosure; it opens that version only.
+
+Still visible to anyone holding the file: recipient public keys and
+their KEM kinds, the padded rules length, commit messages, authors,
+timestamps, and the version count. Post-quantum confidentiality holds
+only when **every** recipient of a version uses X-Wing: an X25519
+recipient wraps the same DEK under a classical KEM. Signatures stay
+Ed25519 unless RFC-0027 hybrid signatures are used. The `ml-kem` and
+`x-wing` crates state that they have not been independently audited.
 
 ## Domain separation
 
@@ -85,6 +118,11 @@ confused with hashes used for another. The separators in use:
 | `AION_V3_VERSION_HASH_V1\0` | Format-v3 version hash, the value `parent_hash` links to (RFC-0039) |
 | `AION_V3_ATTESTATION_V1\0` | Format-v3 multi-party attestation message (RFC-0039) |
 | `AION_V3_RULES_COMMIT_V1\0` | Format-v3 commitment to the stored rules section (RFC-0039) |
+| `aion-context v3 2026-10 dek commitment` | BLAKE3 `derive_key` context for the DEK commitment (RFC-0039) |
+
+Key-derivation and HPKE labels (not BLAKE3 domains):
+`AION_V3_RULES_KEY_V1\0` (HKDF info), `AION_V3_RULES_AAD_V1\0` (content
+AEAD), and `AION_V3_DEK_WRAP_V1\0` (HPKE info).
 
 A trailing `\0` byte forbids any other domain from being
 constructed by appending bytes to one of these.

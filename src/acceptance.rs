@@ -949,6 +949,76 @@ mod tests {
         ok(accept_file(&fx.main[0], &fx.registry, &v3, &store));
     }
 
+    /// A chain of `modes` (true = confidential), oldest first.
+    fn chain_of(dir: &TempDir, name: &str, modes: &[bool]) -> (std::path::PathBuf, KeyRegistry) {
+        use crate::confidential::{EncryptionIdentity, EncryptionKem};
+        let key = ok(SigningKey::generate());
+        let author = AuthorId::new(95_001);
+        let master = ok(SigningKey::generate());
+        let mut registry = KeyRegistry::new();
+        ok(registry.register_author(author, master.verifying_key(), key.verifying_key(), 0));
+        let reader = ok(EncryptionIdentity::generate(EncryptionKem::XWing));
+        let protection = |confidential: bool| {
+            if confidential {
+                RulesProtection::Confidential {
+                    recipients: vec![reader.recipient()],
+                }
+            } else {
+                RulesProtection::Public
+            }
+        };
+        let path = dir.path().join(name);
+        for (index, confidential) in modes.iter().enumerate() {
+            if index == 0 {
+                let init = InitOptions {
+                    author_id: author,
+                    signing_key: &key,
+                    message: "v1",
+                    timestamp: None,
+                    protection: protection(*confidential),
+                };
+                ok(init_file(&path, b"rules", &init));
+            } else {
+                let commit = CommitOptions {
+                    author_id: author,
+                    signing_key: &key,
+                    message: "next",
+                    timestamp: None,
+                    protection: protection(*confidential),
+                };
+                ok(commit_version(&path, b"rules", &commit, &registry));
+            }
+        }
+        (path, registry)
+    }
+
+    #[test]
+    fn confidentiality_policy_reads_the_signed_modes_of_real_files() {
+        let dir = ok(TempDir::new());
+        let head = AcceptPolicy::new().require_confidential(ConfidentialScope::Head);
+        let all = AcceptPolicy::new().require_confidential(ConfidentialScope::AllVersions);
+
+        let (mixed, registry) = chain_of(&dir, "mixed.aion", &[false, true]);
+        ok(accept_file(&mixed, &registry, &head, &MemoryStore::new()));
+        assert!(matches!(
+            accept_file(&mixed, &registry, &all, &MemoryStore::new()),
+            Err(AionError::PolicyRejected {
+                reason: "version_not_confidential"
+            })
+        ));
+
+        let (sealed, registry) = chain_of(&dir, "sealed.aion", &[true, true]);
+        ok(accept_file(&sealed, &registry, &all, &MemoryStore::new()));
+
+        let (reopened, registry) = chain_of(&dir, "reopened.aion", &[true, false]);
+        assert!(matches!(
+            accept_file(&reopened, &registry, &head, &MemoryStore::new()),
+            Err(AionError::PolicyRejected {
+                reason: "head_not_confidential"
+            })
+        ));
+    }
+
     fn store_failure(result: &Result<VerifiedChain>) -> Option<&'static str> {
         match result {
             Err(AionError::StoreUnavailable { reason }) => Some(reason),

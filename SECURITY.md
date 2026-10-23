@@ -57,11 +57,14 @@ move it to a public issue if it turns out to be out of scope.
 
 ### Known limitations
 
-- **Rules are not confidential.** The rules section is encrypted
+- **Public and format-v2 rules are not confidential.** Public format-v3
+  rules are stored in the clear, and format-v2 rules are encrypted
   with a key derived only from public header fields, so anyone who
-  holds an `.aion` file can read its rules. This is documented
-  behavior, not an embargoed vulnerability. See
-  [crypto.md](book/src/architecture/crypto.md#the-rules-section-is-not-confidential).
+  holds such a file can read its rules. Confidential format-v3 rules
+  hide the content but not the recipient list, padded length, commit
+  messages, or authors. This is documented behavior, not an embargoed
+  vulnerability. See
+  [crypto.md](book/src/architecture/crypto.md#public-rules-are-not-confidential).
   A report that shows a way to *forge or alter* rules without
   detection is in scope.
 

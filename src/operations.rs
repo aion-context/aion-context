@@ -143,6 +143,7 @@ pub fn init_file(path: &Path, initial_rules: &[u8], options: &InitOptions) -> Re
         &options.protection,
         initial_rules,
         VersionNumber::GENESIS,
+        options.author_id,
     )?;
     let rules_hash = encoded.rules_hash;
 
@@ -433,7 +434,13 @@ fn commit_version_with_signer_inner(
     }
 
     let timestamp = options.timestamp.unwrap_or_else(current_timestamp_nanos);
-    let encoded = encode_rules(&context, &options.protection, new_rules, new_version)?;
+    let encoded = encode_rules(
+        &context,
+        &options.protection,
+        new_rules,
+        new_version,
+        options.author_id,
+    )?;
     let rules_hash = encoded.rules_hash;
     let parent_hash = context.version_hash(&get_last_version_entry(&parser)?)?;
     let (string_table, message_offset) = build_string_table_with_message(options.message, &parser)?;
@@ -590,34 +597,79 @@ impl EncodedRules {
 }
 
 /// Encode rules for a file's format. Format v2 keeps its legacy encoding
-/// (it has no modes); format v3 honours the requested protection.
+/// (it has no modes, so it cannot be confidential); format v3 honours the
+/// requested protection.
 fn encode_rules(
     context: &FileContext,
     protection: &RulesProtection,
     rules: &[u8],
     version: VersionNumber,
+    author: AuthorId,
 ) -> Result<EncodedRules> {
-    match context.format() {
-        FormatVersion::V2 => {
+    let (section, mode) = match (context.format(), protection) {
+        (FormatVersion::V2, RulesProtection::Public) => {
             let (section, rules_hash) = encrypt_rules(rules, context.file_id(), version)?;
-            Ok(EncodedRules {
+            return Ok(EncodedRules {
                 section,
                 rules_hash,
                 mode: None,
-            })
+            });
         }
-        FormatVersion::V3 => match protection {
-            RulesProtection::Public => {
-                let section = crate::format::frame_rules(rules)?;
-                let rules_hash = crate::format::rules_commitment(RulesMode::Public, &section);
-                Ok(EncodedRules {
-                    section,
-                    rules_hash,
-                    mode: Some(RulesMode::Public),
-                })
-            }
-        },
+        (FormatVersion::V2, RulesProtection::Confidential { .. }) => {
+            return Err(AionError::ConfidentialityUnsupported)
+        }
+        (FormatVersion::V3, RulesProtection::Public) => {
+            (crate::format::frame_rules(rules)?, RulesMode::Public)
+        }
+        (FormatVersion::V3, RulesProtection::Confidential { recipients }) => {
+            let ctx = crate::confidential::binding_context(context.file_id(), author, version);
+            let section = seal_confidential(rules, recipients, &ctx)?;
+            (section, RulesMode::Confidential)
+        }
+    };
+    let rules_hash = crate::format::rules_commitment(mode, &section);
+    Ok(EncodedRules {
+        section,
+        rules_hash,
+        mode: Some(mode),
+    })
+}
+
+/// Seal rules to the distinct `recipients` as a confidential envelope.
+fn seal_confidential(
+    rules: &[u8],
+    recipients: &[crate::format::Recipient],
+    ctx: &[u8; crate::confidential::CTX_LEN],
+) -> Result<Vec<u8>> {
+    use subtle::ConstantTimeEq;
+    let mut distinct: Vec<&crate::format::Recipient> = Vec::with_capacity(recipients.len());
+    for recipient in recipients {
+        let seen = distinct.iter().any(|kept| {
+            kept.kem() == recipient.kem()
+                && bool::from(kept.public_key().ct_eq(recipient.public_key()))
+        });
+        if !seen {
+            distinct.push(recipient);
+        }
     }
+    if distinct.is_empty() {
+        return Err(AionError::NoRecipients);
+    }
+    let too_big = || AionError::InvalidFormat {
+        reason: "confidential rules exceed the 16 MiB limit".to_string(),
+    };
+    if rules.len() > crate::format::MAX_CONFIDENTIAL_RULES_LEN {
+        return Err(too_big());
+    }
+    let framed = zeroize::Zeroizing::new(crate::format::frame_rules(rules)?);
+    if framed.len() > crate::format::MAX_CONFIDENTIAL_RULES_LEN {
+        return Err(too_big());
+    }
+    let keys: Vec<(crate::confidential::EncryptionKem, &[u8])> = distinct
+        .iter()
+        .map(|recipient| (recipient.kem(), recipient.public_key()))
+        .collect();
+    crate::confidential::seal_section(&framed, &keys, ctx)
 }
 
 /// Pre-write authz check (issue #25): the signer must have an
@@ -1299,8 +1351,13 @@ fn verify_rules_section_v3(parser: &AionParser<'_>, versions: &[VersionEntry]) -
             actual: commitment,
         });
     }
-    if mode == crate::format::RulesMode::Public {
-        crate::format::unframe_rules(section)?;
+    match mode {
+        crate::format::RulesMode::Public => {
+            crate::format::unframe_rules(section)?;
+        }
+        crate::format::RulesMode::Confidential => {
+            crate::confidential::bounded_envelope(section)?;
+        }
     }
     Ok(())
 }
@@ -3722,15 +3779,26 @@ mod tests {
 
         const V3_FILE_ID: u64 = 0x00AB_CDEF_0123_4567;
 
-        fn section_for(rules: &[u8], mode: RulesMode) -> Vec<u8> {
+        /// A public section is the framed rules; a confidential one is a
+        /// real envelope sealed to a fixed test identity and bound to `ctx`.
+        fn section_for(
+            rules: &[u8],
+            mode: RulesMode,
+            ctx: &[u8; crate::confidential::CTX_LEN],
+        ) -> Vec<u8> {
+            let framed =
+                crate::format::frame_rules(rules).unwrap_or_else(|_| std::process::abort());
             match mode {
-                RulesMode::Public => {
-                    crate::format::frame_rules(rules).unwrap_or_else(|_| std::process::abort())
-                }
+                RulesMode::Public => framed,
                 RulesMode::Confidential => {
-                    let mut opaque = b"AIONENV1".to_vec();
-                    opaque.extend_from_slice(rules);
-                    opaque
+                    let reader = crate::confidential::EncryptionIdentity::from_seed(
+                        crate::confidential::EncryptionKem::X25519,
+                        zeroize::Zeroizing::new([0x5E; 32]),
+                    )
+                    .unwrap_or_else(|_| std::process::abort());
+                    let recipients = [(reader.kind(), reader.public_key())];
+                    crate::confidential::seal_section(&framed, &recipients, ctx)
+                        .unwrap_or_else(|_| std::process::abort())
                 }
             }
         }
@@ -3754,7 +3822,9 @@ mod tests {
             let mut parent = [0u8; 32];
             let mut head = Vec::new();
             for (index, (rules, mode)) in versions.iter().enumerate() {
-                let section = section_for(rules, *mode);
+                let version = VersionNumber((index as u64).saturating_add(1));
+                let ctx = crate::confidential::binding_context(context.file_id(), author, version);
+                let section = section_for(rules, *mode, &ctx);
                 let commitment = rules_commitment(*mode, &section);
                 let entry = VersionEntry::new(
                     VersionNumber((index as u64).saturating_add(1)),
@@ -3787,6 +3857,20 @@ mod tests {
                 .build()
                 .unwrap_or_else(|_| std::process::abort());
             AionSerializer::serialize(&file).unwrap_or_else(|_| std::process::abort())
+        }
+
+        #[test]
+        fn format_v2_cannot_be_confidential() {
+            let reader = crate::confidential::EncryptionIdentity::generate(
+                crate::confidential::EncryptionKem::X25519,
+            )
+            .unwrap_or_else(|_| std::process::abort());
+            let protection = RulesProtection::Confidential {
+                recipients: vec![reader.recipient()],
+            };
+            let v2 = FileContext::new(FormatVersion::V2, FileId::new(V3_FILE_ID));
+            let result = encode_rules(&v2, &protection, b"r", VersionNumber(2), AuthorId::new(1));
+            assert!(matches!(result, Err(AionError::ConfidentialityUnsupported)));
         }
 
         fn v3_context() -> FileContext {

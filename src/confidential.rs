@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Confidential-rules key schedule and recipient stanzas (RFC-0039 Phase B2).
+//! Confidential-rules key schedule and recipient stanzas (RFC-0039).
 //!
 //! - A fresh 32-byte DEK per version and per attempt.
 //! - `K_enc = HKDF-SHA256(ikm = DEK, salt = ctx, info = "AION_V3_RULES_KEY_V1\0")`
@@ -19,13 +19,22 @@
 //! buffer. If `hpke` consumes anything other than exactly what was drawn,
 //! the result is discarded.
 //!
-//! Crate-private: RFC-0039 Phase B3 builds the public reading and writing
-//! API on top of this module. B3 is also responsible for:
-//! - capping the ciphertext and framed length at the reader's rules-size
-//!   limit before [`open_content`] allocates the plaintext;
-//! - storing each seed with its kind, so one seed is never loaded as two
-//!   KEMs ([`EncryptionIdentity::from_seed`] cannot tell).
-#![cfg_attr(not(test), allow(dead_code))] // Phase B3 writers and readers are the first non-test callers.
+//! The public surface is the key material a caller handles:
+//! [`EncryptionKem`], [`EncryptionIdentity`], and [`VersionKey`]. Sealing and
+//! opening happen through `operations` (writing) and `chain` (reading), so a
+//! caller never touches an unverified section.
+//!
+//! # Example
+//!
+//! ```
+//! use aion_context::confidential::{EncryptionIdentity, EncryptionKem};
+//!
+//! let auditor = EncryptionIdentity::generate(EncryptionKem::XWing)?;
+//! assert_eq!(auditor.public_key().len(), 1216);
+//! let recipient = auditor.recipient();
+//! assert_eq!(recipient.kem(), EncryptionKem::XWing);
+//! # Ok::<(), aion_context::AionError>(())
+//! ```
 
 use std::convert::Infallible;
 
@@ -38,6 +47,7 @@ use subtle::ConstantTimeEq;
 use zeroize::Zeroizing;
 
 use crate::envelope::{encode_envelope, Envelope, StanzaRecipient, STANZA_X25519, STANZA_XWING};
+use crate::format::Recipient;
 use crate::types::{AuthorId, FileId, VersionNumber};
 use crate::{AionError, Result};
 
@@ -54,14 +64,14 @@ const DEK_COMMITMENT_CONTEXT: &str = "aion-context v3 2026-10 dek commitment";
 const DEK_WRAP_INFO: &[u8] = b"AION_V3_DEK_WRAP_V1\0";
 
 /// Length of `ctx`: `file_id ‖ author_id ‖ version`.
-pub const CTX_LEN: usize = 24;
+pub(crate) const CTX_LEN: usize = 24;
 
 const NONCE_LEN: usize = 12;
 const X25519_PK_LEN: usize = 32;
 const XWING_PK_LEN: usize = 1216;
 
 /// The binding context for one version: `file_id ‖ author_id ‖ version`.
-pub const fn binding_context(
+pub(crate) const fn binding_context(
     file_id: FileId,
     author: AuthorId,
     version: VersionNumber,
@@ -76,28 +86,28 @@ pub const fn binding_context(
 }
 
 /// A data-encryption key: 32 random bytes for one version's rules.
-pub struct Dek(Zeroizing<[u8; 32]>);
+pub(crate) struct Dek(Zeroizing<[u8; 32]>);
 
 impl Dek {
     /// Draw a fresh DEK from the OS RNG.
-    pub fn generate() -> Result<Self> {
+    pub(crate) fn generate() -> Result<Self> {
         let mut bytes = Zeroizing::new([0u8; 32]);
         crate::crypto::fill_os_entropy(bytes.as_mut())?;
         Ok(Self(bytes))
     }
 
     /// Wrap known DEK bytes, such as an unwrapped or disclosed DEK.
-    pub const fn from_bytes(bytes: Zeroizing<[u8; 32]>) -> Self {
+    pub(crate) const fn from_bytes(bytes: Zeroizing<[u8; 32]>) -> Self {
         Self(bytes)
     }
 
     /// The raw DEK bytes.
-    pub fn as_bytes(&self) -> &[u8; 32] {
+    pub(crate) fn as_bytes(&self) -> &[u8; 32] {
         &self.0
     }
 
     /// The BLAKE3 key commitment to this DEK.
-    pub fn commitment(&self) -> [u8; 32] {
+    pub(crate) fn commitment(&self) -> [u8; 32] {
         blake3::derive_key(DEK_COMMITMENT_CONTEXT, self.0.as_ref())
     }
 
@@ -123,7 +133,7 @@ fn wrap_info(ctx: &[u8; CTX_LEN]) -> Vec<u8> {
 }
 
 /// Seal framed rules under the DEK's content key with a fresh nonce.
-pub fn seal_content(
+pub(crate) fn seal_content(
     dek: &Dek,
     ctx: &[u8; CTX_LEN],
     framed: &[u8],
@@ -145,7 +155,7 @@ fn seal_content_with_nonce(
 }
 
 /// Open the content ciphertext, returning the framed rules.
-pub fn open_content(
+pub(crate) fn open_content(
     dek: &Dek,
     ctx: &[u8; CTX_LEN],
     nonce: &[u8; NONCE_LEN],
@@ -155,25 +165,32 @@ pub fn open_content(
     crate::crypto::decrypt(&key, nonce, ciphertext, &content_aad(ctx)).map(Zeroizing::new)
 }
 
-/// Which HPKE KEM an encryption identity uses.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum KemKind {
+/// Which HPKE KEM an encryption identity uses (RFC-0039).
+///
+/// `#[non_exhaustive]`: a later, incompatible X-Wing or HPKE-PQ revision
+/// becomes a new stanza kind and a new variant here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum EncryptionKem {
     /// DHKEM(X25519, HKDF-SHA256); stanza kind `0x01`.
     X25519,
     /// X-Wing (ML-KEM-768 + X25519); stanza kind `0x03`.
     XWing,
 }
 
-impl KemKind {
+impl EncryptionKem {
     /// The envelope stanza kind byte for this KEM.
-    pub const fn stanza_kind(self) -> u8 {
+    pub(crate) const fn stanza_kind(self) -> u8 {
         match self {
             Self::X25519 => STANZA_X25519,
             Self::XWing => STANZA_XWING,
         }
     }
 
-    const fn public_key_len(self) -> usize {
+    /// Length in bytes of this KEM's public key: 32 for X25519, 1216 for
+    /// X-Wing.
+    #[must_use]
+    pub const fn public_key_len(self) -> usize {
         match self {
             Self::X25519 => X25519_PK_LEN,
             Self::XWing => XWING_PK_LEN,
@@ -189,30 +206,36 @@ impl KemKind {
     }
 }
 
-/// An encryption identity: `(kind, seed, recipient_pk)` (RFC-0039).
+/// A reader's encryption identity: `(kind, seed, recipient_pk)` (RFC-0039).
 ///
-/// The seed is the X25519 secret key for [`KemKind::X25519`] and the
-/// X-Wing decapsulation-key seed for [`KemKind::XWing`], loaded raw. One
-/// seed serves exactly one kind. The public key is cached so matching
-/// stanzas never repeats a key generation.
+/// The seed is the X25519 secret key for [`EncryptionKem::X25519`] and the
+/// X-Wing decapsulation-key seed for [`EncryptionKem::XWing`], loaded raw.
+/// One seed serves exactly one kind. The seed is zeroized on drop and never
+/// printed; the public key is cached so matching stanzas never repeats a key
+/// generation.
+#[derive(Clone)]
 pub struct EncryptionIdentity {
-    kind: KemKind,
+    kind: EncryptionKem,
     seed: Zeroizing<[u8; 32]>,
-    public_key: Vec<u8>,
+    recipient: Recipient,
 }
 
 impl std::fmt::Debug for EncryptionIdentity {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("EncryptionIdentity")
             .field("kind", &self.kind)
-            .field("public_key_len", &self.public_key.len())
+            .field("recipient", &self.recipient)
             .finish_non_exhaustive()
     }
 }
 
 impl EncryptionIdentity {
     /// Generate a fresh identity of `kind` from the OS RNG.
-    pub fn generate(kind: KemKind) -> Result<Self> {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AionError::EntropyUnavailable`] if the OS RNG fails.
+    pub fn generate(kind: EncryptionKem) -> Result<Self> {
         let mut seed = Zeroizing::new([0u8; 32]);
         crate::crypto::fill_os_entropy(seed.as_mut())?;
         Self::from_seed(kind, seed)
@@ -221,38 +244,54 @@ impl EncryptionIdentity {
     /// Rebuild an identity from its stored seed.
     ///
     /// The caller must pass the kind the seed was generated for: a seed
-    /// serves exactly one KEM, and nothing in the seed records which.
-    pub fn from_seed(kind: KemKind, seed: Zeroizing<[u8; 32]>) -> Result<Self> {
+    /// serves exactly one KEM, and nothing in the seed records which. A
+    /// wrong kind usually yields a *valid but different* identity, which
+    /// then fails later as `NotARecipient`; store the kind with the seed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AionError::InvalidPrivateKey`] if the seed is not a valid
+    /// key for `kind`.
+    pub fn from_seed(kind: EncryptionKem, seed: Zeroizing<[u8; 32]>) -> Result<Self> {
         let public_key = match kind {
-            KemKind::X25519 => public_key_from_seed::<X25519HkdfSha256>(&seed)?,
-            KemKind::XWing => public_key_from_seed::<XWing>(&seed)?,
+            EncryptionKem::X25519 => public_key_from_seed::<X25519HkdfSha256>(&seed)?,
+            EncryptionKem::XWing => public_key_from_seed::<XWing>(&seed)?,
         };
+        let recipient = Recipient::from_public_key(kind, &public_key)?;
         Ok(Self {
             kind,
             seed,
-            public_key,
+            recipient,
         })
     }
 
     /// The identity's KEM.
-    pub const fn kind(&self) -> KemKind {
+    #[must_use]
+    pub const fn kind(&self) -> EncryptionKem {
         self.kind
     }
 
     /// The identity's public key: 32 bytes for X25519, 1216 for X-Wing.
+    #[must_use]
     pub fn public_key(&self) -> &[u8] {
-        &self.public_key
+        self.recipient.public_key()
+    }
+
+    /// This identity as a writer's recipient.
+    #[must_use]
+    pub fn recipient(&self) -> Recipient {
+        self.recipient.clone()
     }
 
     /// Whether `stanza` is addressed to this identity: same KEM and the
     /// same public key, compared in constant time.
-    pub fn matches(&self, stanza: StanzaRecipient<'_>) -> bool {
+    pub(crate) fn matches(&self, stanza: StanzaRecipient<'_>) -> bool {
         let recipient_pk: &[u8] = match (self.kind, stanza) {
-            (KemKind::X25519, StanzaRecipient::X25519 { recipient_pk, .. }) => recipient_pk,
-            (KemKind::XWing, StanzaRecipient::XWing { recipient_pk, .. }) => recipient_pk,
+            (EncryptionKem::X25519, StanzaRecipient::X25519 { recipient_pk, .. }) => recipient_pk,
+            (EncryptionKem::XWing, StanzaRecipient::XWing { recipient_pk, .. }) => recipient_pk,
             _ => return false,
         };
-        recipient_pk.ct_eq(&self.public_key).into()
+        recipient_pk.ct_eq(self.recipient.public_key()).into()
     }
 }
 
@@ -265,8 +304,8 @@ fn public_key_from_seed<K: KemTrait>(seed: &[u8; 32]) -> Result<Vec<u8>> {
 
 /// Wrap `dek` for one recipient. Returns the stanza `(kind, body)`, where
 /// `body = recipient_pk ‖ enc ‖ wrapped_dek`.
-pub fn wrap_dek(
-    kind: KemKind,
+pub(crate) fn wrap_dek(
+    kind: EncryptionKem,
     recipient_pk: &[u8],
     dek: &Dek,
     ctx: &[u8; CTX_LEN],
@@ -277,7 +316,7 @@ pub fn wrap_dek(
 }
 
 fn wrap_dek_with_randomness(
-    kind: KemKind,
+    kind: EncryptionKem,
     recipient_pk: &[u8],
     dek: &Dek,
     ctx: &[u8; CTX_LEN],
@@ -291,10 +330,10 @@ fn wrap_dek_with_randomness(
     let info = wrap_info(ctx);
     let aad = dek.commitment();
     let (enc, wrapped) = match kind {
-        KemKind::X25519 => {
+        EncryptionKem::X25519 => {
             seal_dek::<X25519HkdfSha256>(recipient_pk, dek, &info, &aad, randomness)?
         }
-        KemKind::XWing => seal_dek::<XWing>(recipient_pk, dek, &info, &aad, randomness)?,
+        EncryptionKem::XWing => seal_dek::<XWing>(recipient_pk, dek, &info, &aad, randomness)?,
     };
     let mut body = Vec::with_capacity(
         recipient_pk
@@ -342,9 +381,9 @@ fn seal_dek<K: KemTrait>(
 /// against the envelope's DEK commitment before returning it.
 ///
 /// Every failure after the stanza matched is the same
-/// `DecryptionFailed`, so a caller cannot tell a bad `enc`, a bad tag,
-/// and a wrong DEK apart.
-pub fn unwrap_dek(
+/// [`AionError::RulesUnopenable`], so a caller cannot tell a bad `enc`, a
+/// bad tag, and a wrong DEK apart.
+pub(crate) fn unwrap_dek(
     identity: &EncryptionIdentity,
     stanza: StanzaRecipient<'_>,
     ctx: &[u8; CTX_LEN],
@@ -397,18 +436,16 @@ fn open_dek<K: KemTrait>(
     .map_err(|_| unopenable())
 }
 
-fn unopenable() -> AionError {
-    AionError::DecryptionFailed {
-        reason: "confidential rules could not be opened".to_string(),
-    }
+const fn unopenable() -> AionError {
+    AionError::RulesUnopenable
 }
 
 /// Seal framed rules to `recipients` as a complete envelope.
 ///
 /// Draws a fresh DEK and nonce, so a retried attempt never reuses either.
-pub fn seal_section(
+pub(crate) fn seal_section(
     framed: &[u8],
-    recipients: &[(KemKind, &[u8])],
+    recipients: &[(EncryptionKem, &[u8])],
     ctx: &[u8; CTX_LEN],
 ) -> Result<Vec<u8>> {
     let dek = Dek::generate()?;
@@ -420,24 +457,130 @@ pub fn seal_section(
     encode_envelope(&dek.commitment(), stanzas, &nonce, &ciphertext)
 }
 
-/// Open an envelope with `identity`, returning the framed rules.
+/// Parse a confidential section and refuse one whose ciphertext exceeds the
+/// rules-size limit, before any decryption allocates. Key-free, so
+/// verification uses it too.
 ///
-/// Returns `DecryptionFailed` both when no stanza is addressed to
-/// `identity` and when a matching stanza fails to open; Phase B3 splits
-/// those into `NotARecipient` and `RulesUnopenable`.
-pub fn open_section(
+/// # Errors
+///
+/// [`AionError::InvalidFormat`] for a malformed envelope or one over
+/// [`crate::format::MAX_CONFIDENTIAL_RULES_LEN`].
+pub(crate) fn bounded_envelope(section: &[u8]) -> Result<Envelope<'_>> {
+    let envelope = Envelope::parse(section)?;
+    let tag = 16usize;
+    let limit = crate::format::MAX_CONFIDENTIAL_RULES_LEN.saturating_add(tag);
+    if envelope.ciphertext().len() > limit {
+        return Err(AionError::InvalidFormat {
+            reason: "confidential rules exceed the 16 MiB limit".to_string(),
+        });
+    }
+    Ok(envelope)
+}
+
+/// Find a stanza addressed to one of `identities` and unwrap the DEK.
+///
+/// Tries every `(identity, stanza)` pair that matches, in order, and
+/// returns the first DEK that passes the commitment check.
+///
+/// # Errors
+///
+/// [`AionError::NotARecipient`] if no stanza is addressed to any identity;
+/// [`AionError::RulesUnopenable`] if every matching stanza fails.
+pub(crate) fn unwrap_for(
     envelope: &Envelope<'_>,
-    identity: &EncryptionIdentity,
+    identities: &[EncryptionIdentity],
+    ctx: &[u8; CTX_LEN],
+) -> Result<Dek> {
+    let mut matched = false;
+    for identity in identities {
+        for stanza in envelope.stanzas() {
+            if !identity.matches(stanza.recipient()) {
+                continue;
+            }
+            matched = true;
+            if let Ok(dek) =
+                unwrap_dek(identity, stanza.recipient(), ctx, envelope.dek_commitment())
+            {
+                return Ok(dek);
+            }
+        }
+    }
+    Err(if matched {
+        AionError::RulesUnopenable
+    } else {
+        AionError::NotARecipient
+    })
+}
+
+/// Open an envelope with one of `identities`, returning the framed rules.
+///
+/// # Errors
+///
+/// As [`unwrap_for`], plus [`AionError::RulesUnopenable`] if the content
+/// does not decrypt.
+pub(crate) fn open_section(
+    envelope: &Envelope<'_>,
+    identities: &[EncryptionIdentity],
     ctx: &[u8; CTX_LEN],
 ) -> Result<Zeroizing<Vec<u8>>> {
-    let stanza = envelope
-        .stanzas()
-        .iter()
-        .map(crate::envelope::Stanza::recipient)
-        .find(|recipient| identity.matches(*recipient))
-        .ok_or_else(unopenable)?;
-    let dek = unwrap_dek(identity, stanza, ctx, envelope.dek_commitment())?;
-    open_content(&dek, ctx, envelope.nonce(), envelope.ciphertext()).map_err(|_| unopenable())
+    let dek = unwrap_for(envelope, identities, ctx)?;
+    open_with_dek(envelope, &dek, ctx)
+}
+
+/// Open an envelope with a known DEK, after checking it against the
+/// envelope's commitment.
+///
+/// # Errors
+///
+/// [`AionError::RulesUnopenable`] if the DEK is not this envelope's, or the
+/// content does not decrypt.
+pub(crate) fn open_with_dek(
+    envelope: &Envelope<'_>,
+    dek: &Dek,
+    ctx: &[u8; CTX_LEN],
+) -> Result<Zeroizing<Vec<u8>>> {
+    if !bool::from(dek.commitment().ct_eq(envelope.dek_commitment())) {
+        return Err(unopenable());
+    }
+    open_content(dek, ctx, envelope.nonce(), envelope.ciphertext()).map_err(|_| unopenable())
+}
+
+/// The data-encryption key of one confidential version, for selective
+/// disclosure (RFC-0039).
+///
+/// Each version's key is independent random bytes, so a disclosed key
+/// opens that one rules section and no other. Zeroized on drop; `Debug`
+/// never prints it.
+pub struct VersionKey(Dek);
+
+impl std::fmt::Debug for VersionKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("VersionKey(..)")
+    }
+}
+
+impl VersionKey {
+    /// Rebuild a disclosed key from its 32 bytes.
+    #[must_use]
+    pub const fn from_bytes(bytes: Zeroizing<[u8; 32]>) -> Self {
+        Self(Dek::from_bytes(bytes))
+    }
+
+    /// The key's 32 bytes, to hand to the party it is disclosed to.
+    #[must_use]
+    pub fn to_bytes(&self) -> Zeroizing<[u8; 32]> {
+        let mut bytes = Zeroizing::new([0u8; 32]);
+        bytes.copy_from_slice(self.0.as_bytes());
+        bytes
+    }
+
+    pub(crate) const fn from_dek(dek: Dek) -> Self {
+        Self(dek)
+    }
+
+    pub(crate) const fn dek(&self) -> &Dek {
+        &self.0
+    }
 }
 
 /// Serves pre-drawn randomness to `hpke`, whose RNG cannot fail.
@@ -539,7 +682,7 @@ mod tests {
         }
     }
 
-    fn check_vector(kind: KemKind, v: &Vector) {
+    fn check_vector(kind: EncryptionKem, v: &Vector) {
         let seed: [u8; 32] =
             v.sk.as_slice()
                 .try_into()
@@ -551,8 +694,10 @@ mod tests {
             "public key from raw seed"
         );
         let opened = match kind {
-            KemKind::X25519 => open_dek::<X25519HkdfSha256>(&seed, &v.enc, &v.ct, &v.info, &v.aad),
-            KemKind::XWing => open_dek::<XWing>(&seed, &v.enc, &v.ct, &v.info, &v.aad),
+            EncryptionKem::X25519 => {
+                open_dek::<X25519HkdfSha256>(&seed, &v.enc, &v.ct, &v.info, &v.aad)
+            }
+            EncryptionKem::XWing => open_dek::<XWing>(&seed, &v.enc, &v.ct, &v.info, &v.aad),
         };
         assert_eq!(ok(opened).as_slice(), v.pt.as_slice());
     }
@@ -562,7 +707,7 @@ mod tests {
         let v = vector(include_str!(
             "../tests/fixtures/hpke/x25519-base-chacha.json"
         ));
-        check_vector(KemKind::X25519, &v);
+        check_vector(EncryptionKem::X25519, &v);
     }
 
     #[test]
@@ -570,7 +715,7 @@ mod tests {
         let v = vector(include_str!(
             "../tests/fixtures/hpke/xwing-base-chacha.json"
         ));
-        check_vector(KemKind::XWing, &v);
+        check_vector(EncryptionKem::XWing, &v);
     }
 
     #[test]
@@ -596,10 +741,13 @@ mod tests {
 
     #[test]
     fn x25519_stanza_is_pinned() {
-        let identity = ok(EncryptionIdentity::from_seed(KemKind::X25519, seed(0x01)));
+        let identity = ok(EncryptionIdentity::from_seed(
+            EncryptionKem::X25519,
+            seed(0x01),
+        ));
         let dek = Dek::from_bytes(Zeroizing::new([0x42; 32]));
         let (kind, body) = ok(wrap_dek_with_randomness(
-            KemKind::X25519,
+            EncryptionKem::X25519,
             identity.public_key(),
             &dek,
             &ctx(),
@@ -612,10 +760,13 @@ mod tests {
 
     #[test]
     fn xwing_stanza_is_pinned() {
-        let identity = ok(EncryptionIdentity::from_seed(KemKind::XWing, seed(0x03)));
+        let identity = ok(EncryptionIdentity::from_seed(
+            EncryptionKem::XWing,
+            seed(0x03),
+        ));
         let dek = Dek::from_bytes(Zeroizing::new([0x42; 32]));
         let (kind, body) = ok(wrap_dek_with_randomness(
-            KemKind::XWing,
+            EncryptionKem::XWing,
             identity.public_key(),
             &dek,
             &ctx(),
@@ -631,10 +782,13 @@ mod tests {
 
     #[test]
     fn too_little_randomness_is_an_error_not_a_weak_stanza() {
-        let identity = ok(EncryptionIdentity::from_seed(KemKind::XWing, seed(0x03)));
+        let identity = ok(EncryptionIdentity::from_seed(
+            EncryptionKem::XWing,
+            seed(0x03),
+        ));
         let dek = Dek::from_bytes(Zeroizing::new([0x42; 32]));
         let result = wrap_dek_with_randomness(
-            KemKind::XWing,
+            EncryptionKem::XWing,
             identity.public_key(),
             &dek,
             &ctx(),
@@ -646,20 +800,20 @@ mod tests {
     #[test]
     fn wrong_length_or_invalid_recipient_keys_are_rejected() {
         let dek = Dek::from_bytes(Zeroizing::new([0x42; 32]));
-        assert!(wrap_dek(KemKind::X25519, &[1; 31], &dek, &ctx()).is_err());
-        assert!(wrap_dek(KemKind::XWing, &[1; 32], &dek, &ctx()).is_err());
-        assert!(wrap_dek(KemKind::XWing, &[0xFF; XWING_PK_LEN], &dek, &ctx()).is_err());
+        assert!(wrap_dek(EncryptionKem::X25519, &[1; 31], &dek, &ctx()).is_err());
+        assert!(wrap_dek(EncryptionKem::XWing, &[1; 32], &dek, &ctx()).is_err());
+        assert!(wrap_dek(EncryptionKem::XWing, &[0xFF; XWING_PK_LEN], &dek, &ctx()).is_err());
     }
 
     fn two_identities() -> (EncryptionIdentity, EncryptionIdentity) {
         (
-            ok(EncryptionIdentity::generate(KemKind::X25519)),
-            ok(EncryptionIdentity::generate(KemKind::XWing)),
+            ok(EncryptionIdentity::generate(EncryptionKem::X25519)),
+            ok(EncryptionIdentity::generate(EncryptionKem::XWing)),
         )
     }
 
     fn seal_for(ids: &[&EncryptionIdentity], ctx: &[u8; CTX_LEN], rules: &[u8]) -> Vec<u8> {
-        let recipients: Vec<(KemKind, &[u8])> =
+        let recipients: Vec<(EncryptionKem, &[u8])> =
             ids.iter().map(|id| (id.kind(), id.public_key())).collect();
         let framed = ok(crate::format::frame_rules(rules));
         ok(seal_section(&framed, &recipients, ctx))
@@ -670,7 +824,7 @@ mod tests {
         id: &EncryptionIdentity,
         ctx: &[u8; CTX_LEN],
     ) -> Result<Vec<u8>> {
-        let framed = open_section(envelope, id, ctx)?;
+        let framed = open_section(envelope, std::slice::from_ref(id), ctx)?;
         Ok(crate::format::unframe_rules(&framed)?.to_vec())
     }
 
@@ -686,10 +840,10 @@ mod tests {
     #[test]
     fn an_unlisted_identity_cannot_open() {
         let (x, w) = two_identities();
-        let stranger = ok(EncryptionIdentity::generate(KemKind::XWing));
+        let stranger = ok(EncryptionIdentity::generate(EncryptionKem::XWing));
         let bytes = seal_for(&[&x, &w], &ctx(), b"rules");
         let envelope = ok(Envelope::parse(&bytes));
-        assert!(open_section(&envelope, &stranger, &ctx()).is_err());
+        assert!(open_section(&envelope, std::slice::from_ref(&stranger), &ctx()).is_err());
     }
 
     #[test]
@@ -701,8 +855,8 @@ mod tests {
         let other_author = binding_context(FileId(0x0102_0304), AuthorId(78), VersionNumber(3));
         let other_file = binding_context(FileId(0x0102_0305), AuthorId(77), VersionNumber(3));
         for moved in [other_version, other_author, other_file] {
-            assert!(open_section(&envelope, &x, &moved).is_err());
-            assert!(open_section(&envelope, &w, &moved).is_err());
+            assert!(open_section(&envelope, std::slice::from_ref(&x), &moved).is_err());
+            assert!(open_section(&envelope, std::slice::from_ref(&w), &moved).is_err());
         }
     }
 
@@ -711,7 +865,12 @@ mod tests {
         let (x, _) = two_identities();
         let honest = Dek::generate().unwrap_or_else(|_| std::process::abort());
         let other = Dek::generate().unwrap_or_else(|_| std::process::abort());
-        let stanza = ok(wrap_dek(KemKind::X25519, x.public_key(), &other, &ctx()));
+        let stanza = ok(wrap_dek(
+            EncryptionKem::X25519,
+            x.public_key(),
+            &other,
+            &ctx(),
+        ));
         let framed = ok(crate::format::frame_rules(b"rules"));
         let (nonce, ct) = ok(seal_content(&honest, &ctx(), &framed));
         let bytes = ok(encode_envelope(
@@ -721,7 +880,7 @@ mod tests {
             &ct,
         ));
         let envelope = ok(Envelope::parse(&bytes));
-        assert!(open_section(&envelope, &x, &ctx()).is_err());
+        assert!(open_section(&envelope, std::slice::from_ref(&x), &ctx()).is_err());
     }
 
     /// A malicious sealer's stanza: HPKE-sealed under the envelope's own
@@ -737,14 +896,14 @@ mod tests {
             let mut randomness = Zeroizing::new(vec![0u8; id.kind().encap_randomness_len()]);
             ok(crate::crypto::fill_os_entropy(&mut randomness));
             let (enc, wrapped) = ok(match id.kind() {
-                KemKind::X25519 => seal_dek::<X25519HkdfSha256>(
+                EncryptionKem::X25519 => seal_dek::<X25519HkdfSha256>(
                     id.public_key(),
                     &other,
                     &info,
                     &honest.commitment(),
                     &randomness,
                 ),
-                KemKind::XWing => seal_dek::<XWing>(
+                EncryptionKem::XWing => seal_dek::<XWing>(
                     id.public_key(),
                     &other,
                     &info,
@@ -762,7 +921,7 @@ mod tests {
             let envelope = ok(Envelope::parse(&bytes));
             let stanza = envelope.stanzas()[0].recipient();
             let unwrapped = unwrap_dek(id, stanza, &ctx(), envelope.dek_commitment());
-            assert!(matches!(unwrapped, Err(AionError::DecryptionFailed { .. })));
+            assert!(matches!(unwrapped, Err(AionError::RulesUnopenable)));
         }
     }
 
@@ -804,8 +963,8 @@ mod tests {
             let body_start = 8 + 1 + 32 + 2 + 3;
             tampered[body_start + enc_at] ^= 0x01;
             let envelope = ok(Envelope::parse(&tampered));
-            let err = open_section(&envelope, identity, &ctx());
-            assert!(matches!(err, Err(AionError::DecryptionFailed { .. })));
+            let err = open_section(&envelope, std::slice::from_ref(identity), &ctx());
+            assert!(matches!(err, Err(AionError::RulesUnopenable)));
         }
     }
 
@@ -829,8 +988,8 @@ mod tests {
                 return;
             }
             let ids: Vec<EncryptionIdentity> = (0..xs)
-                .map(|_| ok(EncryptionIdentity::generate(KemKind::X25519)))
-                .chain((0..ws).map(|_| ok(EncryptionIdentity::generate(KemKind::XWing))))
+                .map(|_| ok(EncryptionIdentity::generate(EncryptionKem::X25519)))
+                .chain((0..ws).map(|_| ok(EncryptionIdentity::generate(EncryptionKem::XWing))))
                 .collect();
             let refs: Vec<&EncryptionIdentity> = ids.iter().collect();
             let bytes = seal_for(&refs, &ctx(), &rules);
@@ -844,9 +1003,9 @@ mod tests {
         fn prop_any_byte_flip_in_a_single_recipient_envelope_fails_to_open(tc: hegel::TestCase) {
             let xwing = tc.draw(gs::booleans());
             let kind = if xwing {
-                KemKind::XWing
+                EncryptionKem::XWing
             } else {
-                KemKind::X25519
+                EncryptionKem::X25519
             };
             let id = ok(EncryptionIdentity::generate(kind));
             let bytes = seal_for(&[&id], &ctx(), b"rules");
@@ -855,7 +1014,7 @@ mod tests {
             let mut tampered = bytes;
             tampered[index] ^= flip;
             if let Ok(envelope) = Envelope::parse(&tampered) {
-                assert!(open_section(&envelope, &id, &ctx()).is_err());
+                assert!(open_section(&envelope, std::slice::from_ref(&id), &ctx()).is_err());
             }
         }
     }

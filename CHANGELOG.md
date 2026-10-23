@@ -47,6 +47,28 @@ and the project follows [Semantic Versioning].
     sections, wrong recipients, mismatched DEKs, and corrupted `enc`
     all fail to open; Hegel round-trip and tamper properties.
 - RFC 5869 HKDF-SHA256 known-answer test for `crypto::derive_key`.
+- **RFC-0039 Phase B3: confidential rules in the library.**
+  - Writers: `RulesProtection::Confidential { recipients }` seals a
+    format-v3 version to `Recipient::X25519` / `Recipient::XWing` keys.
+    Empty lists are refused with `AionError::NoRecipients` and
+    format-v2 files with `AionError::ConfidentialityUnsupported`;
+    repeated recipients are written once;
+    framed rules over `format::MAX_CONFIDENTIAL_RULES_LEN` (16 MiB) are
+    refused.
+  - Readers: `RecipientKeys::new` / `with` / `From<EncryptionIdentity>`
+    hold `confidential::EncryptionIdentity` values (`generate`,
+    `from_seed`, `recipient`). `open_current_rules` and
+    `open_rules_section` open confidential sections; failures are
+    `RecipientKeyRequired`, `NotARecipient`, or the deliberately opaque
+    `RulesUnopenable` (new variants), and are logged as
+    `confidential_rules_not_opened` with a bounded reason.
+  - Selective disclosure: `chain::disclose_version_key` returns one
+    version's `confidential::VersionKey`, and
+    `chain::open_rules_section_with_key` opens that version only.
+  - `VerifiedChain::head_recipients` lists the head's recipients for
+    re-sealing the next version.
+  - `verify_file` now also checks a confidential head's envelope
+    structure and size, still without any key.
 
 ### Changed
 

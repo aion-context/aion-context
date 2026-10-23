@@ -608,7 +608,7 @@ state before it is verified.
 | `show_current_rules(path)` | Kept for compatibility. It reads the file **once** into a buffer and reads the section from that same buffer, never re-opening the path. It takes no registry, so it checks the head's commitment (key-free) but cannot verify signatures. Public mode: returns the plaintext. Confidential mode: `Err(AionError::RecipientKeyRequired)`. New code should use `open_current_rules(&VerifiedChain, …)`. |
 | `open_current_rules(&VerifiedChain, &RecipientKeys)` | **New.** Opens the head section. |
 | `open_rules_section(section, VerifiedEntry<'_>, &RecipientKeys \| &Dek)` | **New.** Opens an **archived** section, such as a historical version's section stored outside the file under its `rules_commitment`. It first recomputes the commitment over `section` and compares it with the verified entry's. A disclosed DEK opens that one section and no other, because each DEK is independent random. |
-| `disclose_version_key(VerifiedEntry<'_>, section, &RecipientKeys)` | **New.** Returns that version's DEK, for selective disclosure. |
+| `disclose_version_key(section, VerifiedEntry<'_>, &RecipientKeys)` | **New.** Returns that version's DEK, for selective disclosure. |
 
 **Opening errors** (new `AionError` variants; `AionError` is
 `#[non_exhaustive]`):
@@ -1121,6 +1121,22 @@ Four PRs, each reviewed by `crypto-auditor` and `api-reviewer`:
   `RulesUnopenable` split, `open_current_rules` /
   `open_rules_section` for confidential sections, and
   `disclose_version_key`.
+  - *Implementation note:* `Recipient` lives in `format`;
+    `EncryptionKem`, `EncryptionIdentity` and `VersionKey` in the now
+    public `confidential` module, whose sealing and opening functions
+    stay crate-internal.
+  - The disclosed key is opened with `open_rules_section_with_key`,
+    a separate function rather than an overload of
+    `open_rules_section`.
+  - `VerifiedChain::head_recipients` serves `--keep-recipients`.
+  - Writers refuse framed rules over 16 MiB
+    (`format::MAX_CONFIDENTIAL_RULES_LEN`); readers check the same
+    bound before decrypting. `verify_file` parses a confidential head's
+    envelope key-free.
+  - Empty recipients are `AionError::NoRecipients`; confidential
+    protection on a format-v2 file is
+    `AionError::ConfidentialityUnsupported`. `disclose_version_key`
+    takes `(section, entry, keys)`, matching the other openers.
 - **B4, keystore and CLI.** The encryption-identity key kind (X-Wing
   default), `aion key generate --encryption`, `--recipient`,
   `--keep-recipients`, and `--identity`.
