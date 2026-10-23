@@ -49,8 +49,9 @@
 //! ```
 
 use crate::crypto::{hash, SigningKey, VerifyingKey};
+use crate::format::{FormatVersion, RulesMode};
 use crate::serializer::{SignatureEntry, VersionEntry};
-use crate::types::AuthorId;
+use crate::types::{AuthorId, FileId};
 use crate::Result;
 use subtle::ConstantTimeEq;
 
@@ -66,6 +67,23 @@ const SIGNATURE_DOMAIN: &[u8] = b"AION_V2_VERSION_SIGNATURE_V1";
 /// Distinct from [`SIGNATURE_DOMAIN`] so that a single-signer version
 /// signature cannot be replayed as a multi-party attestation nor vice versa.
 const ATTESTATION_DOMAIN: &[u8] = b"AION_V2_ATTESTATION_V1";
+
+/// Domain separator for format-v3 version signatures (RFC-0039).
+pub const SIGNATURE_DOMAIN_V3: &[u8] = b"AION_V3_VERSION_SIGNATURE_V1\0";
+
+/// Domain separator for format-v3 version hashes (RFC-0039).
+///
+/// Distinct from [`SIGNATURE_DOMAIN_V3`] so the hash that `parent_hash`
+/// links to is never the same BLAKE3 input as a signed message.
+pub const VERSION_HASH_DOMAIN_V3: &[u8] = b"AION_V3_VERSION_HASH_V1\0";
+
+/// Domain separator for format-v3 attestations (RFC-0021, RFC-0039).
+pub const ATTESTATION_DOMAIN_V3: &[u8] = b"AION_V3_ATTESTATION_V1\0";
+
+/// Length of the fields a v3 message binds, after its domain:
+/// format version (2), `file_id` (8), mode (1), and the 100 bytes of
+/// version fields that v2 also signs.
+const V3_BOUND_FIELDS_LEN: usize = 2 + 8 + 1 + 100;
 
 /// Compute the canonical message to be signed for a version entry
 ///
@@ -312,6 +330,103 @@ pub fn canonical_attestation_message(version: &VersionEntry, signer: AuthorId) -
     message.extend_from_slice(&version.message_length.to_le_bytes());
     message.extend_from_slice(&signer.as_u64().to_le_bytes());
     message
+}
+
+/// The fields every v3 version message binds, in order:
+/// `format_version u16 ‖ file_id u64 ‖ rules_mode u8 ‖ version u64 ‖
+/// parent_hash[32] ‖ rules_commitment[32] ‖ author u64 ‖ timestamp u64 ‖
+/// message_offset u64 ‖ message_length u32`, all little-endian.
+fn v3_bound_fields(version: &VersionEntry, file_id: FileId) -> Result<Vec<u8>> {
+    let mode = RulesMode::of(version)?;
+    let mut fields = Vec::with_capacity(V3_BOUND_FIELDS_LEN);
+    fields.extend_from_slice(&FormatVersion::V3.as_u16().to_le_bytes());
+    fields.extend_from_slice(&file_id.as_u64().to_le_bytes());
+    fields.push(mode.as_u8());
+    fields.extend_from_slice(&version.version_number.to_le_bytes());
+    fields.extend_from_slice(&version.parent_hash);
+    fields.extend_from_slice(&version.rules_hash);
+    fields.extend_from_slice(&version.author_id.to_le_bytes());
+    fields.extend_from_slice(&version.timestamp.to_le_bytes());
+    fields.extend_from_slice(&version.message_offset.to_le_bytes());
+    fields.extend_from_slice(&version.message_length.to_le_bytes());
+    Ok(fields)
+}
+
+/// Canonical message a format-v3 version signature covers (RFC-0039).
+///
+/// `SIGNATURE_DOMAIN_V3 ‖ format_version ‖ file_id ‖ rules_mode ‖` the
+/// v2 version fields. Binding `file_id` and the mode means a signed entry
+/// cannot be moved into another file or reinterpreted under another mode.
+/// In v3, `rules_hash` holds the rules commitment.
+///
+/// # Errors
+///
+/// Returns [`crate::AionError::InvalidFormat`] if the entry's rules mode
+/// byte is unknown or another reserved byte is non-zero.
+///
+/// # Example
+///
+/// ```
+/// use aion_context::format::RulesMode;
+/// use aion_context::serializer::VersionEntry;
+/// use aion_context::signature_chain::{canonical_version_message_v3, SIGNATURE_DOMAIN_V3};
+/// use aion_context::types::{AuthorId, FileId, VersionNumber};
+///
+/// let entry = VersionEntry::new(VersionNumber::GENESIS, [0; 32], [7; 32], AuthorId::new(1), 0, 0, 0)
+///     .with_rules_mode(RulesMode::Public);
+/// let message = canonical_version_message_v3(&entry, FileId::new(42)).unwrap_or_default();
+/// assert!(message.starts_with(SIGNATURE_DOMAIN_V3));
+/// ```
+pub fn canonical_version_message_v3(version: &VersionEntry, file_id: FileId) -> Result<Vec<u8>> {
+    let fields = v3_bound_fields(version, file_id)?;
+    let mut message = Vec::with_capacity(SIGNATURE_DOMAIN_V3.len().saturating_add(fields.len()));
+    message.extend_from_slice(SIGNATURE_DOMAIN_V3);
+    message.extend_from_slice(&fields);
+    Ok(message)
+}
+
+/// Hash of a format-v3 version entry, the value the next version's
+/// `parent_hash` links to (RFC-0039).
+///
+/// Covers the same fields as [`canonical_version_message_v3`], including
+/// the rules mode, under [`VERSION_HASH_DOMAIN_V3`]. So the same version
+/// number re-signed with a different mode is a different version.
+///
+/// # Errors
+///
+/// Returns [`crate::AionError::InvalidFormat`] if the entry's rules mode
+/// byte is unknown or another reserved byte is non-zero.
+pub fn compute_version_hash_v3(version: &VersionEntry, file_id: FileId) -> Result<[u8; 32]> {
+    let fields = v3_bound_fields(version, file_id)?;
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(VERSION_HASH_DOMAIN_V3);
+    hasher.update(&fields);
+    Ok(*hasher.finalize().as_bytes())
+}
+
+/// Canonical message a format-v3 attestation signature covers
+/// (RFC-0021, RFC-0039): `ATTESTATION_DOMAIN_V3 ‖` the v3 bound fields
+/// `‖ signer u64`.
+///
+/// # Errors
+///
+/// Returns [`crate::AionError::InvalidFormat`] if the entry's rules mode
+/// byte is unknown or another reserved byte is non-zero.
+pub fn canonical_attestation_message_v3(
+    version: &VersionEntry,
+    file_id: FileId,
+    signer: AuthorId,
+) -> Result<Vec<u8>> {
+    let fields = v3_bound_fields(version, file_id)?;
+    let capacity = ATTESTATION_DOMAIN_V3
+        .len()
+        .saturating_add(fields.len())
+        .saturating_add(8);
+    let mut message = Vec::with_capacity(capacity);
+    message.extend_from_slice(ATTESTATION_DOMAIN_V3);
+    message.extend_from_slice(&fields);
+    message.extend_from_slice(&signer.as_u64().to_le_bytes());
+    Ok(message)
 }
 
 /// Produce an attestation signature over a version — RFC-0021.
@@ -1494,6 +1609,118 @@ mod tests {
             // Attacker swaps the embedded public_key to a key they control.
             sig.public_key = attacker.verifying_key().to_bytes();
             assert!(verify_signature(&version, &sig, &reg).is_err());
+        }
+
+        // ------------------------------------------------------------------
+        // RFC-0039 format-v3 message and hash properties.
+        // ------------------------------------------------------------------
+
+        use crate::format::RulesMode;
+
+        fn draw_mode(tc: &hegel::TestCase) -> RulesMode {
+            if tc.draw(gs::booleans()) {
+                RulesMode::Confidential
+            } else {
+                RulesMode::Public
+            }
+        }
+
+        fn draw_v3_entry(tc: &hegel::TestCase, mode: RulesMode) -> VersionEntry {
+            VersionEntry::new(
+                crate::types::VersionNumber(tc.draw(gs::integers::<u64>())),
+                draw_hash(tc),
+                draw_hash(tc),
+                AuthorId::new(tc.draw(gs::integers::<u64>())),
+                tc.draw(gs::integers::<u64>()),
+                tc.draw(gs::integers::<u64>()),
+                tc.draw(gs::integers::<u32>()),
+            )
+            .with_rules_mode(mode)
+        }
+
+        fn v3_message(entry: &VersionEntry, file_id: u64) -> Vec<u8> {
+            canonical_version_message_v3(entry, FileId::new(file_id))
+                .unwrap_or_else(|_| std::process::abort())
+        }
+
+        fn v3_hash(entry: &VersionEntry, file_id: u64) -> [u8; 32] {
+            compute_version_hash_v3(entry, FileId::new(file_id))
+                .unwrap_or_else(|_| std::process::abort())
+        }
+
+        #[hegel::test]
+        fn prop_v3_message_and_hash_bind_file_id(tc: hegel::TestCase) {
+            let entry = draw_v3_entry(&tc, draw_mode(&tc));
+            let file_a = tc.draw(gs::integers::<u64>());
+            let file_b = file_a ^ tc.draw(gs::integers::<u64>().min_value(1));
+            assert_ne!(v3_message(&entry, file_a), v3_message(&entry, file_b));
+            assert_ne!(v3_hash(&entry, file_a), v3_hash(&entry, file_b));
+        }
+
+        #[hegel::test]
+        fn prop_v3_message_and_hash_bind_rules_mode(tc: hegel::TestCase) {
+            let entry = draw_v3_entry(&tc, RulesMode::Public);
+            let flipped = entry.with_rules_mode(RulesMode::Confidential);
+            let file_id = tc.draw(gs::integers::<u64>());
+            assert_ne!(v3_message(&entry, file_id), v3_message(&flipped, file_id));
+            assert_ne!(v3_hash(&entry, file_id), v3_hash(&flipped, file_id));
+        }
+
+        #[hegel::test]
+        fn prop_v3_version_hash_differs_from_v2(tc: hegel::TestCase) {
+            let entry = draw_v3_entry(&tc, RulesMode::Public);
+            let file_id = tc.draw(gs::integers::<u64>());
+            assert_ne!(v3_hash(&entry, file_id), compute_version_hash(&entry));
+        }
+
+        #[hegel::test]
+        fn prop_v3_signature_round_trip_and_file_binding(tc: hegel::TestCase) {
+            let entry = draw_v3_entry(&tc, draw_mode(&tc));
+            let file_id = tc.draw(gs::integers::<u64>());
+            let other_file = file_id ^ tc.draw(gs::integers::<u64>().min_value(1));
+            let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+            let signature = key.sign(&v3_message(&entry, file_id));
+            let verifying = key.verifying_key();
+            assert!(verifying
+                .verify(&v3_message(&entry, file_id), &signature)
+                .is_ok());
+            assert!(verifying
+                .verify(&v3_message(&entry, other_file), &signature)
+                .is_err());
+        }
+
+        #[hegel::test]
+        fn prop_v3_version_and_attestation_are_domain_separated(tc: hegel::TestCase) {
+            let entry = draw_v3_entry(&tc, draw_mode(&tc));
+            let file_id = FileId::new(tc.draw(gs::integers::<u64>()));
+            let signer = AuthorId::new(tc.draw(gs::integers::<u64>()));
+            let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+            let version_message = canonical_version_message_v3(&entry, file_id)
+                .unwrap_or_else(|_| std::process::abort());
+            let attestation_message = canonical_attestation_message_v3(&entry, file_id, signer)
+                .unwrap_or_else(|_| std::process::abort());
+            let signature = key.sign(&version_message);
+            assert!(key
+                .verifying_key()
+                .verify(&attestation_message, &signature)
+                .is_err());
+        }
+
+        #[hegel::test]
+        fn prop_v3_rejects_invalid_mode_and_reserved_bytes(tc: hegel::TestCase) {
+            let mut bad_mode = draw_v3_entry(&tc, RulesMode::Public);
+            bad_mode.reserved[0] = tc.draw(gs::integers::<u8>().min_value(2));
+            let mut bad_reserved = draw_v3_entry(&tc, draw_mode(&tc));
+            let index = tc.draw(gs::integers::<usize>().min_value(1).max_value(51));
+            let flipped = tc.draw(gs::integers::<u8>().min_value(1));
+            if let Some(byte) = bad_reserved.reserved.get_mut(index) {
+                *byte = flipped;
+            }
+            let file_id = FileId::new(tc.draw(gs::integers::<u64>()));
+            assert!(canonical_version_message_v3(&bad_mode, file_id).is_err());
+            assert!(compute_version_hash_v3(&bad_mode, file_id).is_err());
+            assert!(canonical_version_message_v3(&bad_reserved, file_id).is_err());
+            assert!(compute_version_hash_v3(&bad_reserved, file_id).is_err());
         }
     }
 }

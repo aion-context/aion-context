@@ -12,6 +12,20 @@ and the project follows [Semantic Versioning].
 
 ### Added
 
+- **RFC-0039 Phase A1: format-v3 primitives.** No change to what is
+  written yet.
+  - A new `format` module with `FormatVersion`, `RulesMode`,
+    `rules_commitment` (a BLAKE3 commitment to the stored rules
+    section), Padmé `padme_len` / `frame_rules` / `unframe_rules`, and
+    `FileContext`, which dispatches to the v2 or v3 canonical message
+    and version hash.
+  - `signature_chain::{canonical_version_message_v3,
+    compute_version_hash_v3, canonical_attestation_message_v3}` bind
+    `file_id`, the format version, and the per-entry rules mode under
+    new NUL-terminated domains.
+  - `VersionEntry::with_rules_mode`.
+  - The SHA-256 key-derivation exception is recorded in
+    `.claude/rules/crypto.md`.
 - **RFC-0036 Enforcement Receipt** (#151, #154) — the `enforcement_receipt`
   module attests that a runtime *applied* a policy, the claim the
   provenance chain (DSSE/SLSA/transparency-log) does not make. A receipt
