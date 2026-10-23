@@ -316,7 +316,7 @@ impl TransparencyLog {
 
     /// Number of leaves currently in the log.
     #[must_use]
-    pub fn tree_size(&self) -> u64 {
+    pub const fn tree_size(&self) -> u64 {
         self.entries.len() as u64
     }
 
@@ -416,7 +416,7 @@ impl TransparencyLog {
             // A pair just completed at `level` iff the lower vec's
             // length is even — the rightmost two entries combine
             // into a new entry one level up.
-            if lower_len % 2 != 0 {
+            if !lower_len.is_multiple_of(2) {
                 break;
             }
             let right_idx = lower_len - 1;
@@ -451,7 +451,7 @@ impl TransparencyLog {
         }
         // If (start, len) is a complete cached subtree, return the
         // cached hash directly.
-        if len.is_power_of_two() && start % len == 0 {
+        if len.is_power_of_two() && start.is_multiple_of(len) {
             let level = len.trailing_zeros() as usize;
             let j = start / len;
             if let Some(level_vec) = self.subtree_roots.get(level) {

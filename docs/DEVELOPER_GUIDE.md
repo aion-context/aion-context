@@ -308,7 +308,7 @@ fn example() -> Result<()> {
 
 ### Prerequisites
 
-- Rust 1.85+ (install via [rustup](https://rustup.rs))
+- Rust 1.87+ (install via [rustup](https://rustup.rs))
 - Git
 
 ### Clone and Build
