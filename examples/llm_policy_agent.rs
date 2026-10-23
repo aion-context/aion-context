@@ -558,6 +558,7 @@ fn dump_audit_trail(path: &Path) {
             ActionCode::CommitVersion => "CommitVersion",
             ActionCode::Verify => "Verify",
             ActionCode::Inspect => "Inspect",
+            ActionCode::MigratedFrom => "MigratedFrom",
         });
         println!(
             "  #{i:02}  ts={}  author={}  action={action}  prev_hash={}",
