@@ -641,15 +641,10 @@ fn seal_confidential(
     recipients: &[crate::format::Recipient],
     ctx: &[u8; crate::confidential::CTX_LEN],
 ) -> Result<Vec<u8>> {
-    use subtle::ConstantTimeEq;
-    let mut distinct: Vec<&crate::format::Recipient> = Vec::with_capacity(recipients.len());
+    let mut distinct: Vec<crate::format::Recipient> = Vec::with_capacity(recipients.len());
     for recipient in recipients {
-        let seen = distinct.iter().any(|kept| {
-            kept.kem() == recipient.kem()
-                && bool::from(kept.public_key().ct_eq(recipient.public_key()))
-        });
-        if !seen {
-            distinct.push(recipient);
+        if !distinct.iter().any(|kept| same_recipient(kept, recipient)) {
+            distinct.push(recipient.clone());
         }
     }
     if distinct.is_empty() {
@@ -665,11 +660,17 @@ fn seal_confidential(
     if framed.len() > crate::format::MAX_CONFIDENTIAL_RULES_LEN {
         return Err(too_big());
     }
-    let keys: Vec<(crate::confidential::EncryptionKem, &[u8])> = distinct
-        .iter()
-        .map(|recipient| (recipient.kem(), recipient.public_key()))
-        .collect();
-    crate::confidential::seal_section(&framed, &keys, ctx)
+    crate::confidential::seal_section(&framed, &distinct, ctx)
+}
+
+/// Two recipients are the same reader: the same KEM and public key
+/// (compared in constant time), or the same external provider and key.
+fn same_recipient(a: &crate::format::Recipient, b: &crate::format::Recipient) -> bool {
+    use subtle::ConstantTimeEq;
+    match (a.public_key(), b.public_key()) {
+        (Some(a_key), Some(b_key)) => a.kem() == b.kem() && bool::from(a_key.ct_eq(b_key)),
+        _ => a == b,
+    }
 }
 
 /// Pre-write authz check (issue #25): the signer must have an
@@ -3796,7 +3797,7 @@ mod tests {
                         zeroize::Zeroizing::new([0x5E; 32]),
                     )
                     .unwrap_or_else(|_| std::process::abort());
-                    let recipients = [(reader.kind(), reader.public_key())];
+                    let recipients = [reader.recipient()];
                     crate::confidential::seal_section(&framed, &recipients, ctx)
                         .unwrap_or_else(|_| std::process::abort())
                 }

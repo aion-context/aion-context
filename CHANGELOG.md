@@ -69,6 +69,20 @@ and the project follows [Semantic Versioning].
     re-sealing the next version.
   - `verify_file` now also checks a confidential head's envelope
     structure and size, still without any key.
+- **RFC-0039 Phase C1: external key-service (KMS) recipients.**
+  - `confidential::DekWrapper` / `DekUnwrapper` (`Send + Sync`) and
+    `ExternalStanza`: a KMS or HSM wraps a version's DEK into stanza kind
+    `0x02`, bound to `"AION_V3_DEK_WRAP_V1\0" ‖ ctx ‖ dek_commitment` as
+    its encryption context.
+  - Writers: `Recipient::External(Arc<dyn DekWrapper>)` /
+    `Recipient::external(..)`; repeated `(provider, key)` pairs are
+    written once; out-of-range provider output refuses to seal.
+  - Readers: `RecipientKeys::with_unwrapper(..)`. The unwrapped DEK is
+    always checked against the key commitment, so a lying or buggy
+    provider gets `RulesUnopenable`, never different rules.
+  - `Recipient::kem()` and `Recipient::public_key()` now return `Option`
+    (`None` for external recipients). Library only: the CLI takes no
+    `kms:` recipients yet.
 - **RFC-0039 Phase B4: confidential rules from the CLI and keystore.**
   - `aion key generate --id N --encryption [--kem xwing|x25519]`
     creates an encryption identity (X-Wing by default), stored as its

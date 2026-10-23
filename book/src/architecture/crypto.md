@@ -71,7 +71,10 @@ stays key-free.
   `AION_V3_RULES_AAD_V1\0 ‖ ctx`.
 - **Per recipient:** the DEK is sealed with HPKE base mode, `info =
   AION_V3_DEK_WRAP_V1\0 ‖ ctx` and `aad = dek_commitment`, using
-  DHKEM(X25519) or X-Wing (ML-KEM-768 + X25519).
+  DHKEM(X25519) or X-Wing (ML-KEM-768 + X25519). Or a key service such
+  as a KMS wraps it through a `DekWrapper`, bound to the same context
+  plus the commitment; whether that recipient is post-quantum depends on
+  the service.
 - **Key commitment:** `dek_commitment = BLAKE3::derive_key("aion-context
   v3 2026-10 dek commitment", DEK)` is checked before any decryption,
   so every recipient who can open the rules reads the same bytes.

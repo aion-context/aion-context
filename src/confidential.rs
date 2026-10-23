@@ -32,7 +32,7 @@
 //! let auditor = EncryptionIdentity::generate(EncryptionKem::XWing)?;
 //! assert_eq!(auditor.public_key().len(), 1216);
 //! let recipient = auditor.recipient();
-//! assert_eq!(recipient.kem(), EncryptionKem::XWing);
+//! assert_eq!(recipient.kem(), Some(EncryptionKem::XWing));
 //! # Ok::<(), aion_context::AionError>(())
 //! ```
 
@@ -255,6 +255,7 @@ impl std::str::FromStr for EncryptionKem {
 pub struct EncryptionIdentity {
     kind: EncryptionKem,
     seed: Zeroizing<[u8; 32]>,
+    public_key: Vec<u8>,
     recipient: Recipient,
 }
 
@@ -299,6 +300,7 @@ impl EncryptionIdentity {
         Ok(Self {
             kind,
             seed,
+            public_key,
             recipient,
         })
     }
@@ -312,7 +314,7 @@ impl EncryptionIdentity {
     /// The identity's public key: 32 bytes for X25519, 1216 for X-Wing.
     #[must_use]
     pub fn public_key(&self) -> &[u8] {
-        self.recipient.public_key()
+        &self.public_key
     }
 
     /// This identity as a writer's recipient.
@@ -334,7 +336,7 @@ impl EncryptionIdentity {
             (EncryptionKem::XWing, StanzaRecipient::XWing { recipient_pk, .. }) => recipient_pk,
             _ => return false,
         };
-        recipient_pk.ct_eq(self.recipient.public_key()).into()
+        recipient_pk.ct_eq(&self.public_key).into()
     }
 }
 
@@ -488,16 +490,170 @@ const fn unopenable() -> AionError {
 /// Draws a fresh DEK and nonce, so a retried attempt never reuses either.
 pub(crate) fn seal_section(
     framed: &[u8],
-    recipients: &[(EncryptionKem, &[u8])],
+    recipients: &[Recipient],
     ctx: &[u8; CTX_LEN],
 ) -> Result<Vec<u8>> {
     let dek = Dek::generate()?;
     let stanzas = recipients
         .iter()
-        .map(|(kind, pk)| wrap_dek(*kind, pk, &dek, ctx))
+        .map(|recipient| match recipient {
+            Recipient::External(wrapper) => wrap_external(wrapper.as_ref(), &dek, ctx),
+            Recipient::X25519(pk) => wrap_dek(EncryptionKem::X25519, pk, &dek, ctx),
+            Recipient::XWing(pk) => wrap_dek(EncryptionKem::XWing, pk.as_slice(), &dek, ctx),
+        })
         .collect::<Result<Vec<_>>>()?;
     let (nonce, ciphertext) = seal_content(&dek, ctx, framed)?;
     encode_envelope(&dek.commitment(), stanzas, &nonce, &ciphertext)
+}
+
+/// One external (KMS) stanza as a reader sees it (RFC-0039 kind `0x02`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExternalStanza<'a> {
+    provider_id: &'a str,
+    key_ref: &'a str,
+    blob: &'a [u8],
+}
+
+impl<'a> ExternalStanza<'a> {
+    /// The provider name the writer's [`DekWrapper`] reported.
+    #[must_use]
+    pub const fn provider_id(&self) -> &'a str {
+        self.provider_id
+    }
+
+    /// The provider key reference the writer's [`DekWrapper`] reported.
+    #[must_use]
+    pub const fn key_ref(&self) -> &'a str {
+        self.key_ref
+    }
+
+    /// The provider's opaque wrapped DEK.
+    #[must_use]
+    pub const fn blob(&self) -> &'a [u8] {
+        self.blob
+    }
+}
+
+/// Wraps a version's DEK with an external key service such as a KMS
+/// (RFC-0039 stanza kind `0x02`).
+///
+/// `context` is `"AION_V3_DEK_WRAP_V1\0" ‖ ctx ‖ dek_commitment`. Pass it as
+/// the service's encryption context or associated data where it supports
+/// one, so a blob cannot be replayed into another file, version, or
+/// author's section. The implementation owns its timeouts and retries:
+/// this crate is synchronous and never calls a provider concurrently.
+///
+/// # Example
+///
+/// ```
+/// use aion_context::confidential::DekWrapper;
+///
+/// struct Escrow;
+/// impl DekWrapper for Escrow {
+///     fn provider_id(&self) -> &str { "example-escrow" }
+///     fn key_ref(&self) -> &str { "policy-key-1" }
+///     fn wrap(&self, dek: &[u8; 32], _context: &[u8]) -> aion_context::Result<Vec<u8>> {
+///         Ok(dek.to_vec()) // a real provider encrypts under its key
+///     }
+/// }
+/// ```
+pub trait DekWrapper: Send + Sync {
+    /// Provider name, 1–64 bytes, for example `"gcp-kms"`.
+    fn provider_id(&self) -> &str;
+
+    /// Provider key reference, 1–1024 bytes.
+    fn key_ref(&self) -> &str;
+
+    /// Wrap `dek`, bound to `context`. The blob must be 1–4096 bytes.
+    ///
+    /// # Errors
+    ///
+    /// Any provider failure; the commit then writes nothing.
+    fn wrap(&self, dek: &[u8; 32], context: &[u8]) -> Result<Vec<u8>>;
+}
+
+/// Unwraps DEKs from external (KMS) stanzas (RFC-0039 kind `0x02`).
+///
+/// The returned DEK is always checked against the section's DEK commitment
+/// before use, so a provider bug or a substituted blob cannot make readers
+/// see different rules.
+pub trait DekUnwrapper: Send + Sync {
+    /// Whether this unwrapper can handle `stanza`, typically by matching
+    /// its provider and key reference.
+    fn accepts(&self, stanza: &ExternalStanza<'_>) -> bool;
+
+    /// Unwrap the DEK from `stanza`, bound to the same `context` the writer
+    /// used (see [`DekWrapper`]).
+    ///
+    /// # Errors
+    ///
+    /// Any provider failure; it is reported as `RulesUnopenable`.
+    fn unwrap(&self, stanza: &ExternalStanza<'_>, context: &[u8]) -> Result<Zeroizing<[u8; 32]>>;
+}
+
+/// The context an external wrapper binds: `info ‖ ctx ‖ dek_commitment`.
+fn external_context(ctx: &[u8; CTX_LEN], dek_commitment: &[u8; 32]) -> Vec<u8> {
+    let mut context = wrap_info(ctx);
+    context.extend_from_slice(dek_commitment);
+    context
+}
+
+/// Wrap the DEK with an external provider into a kind-`0x02` stanza body:
+/// `provider_id_len u8 ‖ provider_id ‖ key_ref_len u16 ‖ key_ref ‖ blob_len u16 ‖ blob`.
+fn wrap_external(
+    wrapper: &dyn DekWrapper,
+    dek: &Dek,
+    ctx: &[u8; CTX_LEN],
+) -> Result<(u8, Vec<u8>)> {
+    let invalid = |reason: &str| AionError::EncryptionFailed {
+        reason: reason.to_string(),
+    };
+    let provider_id = wrapper.provider_id().as_bytes();
+    let key_ref = wrapper.key_ref().as_bytes();
+    let provider_len = u8::try_from(provider_id.len())
+        .ok()
+        .filter(|len| (1..=64).contains(len))
+        .ok_or_else(|| invalid("external provider_id must be 1-64 bytes"))?;
+    let key_ref_len = u16::try_from(key_ref.len())
+        .ok()
+        .filter(|len| (1..=1024).contains(len))
+        .ok_or_else(|| invalid("external key_ref must be 1-1024 bytes"))?;
+    let blob = wrapper.wrap(dek.as_bytes(), &external_context(ctx, &dek.commitment()))?;
+    let blob_len = u16::try_from(blob.len())
+        .ok()
+        .filter(|len| (1..=4096).contains(len))
+        .ok_or_else(|| invalid("external wrapper returned a blob outside 1-4096 bytes"))?;
+    let mut body = Vec::with_capacity(
+        5usize
+            .saturating_add(provider_id.len())
+            .saturating_add(key_ref.len())
+            .saturating_add(blob.len()),
+    );
+    body.push(provider_len);
+    body.extend_from_slice(provider_id);
+    body.extend_from_slice(&key_ref_len.to_le_bytes());
+    body.extend_from_slice(key_ref);
+    body.extend_from_slice(&blob_len.to_le_bytes());
+    body.extend_from_slice(&blob);
+    Ok((crate::envelope::STANZA_EXTERNAL, body))
+}
+
+/// Unwrap with an external provider and check the DEK commitment.
+fn unwrap_external(
+    unwrapper: &dyn DekUnwrapper,
+    stanza: &ExternalStanza<'_>,
+    ctx: &[u8; CTX_LEN],
+    dek_commitment: &[u8; 32],
+) -> Result<Dek> {
+    let bytes = unwrapper
+        .unwrap(stanza, &external_context(ctx, dek_commitment))
+        .map_err(|_| unopenable())?;
+    let dek = Dek::from_bytes(bytes);
+    if bool::from(dek.commitment().ct_eq(dek_commitment)) {
+        Ok(dek)
+    } else {
+        Err(unopenable())
+    }
 }
 
 /// Parse a confidential section and refuse one whose ciphertext exceeds the
@@ -532,6 +688,7 @@ pub(crate) fn bounded_envelope(section: &[u8]) -> Result<Envelope<'_>> {
 pub(crate) fn unwrap_for(
     envelope: &Envelope<'_>,
     identities: &[EncryptionIdentity],
+    unwrappers: &[std::sync::Arc<dyn DekUnwrapper>],
     ctx: &[u8; CTX_LEN],
 ) -> Result<Dek> {
     let mut matched = false;
@@ -544,6 +701,36 @@ pub(crate) fn unwrap_for(
             if let Ok(dek) =
                 unwrap_dek(identity, stanza.recipient(), ctx, envelope.dek_commitment())
             {
+                return Ok(dek);
+            }
+        }
+    }
+    for unwrapper in unwrappers {
+        for stanza in envelope.stanzas() {
+            let StanzaRecipient::External {
+                provider_id,
+                key_ref,
+                blob,
+            } = stanza.recipient()
+            else {
+                continue;
+            };
+            let external = ExternalStanza {
+                provider_id,
+                key_ref,
+                blob,
+            };
+            if !unwrapper.accepts(&external) {
+                continue;
+            }
+            matched = true;
+            let unwrapped = unwrap_external(
+                unwrapper.as_ref(),
+                &external,
+                ctx,
+                envelope.dek_commitment(),
+            );
+            if let Ok(dek) = unwrapped {
                 return Ok(dek);
             }
         }
@@ -564,9 +751,10 @@ pub(crate) fn unwrap_for(
 pub(crate) fn open_section(
     envelope: &Envelope<'_>,
     identities: &[EncryptionIdentity],
+    unwrappers: &[std::sync::Arc<dyn DekUnwrapper>],
     ctx: &[u8; CTX_LEN],
 ) -> Result<Zeroizing<Vec<u8>>> {
-    let dek = unwrap_for(envelope, identities, ctx)?;
+    let dek = unwrap_for(envelope, identities, unwrappers, ctx)?;
     open_with_dek(envelope, &dek, ctx)
 }
 
@@ -680,7 +868,7 @@ impl TryCryptoRng for PrefilledRng<'_> {}
 
 #[cfg(test)]
 #[allow(clippy::indexing_slicing)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::envelope::Envelope;
 
@@ -856,8 +1044,7 @@ mod tests {
     }
 
     fn seal_for(ids: &[&EncryptionIdentity], ctx: &[u8; CTX_LEN], rules: &[u8]) -> Vec<u8> {
-        let recipients: Vec<(EncryptionKem, &[u8])> =
-            ids.iter().map(|id| (id.kind(), id.public_key())).collect();
+        let recipients: Vec<Recipient> = ids.iter().map(|id| id.recipient()).collect();
         let framed = ok(crate::format::frame_rules(rules));
         ok(seal_section(&framed, &recipients, ctx))
     }
@@ -867,7 +1054,7 @@ mod tests {
         id: &EncryptionIdentity,
         ctx: &[u8; CTX_LEN],
     ) -> Result<Vec<u8>> {
-        let framed = open_section(envelope, std::slice::from_ref(id), ctx)?;
+        let framed = open_section(envelope, std::slice::from_ref(id), &[], ctx)?;
         Ok(crate::format::unframe_rules(&framed)?.to_vec())
     }
 
@@ -886,7 +1073,7 @@ mod tests {
         let stranger = ok(EncryptionIdentity::generate(EncryptionKem::XWing));
         let bytes = seal_for(&[&x, &w], &ctx(), b"rules");
         let envelope = ok(Envelope::parse(&bytes));
-        assert!(open_section(&envelope, std::slice::from_ref(&stranger), &ctx()).is_err());
+        assert!(open_section(&envelope, std::slice::from_ref(&stranger), &[], &ctx()).is_err());
     }
 
     #[test]
@@ -898,8 +1085,8 @@ mod tests {
         let other_author = binding_context(FileId(0x0102_0304), AuthorId(78), VersionNumber(3));
         let other_file = binding_context(FileId(0x0102_0305), AuthorId(77), VersionNumber(3));
         for moved in [other_version, other_author, other_file] {
-            assert!(open_section(&envelope, std::slice::from_ref(&x), &moved).is_err());
-            assert!(open_section(&envelope, std::slice::from_ref(&w), &moved).is_err());
+            assert!(open_section(&envelope, std::slice::from_ref(&x), &[], &moved).is_err());
+            assert!(open_section(&envelope, std::slice::from_ref(&w), &[], &moved).is_err());
         }
     }
 
@@ -923,7 +1110,7 @@ mod tests {
             &ct,
         ));
         let envelope = ok(Envelope::parse(&bytes));
-        assert!(open_section(&envelope, std::slice::from_ref(&x), &ctx()).is_err());
+        assert!(open_section(&envelope, std::slice::from_ref(&x), &[], &ctx()).is_err());
     }
 
     /// A malicious sealer's stanza: HPKE-sealed under the envelope's own
@@ -1006,7 +1193,7 @@ mod tests {
             let body_start = 8 + 1 + 32 + 2 + 3;
             tampered[body_start + enc_at] ^= 0x01;
             let envelope = ok(Envelope::parse(&tampered));
-            let err = open_section(&envelope, std::slice::from_ref(identity), &ctx());
+            let err = open_section(&envelope, std::slice::from_ref(identity), &[], &ctx());
             assert!(matches!(err, Err(AionError::RulesUnopenable)));
         }
     }
@@ -1017,6 +1204,189 @@ mod tests {
     const GOLDEN_X25519_STANZA: &str = "a4e09292b651c278b9772c569f5fa9bb13d906b46ab68c9df9dc2b4409f8a2095fd47633b5e43fca7bad1bfbe424feacb175d9d4d4a30f166dbd30636f0b446bb7ea17e3487e2a920485087edf5341d6b86ce621c42d3b11ac64409ba41ee26c2ae7291aa52329e1a423fb40d8999958";
     const GOLDEN_XWING_STANZA_HASH: &str =
         "399eb899ac0f9e5cf166ca2c34d4054f1ce74a6e0cb067faf90658ada0607e73";
+
+    /// A stand-in KMS: ChaCha20-Poly1305 under a local key, with the
+    /// binding context as associated data, as a real KMS binds it as
+    /// encryption context.
+    pub struct LocalKms {
+        pub key: [u8; 32],
+        pub key_ref: &'static str,
+    }
+
+    impl DekWrapper for LocalKms {
+        #[allow(clippy::unnecessary_literal_bound)] // the trait fixes the signature
+        fn provider_id(&self) -> &str {
+            "local-kms"
+        }
+        fn key_ref(&self) -> &str {
+            self.key_ref
+        }
+        fn wrap(&self, dek: &[u8; 32], context: &[u8]) -> Result<Vec<u8>> {
+            let mut nonce = [0u8; NONCE_LEN];
+            crate::crypto::fill_os_entropy(&mut nonce)?;
+            let mut blob = nonce.to_vec();
+            blob.extend_from_slice(&crate::crypto::encrypt(&self.key, &nonce, dek, context)?);
+            Ok(blob)
+        }
+    }
+
+    impl DekUnwrapper for LocalKms {
+        fn accepts(&self, stanza: &ExternalStanza<'_>) -> bool {
+            stanza.provider_id() == "local-kms" && stanza.key_ref() == self.key_ref
+        }
+        fn unwrap(
+            &self,
+            stanza: &ExternalStanza<'_>,
+            context: &[u8],
+        ) -> Result<Zeroizing<[u8; 32]>> {
+            let (nonce, sealed) = stanza.blob().split_at(NONCE_LEN.min(stanza.blob().len()));
+            let nonce: [u8; NONCE_LEN] = nonce.try_into().map_err(|_| unopenable())?;
+            let opened =
+                Zeroizing::new(crate::crypto::decrypt(&self.key, &nonce, sealed, context)?);
+            let mut dek = Zeroizing::new([0u8; 32]);
+            if opened.len() != 32 {
+                return Err(unopenable());
+            }
+            dek.copy_from_slice(&opened);
+            Ok(dek)
+        }
+    }
+
+    /// An unwrapper that returns a DEK of its choosing.
+    struct LyingKms;
+
+    impl DekUnwrapper for LyingKms {
+        fn accepts(&self, _stanza: &ExternalStanza<'_>) -> bool {
+            true
+        }
+        fn unwrap(
+            &self,
+            _stanza: &ExternalStanza<'_>,
+            _context: &[u8],
+        ) -> Result<Zeroizing<[u8; 32]>> {
+            Ok(Zeroizing::new([0x42; 32]))
+        }
+    }
+
+    /// A wrapper whose blob or names are out of range.
+    struct BadWrapper {
+        provider_id: String,
+        blob_len: usize,
+    }
+
+    impl DekWrapper for BadWrapper {
+        fn provider_id(&self) -> &str {
+            &self.provider_id
+        }
+        #[allow(clippy::unnecessary_literal_bound)] // the trait fixes the signature
+        fn key_ref(&self) -> &str {
+            "key"
+        }
+        fn wrap(&self, _dek: &[u8; 32], _context: &[u8]) -> Result<Vec<u8>> {
+            Ok(vec![7; self.blob_len])
+        }
+    }
+
+    fn kms(key_ref: &'static str) -> std::sync::Arc<LocalKms> {
+        std::sync::Arc::new(LocalKms {
+            key: [0x5A; 32],
+            key_ref,
+        })
+    }
+
+    fn seal_to(recipients: &[Recipient], ctx: &[u8; CTX_LEN]) -> Vec<u8> {
+        let framed = ok(crate::format::frame_rules(b"kms rules"));
+        ok(seal_section(&framed, recipients, ctx))
+    }
+
+    fn open_with(
+        bytes: &[u8],
+        identities: &[EncryptionIdentity],
+        unwrappers: &[std::sync::Arc<dyn DekUnwrapper>],
+        ctx: &[u8; CTX_LEN],
+    ) -> Result<Vec<u8>> {
+        let envelope = Envelope::parse(bytes)?;
+        let framed = open_section(&envelope, identities, unwrappers, ctx)?;
+        Ok(crate::format::unframe_rules(&framed)?.to_vec())
+    }
+
+    #[test]
+    fn a_kms_recipient_and_an_xwing_recipient_both_open() {
+        let reader = ok(EncryptionIdentity::generate(EncryptionKem::XWing));
+        let vault = kms("policy-key");
+        let bytes = seal_to(
+            &[reader.recipient(), Recipient::external(vault.clone())],
+            &ctx(),
+        );
+        let envelope = ok(Envelope::parse(&bytes));
+        assert!(envelope
+            .stanzas()
+            .iter()
+            .any(|s| s.kind() == crate::envelope::STANZA_EXTERNAL));
+        let unwrappers: Vec<std::sync::Arc<dyn DekUnwrapper>> = vec![vault];
+        assert_eq!(
+            ok(open_with(&bytes, &[], &unwrappers, &ctx())),
+            b"kms rules"
+        );
+        assert_eq!(
+            ok(open_with(
+                &bytes,
+                std::slice::from_ref(&reader),
+                &[],
+                &ctx()
+            )),
+            b"kms rules"
+        );
+    }
+
+    #[test]
+    fn a_kms_stanza_moved_to_another_context_does_not_open() {
+        let vault = kms("policy-key");
+        let bytes = seal_to(&[Recipient::external(vault.clone())], &ctx());
+        let moved = binding_context(FileId(0x0102_0304), AuthorId(77), VersionNumber(4));
+        let unwrappers: Vec<std::sync::Arc<dyn DekUnwrapper>> = vec![vault];
+        assert!(matches!(
+            open_with(&bytes, &[], &unwrappers, &moved),
+            Err(AionError::RulesUnopenable)
+        ));
+    }
+
+    #[test]
+    fn a_lying_provider_is_caught_by_the_key_commitment() {
+        let bytes = seal_to(&[Recipient::external(kms("policy-key"))], &ctx());
+        let liar: Vec<std::sync::Arc<dyn DekUnwrapper>> = vec![std::sync::Arc::new(LyingKms)];
+        assert!(matches!(
+            open_with(&bytes, &[], &liar, &ctx()),
+            Err(AionError::RulesUnopenable)
+        ));
+    }
+
+    #[test]
+    fn an_unwrapper_that_declines_is_not_a_recipient() {
+        let bytes = seal_to(&[Recipient::external(kms("policy-key"))], &ctx());
+        let other: Vec<std::sync::Arc<dyn DekUnwrapper>> = vec![kms("other-key")];
+        assert!(matches!(
+            open_with(&bytes, &[], &other, &ctx()),
+            Err(AionError::NotARecipient)
+        ));
+    }
+
+    #[test]
+    fn out_of_range_provider_output_refuses_to_seal() {
+        let framed = ok(crate::format::frame_rules(b"r"));
+        for (provider_id, blob_len) in [
+            (String::new(), 16),
+            ("p".repeat(65), 16),
+            ("ok".to_string(), 0),
+            ("ok".to_string(), 4097),
+        ] {
+            let wrapper = std::sync::Arc::new(BadWrapper {
+                provider_id,
+                blob_len,
+            });
+            assert!(seal_section(&framed, &[Recipient::external(wrapper)], &ctx()).is_err());
+        }
+    }
 
     mod properties {
         use super::*;
@@ -1057,7 +1427,7 @@ mod tests {
             let mut tampered = bytes;
             tampered[index] ^= flip;
             if let Ok(envelope) = Envelope::parse(&tampered) {
-                assert!(open_section(&envelope, std::slice::from_ref(&id), &ctx()).is_err());
+                assert!(open_section(&envelope, std::slice::from_ref(&id), &[], &ctx()).is_err());
             }
         }
     }
