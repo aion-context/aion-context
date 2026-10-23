@@ -296,8 +296,11 @@ fn hex32(bytes: &[u8; 32]) -> String {
 /// Build the canonical JSON body for an aion version attestation.
 ///
 /// Shape matches the RFC-0023 §"Aion payload types" table.
-#[must_use]
-pub fn version_attestation_payload(version: &VersionEntry, signer: AuthorId) -> Vec<u8> {
+///
+/// # Errors
+///
+/// Returns `Err` if JSON serialization of the payload fails.
+pub fn version_attestation_payload(version: &VersionEntry, signer: AuthorId) -> Result<Vec<u8>> {
     let json = serde_json::json!({
         "_type": "https://aion-context.dev/attestation/v1",
         "version": {
@@ -311,13 +314,17 @@ pub fn version_attestation_payload(version: &VersionEntry, signer: AuthorId) -> 
         },
         "signer": signer.as_u64(),
     });
-    // Safety: serde_json::to_vec on a Value cannot fail for finite data.
-    serde_json::to_vec(&json).unwrap_or_else(|_| std::process::abort())
+    serde_json::to_vec(&json).map_err(|e| AionError::InvalidFormat {
+        reason: format!("version attestation payload serialization failed: {e}"),
+    })
 }
 
 /// Build the canonical JSON body for an aion artifact manifest.
-#[must_use]
-pub fn manifest_payload(manifest: &ArtifactManifest) -> Vec<u8> {
+///
+/// # Errors
+///
+/// Returns `Err` if JSON serialization of the payload fails.
+pub fn manifest_payload(manifest: &ArtifactManifest) -> Result<Vec<u8>> {
     let entries: Vec<serde_json::Value> = manifest
         .entries()
         .iter()
@@ -339,29 +346,37 @@ pub fn manifest_payload(manifest: &ArtifactManifest) -> Vec<u8> {
         "manifest_id": hex32(manifest.manifest_id()),
         "entries": entries,
     });
-    serde_json::to_vec(&json).unwrap_or_else(|_| std::process::abort())
+    serde_json::to_vec(&json).map_err(|e| AionError::InvalidFormat {
+        reason: format!("manifest payload serialization failed: {e}"),
+    })
 }
 
 /// Wrap a version attestation into a DSSE envelope signed by `signer`.
-#[must_use]
+///
+/// # Errors
+///
+/// Returns `Err` if the payload cannot be serialized.
 pub fn wrap_version_attestation(
     version: &VersionEntry,
     signer: AuthorId,
     key: &SigningKey,
-) -> DsseEnvelope {
-    let payload = version_attestation_payload(version, signer);
-    sign_envelope(&payload, AION_ATTESTATION_TYPE, signer, key)
+) -> Result<DsseEnvelope> {
+    let payload = version_attestation_payload(version, signer)?;
+    Ok(sign_envelope(&payload, AION_ATTESTATION_TYPE, signer, key))
 }
 
 /// Wrap an artifact manifest into a DSSE envelope signed by `signer`.
-#[must_use]
+///
+/// # Errors
+///
+/// Returns `Err` if the payload cannot be serialized.
 pub fn wrap_manifest(
     manifest: &ArtifactManifest,
     signer: AuthorId,
     key: &SigningKey,
-) -> DsseEnvelope {
-    let payload = manifest_payload(manifest);
-    sign_envelope(&payload, AION_MANIFEST_TYPE, signer, key)
+) -> Result<DsseEnvelope> {
+    let payload = manifest_payload(manifest)?;
+    Ok(sign_envelope(&payload, AION_MANIFEST_TYPE, signer, key))
 }
 
 #[cfg(test)]
@@ -672,6 +687,67 @@ mod tests {
             let env = sign_envelope(&payload, &ptype, signer, &op);
             let v_after = effective.saturating_add(1);
             assert!(verify_envelope(&env, &reg, v_after).is_err());
+        }
+
+        #[hegel::test]
+        fn prop_dsse_wrap_version_attestation_roundtrip(tc: hegel::TestCase) {
+            let version = VersionEntry::new(
+                crate::types::VersionNumber(tc.draw(gs::integers::<u64>())),
+                tc.draw(gs::arrays(gs::integers::<u8>())),
+                tc.draw(gs::arrays(gs::integers::<u8>())),
+                AuthorId::new(tc.draw(gs::integers::<u64>())),
+                tc.draw(gs::integers::<u64>()),
+                tc.draw(gs::integers::<u64>()),
+                tc.draw(gs::integers::<u32>()),
+            );
+            let signer =
+                AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1).max_value(1 << 32)));
+            let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+            let env = wrap_version_attestation(&version, signer, &key)
+                .unwrap_or_else(|_| std::process::abort());
+            assert_eq!(env.payload_type, AION_ATTESTATION_TYPE);
+            let reg = reg_pinning(signer, &key);
+            let verified = verify_envelope(&env, &reg, 1).unwrap_or_else(|_| std::process::abort());
+            assert_eq!(verified, vec![keyid_for(signer)]);
+            let body: serde_json::Value =
+                serde_json::from_slice(&env.payload).unwrap_or_else(|_| std::process::abort());
+            assert_eq!(body["signer"], signer.as_u64());
+            assert_eq!(body["version"]["version_number"], version.version_number);
+            assert_eq!(body["version"]["rules_hash"], hex32(&version.rules_hash));
+        }
+
+        #[hegel::test]
+        fn prop_dsse_wrap_manifest_roundtrip(tc: hegel::TestCase) {
+            let n = tc.draw(gs::integers::<usize>().max_value(6));
+            let mut builder = crate::manifest::ArtifactManifestBuilder::new();
+            for _ in 0..n {
+                let name = tc.draw(gs::text().max_size(32));
+                let bytes = tc.draw(gs::binary().max_size(256));
+                let _handle = builder.add(&name, &bytes);
+            }
+            let manifest = builder.build();
+            let signer =
+                AuthorId::new(tc.draw(gs::integers::<u64>().min_value(1).max_value(1 << 32)));
+            let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+            let env =
+                wrap_manifest(&manifest, signer, &key).unwrap_or_else(|_| std::process::abort());
+            assert_eq!(env.payload_type, AION_MANIFEST_TYPE);
+            let reg = reg_pinning(signer, &key);
+            let verified = verify_envelope(&env, &reg, 1).unwrap_or_else(|_| std::process::abort());
+            assert_eq!(verified, vec![keyid_for(signer)]);
+            let body: serde_json::Value =
+                serde_json::from_slice(&env.payload).unwrap_or_else(|_| std::process::abort());
+            assert_eq!(body["manifest_id"], hex32(manifest.manifest_id()));
+            let entries = body["entries"]
+                .as_array()
+                .unwrap_or_else(|| std::process::abort());
+            assert_eq!(entries.len(), manifest.entries().len());
+            for (json, entry) in entries.iter().zip(manifest.entries()) {
+                let name = manifest.name_of(entry).unwrap_or("<invalid-utf8>");
+                assert_eq!(json["name"], name);
+                assert_eq!(json["size"], entry.size);
+                assert_eq!(json["hash"], hex32(&entry.hash));
+            }
         }
     }
 }

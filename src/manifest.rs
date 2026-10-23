@@ -461,10 +461,7 @@ fn parse_artifact_entry(slice: &[u8]) -> Result<ArtifactEntry> {
 /// Serialize the manifest to its canonical on-wire form:
 /// `MANIFEST_DOMAIN || entry_count_le || entries || name_table`.
 fn canonical_manifest_bytes(entries: &[ArtifactEntry], name_table: &[u8]) -> Vec<u8> {
-    let entries_len = entries
-        .len()
-        .checked_mul(ARTIFACT_ENTRY_SIZE)
-        .unwrap_or_else(|| std::process::abort());
+    let entries_len = entries.len().saturating_mul(ARTIFACT_ENTRY_SIZE);
     let capacity = MANIFEST_DOMAIN
         .len()
         .saturating_add(8)

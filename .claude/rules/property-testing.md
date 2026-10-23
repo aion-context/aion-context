@@ -180,6 +180,8 @@ blocks on a drop.
 | `src/dsse.rs`                   | RFC-0034 envelope registry verify accepts pinned signer        |
 | `src/dsse.rs`                   | RFC-0034 envelope registry verify rejects unregistered signer  |
 | `src/dsse.rs`                   | RFC-0034 envelope registry verify rejects revoked signer       |
+| `src/dsse.rs`                   | `wrap_version_attestation` → `verify_envelope` round-trip, payload fields preserved |
+| `src/dsse.rs`                   | `wrap_manifest` → `verify_envelope` round-trip, every entry preserved |
 | `src/hw_attestation.rs`         | RFC-0034 registry verify accepts freshly-bound key             |
 | `src/hw_attestation.rs`         | RFC-0034 registry verify rejects binding signed by wrong master |
 | `src/release.rs`                | RFC-0034 `verify_with_registry` accepts a pinned release       |
