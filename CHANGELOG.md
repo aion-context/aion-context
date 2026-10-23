@@ -69,6 +69,13 @@ and the project follows [Semantic Versioning].
   `signature_chain::{verify_signature, verify_attestation}` compared pinned
   public keys with `==` / `!=`, against the hard rule in
   `.claude/rules/crypto.md`. All four now use `subtle::ConstantTimeEq`.
+- **Documentation overstated rules confidentiality** — the rules section
+  is ChaCha20-Poly1305 ciphertext under a key derived only from public
+  header fields (`file_id`, version), so anyone holding an `.aion` file
+  can read its rules. The README, book, `SECURITY.md`, the audit guide,
+  and an RFC-0003 errata now say so plainly. `aion init --no-encryption`
+  never changed behavior; its help text and the init banner now say so.
+  Restoring real confidentiality is a format change and needs an RFC.
 - **No process aborts in library code** — rules encryption propagated
   an OS-RNG failure as `std::process::abort()` rather than through its
   `Result`. The four abort sites in non-test library code are gone:

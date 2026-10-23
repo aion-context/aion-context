@@ -180,6 +180,19 @@ This binds ciphertext to specific version, preventing version confusion attacks.
 4. Verify hash: BLAKE3(rules) == rules_hash (defense in depth)
 ```
 
+> **Errata (2026-10).** The implementation does not match this
+> protocol, and the rules section has no confidentiality.
+> `operations::encrypt_rules` derives the key with
+> `HKDF(ikm = "aion-v2-master-{file_id}", salt = file_id,
+> info = "aion-v2-rules-v{version}")`. There is no `random_seed`, so
+> every input is a public header field, and anyone holding the file
+> can decrypt its rules. The AAD is `version_le` only, not
+> `file_id || version_number || rules_hash`. `rules_hash` is
+> BLAKE3 over the *plaintext*, stored in the clear. Low-entropy
+> rules could be confirmed by guessing even with a secret key.
+> Restoring the confidentiality goal above is a file-format change
+> and needs its own RFC. See `book/src/architecture/crypto.md`.
+
 ### Security Parameters
 
 #### Recommended Lifetimes

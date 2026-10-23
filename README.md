@@ -56,6 +56,11 @@ policy payload in a versioned signature chain with integrity checks.
 The technical details matter, but the outcome is simple: policy changes
 become provable instead of assumed.
 
+> **Tamper-evident, not secret.** Anyone who holds an `.aion` file
+> can read its rules. Keep credentials and regulated personal data
+> out of policy payloads, or encrypt the whole file when the policy
+> itself is sensitive. See [crypto](book/src/architecture/crypto.md#the-rules-section-is-not-confidential).
+
 It is *not* a replacement for sigstore, in-toto, or SLSA. It is the
 policy/document-shaped sibling those systems leave on the table — see
 [the comparison chapter] for the contrast.

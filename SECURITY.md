@@ -55,6 +55,16 @@ files in the report.
 If you're unsure, err on the side of reporting privately. We can
 move it to a public issue if it turns out to be out of scope.
 
+### Known limitations
+
+- **Rules are not confidential.** The rules section is encrypted
+  with a key derived only from public header fields, so anyone who
+  holds an `.aion` file can read its rules. This is documented
+  behavior, not an embargoed vulnerability. See
+  [crypto.md](book/src/architecture/crypto.md#the-rules-section-is-not-confidential).
+  A report that shows a way to *forge or alter* rules without
+  detection is in scope.
+
 ## What we'll do
 
 1. **Acknowledge** within 3 business days that we received the report.

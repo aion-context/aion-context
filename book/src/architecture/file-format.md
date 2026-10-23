@@ -24,7 +24,7 @@ every byte; this page is the operator-facing summary.
 │ String Table                          │
 │   null-delimited UTF-8 messages       │
 ├──────────────────────────────────────┤
-│ Encrypted Rules (XChaCha20-Poly1305)  │
+│ Encrypted Rules (ChaCha20-Poly1305)   │
 │   payload + nonce                     │
 ├──────────────────────────────────────┤
 │ Integrity Hash                        │

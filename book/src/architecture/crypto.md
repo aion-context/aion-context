@@ -11,12 +11,42 @@ explicit about this.
 |---|---|---|
 | Signing | `ed25519-dalek` | Every signature: versions, attestations, manifests, DSSE envelopes, rotation records, revocation records |
 | Hashing | `blake3` | Version hashes, parent_hash chain, integrity hash, leaf hashes for transparency log, manifest IDs |
-| Symmetric AEAD | `chacha20poly1305` (XChaCha20-Poly1305) | Encrypted-rules section in `.aion` files |
-| Key derivation | `hkdf` (HKDF-SHA256) | Per-file key from master + file_id + version |
+| Symmetric AEAD | `chacha20poly1305` (ChaCha20-Poly1305, 96-bit nonce) | Rules section in `.aion` files — encoding only, see [below](#the-rules-section-is-not-confidential) |
+| Key derivation | `hkdf` (HKDF-SHA256) | Rules-section key from `file_id` + version (both public) |
 | Password-based KDF | `argon2` | Keystore password protection |
 | Constant-time compare | `subtle::ConstantTimeEq` | Public-key comparisons (post-PR #43) |
 | Randomness | `rand::rngs::OsRng` | Nonces, key generation |
 | Post-quantum signing | `pqcrypto-mldsa` (ML-DSA-65) | Hybrid signatures (RFC-0027) |
+
+## The rules section is not confidential
+
+The rules payload is stored as ChaCha20-Poly1305 ciphertext, but
+**anyone who holds an `.aion` file can read its rules.** The key
+comes from HKDF over the file's `file_id` and the version number,
+and both are stored in plain sight in the file. No secret goes in.
+This is why `operations::show_current_rules(path)` takes only a path.
+`aion show <FILE> rules` is the same: its `--registry` holds only
+public verifying keys.
+
+What you get from it:
+
+- **No casual exposure.** The rules don't appear as plaintext in the
+  raw bytes, so `strings` or `grep` on the file won't find them.
+- **Integrity, from the AEAD tag.** The ciphertext is bound to its
+  version number, and on top of that the signature chain and the
+  whole-file BLAKE3 hash detect any change.
+
+What you do **not** get: secrecy from anyone who has the file.
+Treat an `.aion` file as **public to everyone who can read it**, and
+don't put secrets, credentials, or regulated personal data in rules.
+If the policy itself must be kept confidential, encrypt the whole
+`.aion` file at rest or in transit with a tool that holds a real key
+(age, a KMS envelope, disk encryption).
+
+`aion init --no-encryption` has no effect today: the rules section
+is always written the same way. Real confidentiality needs a key
+that isn't stored in the file. That's a file-format change and needs
+an RFC.
 
 ## Domain separation
 

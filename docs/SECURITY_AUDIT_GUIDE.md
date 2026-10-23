@@ -11,7 +11,9 @@ AION v2 is a cryptographically-secured versioned truth infrastructure designed f
 ### Key Security Properties
 
 1. **Tamper-Evidence**: Cryptographic signatures ensure any modification is detectable
-2. **Confidentiality**: ChaCha20-Poly1305 encryption protects sensitive rules data
+2. **No confidentiality for rules**: the rules section is ChaCha20-Poly1305 ciphertext, but its key is derived from
+   the public `file_id` and version number, so anyone holding the file can decrypt it. It prevents casual
+   plaintext exposure only. See `book/src/architecture/crypto.md` § "The rules section is not confidential"
 3. **Non-Repudiation**: Ed25519 signatures provide strong author attribution
 4. **Offline-First**: Zero server dependency eliminates entire classes of attacks
 5. **Memory Safety**: Rust implementation prevents memory corruption vulnerabilities
@@ -421,9 +423,13 @@ See `rfcs/RFC-0006-threat-model.md` for full details.
    - **Mitigation**: OS keyring storage, memory zeroization
    - **Test**: Key export encryption, access control tests
 
-3. **Data Disclosure (I1)**: Encryption key compromise exposes rules
-   - **Mitigation**: ChaCha20-Poly1305 encryption, secure key derivation
-   - **Test**: Encryption/decryption tests, key derivation tests
+3. **Data Disclosure (I1)**: Anyone holding an `.aion` file can read its rules
+   - **Status**: Not mitigated by design today. The rules-section key is derived from public header fields
+     (`file_id`, version), so the encryption does not provide secrecy. Rules must be treated as readable by
+     every holder of the file. Confidentiality needs a key held outside the file, which is a file-format
+     change requiring an RFC.
+   - **Operator guidance**: do not store secrets or regulated personal data in rules; encrypt the whole
+     file at rest or in transit when the policy itself is sensitive
 
 ### Secondary Threats (Medium Risk)
 
@@ -598,13 +604,13 @@ See `rfcs/RFC-0001-file-format.md` for complete specification.
 ### File Creation Workflow
 
 ```
-1. Generate encryption key: derive_file_key(file_id)
-2. Encrypt rules: ChaCha20-Poly1305(key, nonce, rules)
-3. Compute content hash: BLAKE3(encrypted_rules)
+1. Derive rules key: HKDF(ikm="aion-v2-master-{file_id}", salt=file_id, info="aion-v2-rules-v{version}") (public inputs only)
+2. Encrypt rules: nonce || ChaCha20-Poly1305(key, random 12-byte nonce, rules, aad=version_le)
+3. Compute rules_hash: BLAKE3(plaintext rules) — note this is a hash of the plaintext stored in the clear
 4. Create version entry with hash
 5. Sign version: Ed25519.sign(signing_key, version_bytes)
 6. Serialize to binary format
-7. Write atomically to file
+7. Write to file (genesis uses a direct write; commits use temp-file + rename)
 ```
 
 ### Version Commit Workflow
@@ -612,7 +618,7 @@ See `rfcs/RFC-0001-file-format.md` for complete specification.
 ```
 1. Load and parse existing file
 2. Verify all existing signatures
-3. Encrypt new rules with same file key
+3. Encrypt new rules under the per-version key (same public-input derivation)
 4. Compute new content hash
 5. Link to parent via hash chain
 6. Increment version number
