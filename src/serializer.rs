@@ -414,7 +414,7 @@ struct SectionSizes {
 
 impl SectionSizes {
     #[allow(clippy::arithmetic_side_effects)]
-    fn from_file(file: &AionFile) -> Self {
+    const fn from_file(file: &AionFile) -> Self {
         let encrypted_rules = file.encrypted_rules.len();
         let version_chain = file.versions.len() * VERSION_ENTRY_SIZE;
         let signatures = file.signatures.len() * SIGNATURE_ENTRY_SIZE;
@@ -466,7 +466,11 @@ impl SectionOffsets {
 }
 
 #[allow(clippy::cast_possible_truncation)]
-fn build_header(file: &AionFile, sizes: &SectionSizes, offsets: &SectionOffsets) -> FileHeader {
+const fn build_header(
+    file: &AionFile,
+    sizes: &SectionSizes,
+    offsets: &SectionOffsets,
+) -> FileHeader {
     FileHeader {
         magic: *b"AION",
         version: file.format.as_u16(),

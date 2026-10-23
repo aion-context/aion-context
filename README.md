@@ -153,7 +153,7 @@ transparency log (RFC-0025) is RFC 6962-compatible; OCI manifests
 let releases publish through container registries; JCS gives
 deterministic JSON for cross-implementation hashing.
 
-[![Rust](https://img.shields.io/badge/Rust-1.85%2B-DEA584?logo=rust&logoColor=white)](https://www.rust-lang.org/)
+[![Rust](https://img.shields.io/badge/Rust-1.87%2B-DEA584?logo=rust&logoColor=white)](https://www.rust-lang.org/)
 [![Crates.io](https://img.shields.io/crates/v/aion-context.svg?logo=rust&logoColor=white&color=DEA584)](https://crates.io/crates/aion-context)
 [![Sigstore](https://img.shields.io/badge/Sigstore-DSSE%20envelopes-3F2828?logo=sigstore&logoColor=white)](https://www.sigstore.dev/)
 [![SLSA v1.1](https://img.shields.io/badge/SLSA-v1.1-2F855A)](https://slsa.dev/)

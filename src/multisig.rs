@@ -125,7 +125,7 @@ pub struct MultiSigVerification {
 impl MultiSigVerification {
     /// Check if verification passed
     #[must_use]
-    pub fn is_valid(&self) -> bool {
+    pub const fn is_valid(&self) -> bool {
         self.threshold_met && self.invalid_signers.is_empty()
     }
 }
@@ -255,7 +255,7 @@ impl SignatureAggregator {
 
     /// Get the number of signatures collected
     #[must_use]
-    pub fn count(&self) -> usize {
+    pub const fn count(&self) -> usize {
         self.signatures.len()
     }
 

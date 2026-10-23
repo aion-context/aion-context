@@ -988,7 +988,7 @@ impl VerificationReport {
 
     /// Check if the report has any temporal warnings
     #[must_use]
-    pub fn has_temporal_warnings(&self) -> bool {
+    pub const fn has_temporal_warnings(&self) -> bool {
         !self.temporal_warnings.is_empty()
     }
 

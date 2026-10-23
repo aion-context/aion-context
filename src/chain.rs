@@ -188,7 +188,7 @@ impl VerifiedChain {
 
     /// Number of versions in the chain (at least 1).
     #[must_use]
-    pub fn version_count(&self) -> u64 {
+    pub const fn version_count(&self) -> u64 {
         self.entries.len() as u64
     }
 

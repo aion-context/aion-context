@@ -235,6 +235,13 @@ and the project follows [Semantic Versioning].
   0.103.16, and `webpki-roots` 1.0.7 → 1.0.10 for RUSTSEC-2026-0285,
   -0346, -0348, -0349, -0381, and -0382. These are only reachable
   through the optional `llm-agent-example` feature's `ureq` client.
+- Bumped `ctutils` 0.4.2 → 0.4.5 for RUSTSEC-2026-0385 (non-constant-time
+  mask generation and `u128` comparisons). It is reached through
+  `chacha20poly1305` → `poly1305` → `universal-hash`, which is the format-v2
+  rules-section tag check. The 1.0.x line does not depend on `ctutils`.
+  Every fixed `ctutils` release requires Rust 1.87, so the minimum
+  supported Rust version rises from 1.85 to 1.87, and the CI job is now
+  `msrv (1.87)`.
 - Replaced the yanked `chacha20` 0.10.1 with 0.10.2, and bumped `blake3`
   to 1.8.7, which drops the `arrayref` dependency after its crates.io
   owner account was compromised. The locked `arrayref` 0.3.9 predates
