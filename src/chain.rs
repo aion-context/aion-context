@@ -66,12 +66,14 @@ pub struct VerifiedChain {
     head_section: Vec<u8>,
 }
 
-/// A version entry together with its rules mode, decoded once during
-/// verification so no accessor ever has to drop a decoding error.
+/// A version entry together with its rules mode and version hash, both
+/// computed once during verification so no accessor ever has to drop a
+/// decoding error.
 #[derive(Debug, Clone, Copy)]
 struct CheckedEntry {
     entry: VersionEntry,
     mode: Option<RulesMode>,
+    version_hash: [u8; 32],
 }
 
 /// Read and fully verify a file, returning a [`VerifiedChain`] over the
@@ -161,7 +163,12 @@ impl VerifiedChain {
                     FormatVersion::V2 => None,
                     FormatVersion::V3 => Some(RulesMode::of(&entry)?),
                 };
-                Ok(CheckedEntry { entry, mode })
+                let version_hash = context.version_hash(&entry)?;
+                Ok(CheckedEntry {
+                    entry,
+                    mode,
+                    version_hash,
+                })
             })
             .collect::<Result<Vec<_>>>()?;
         let head = *entries.last().ok_or_else(empty_chain)?;
@@ -267,6 +274,14 @@ impl VerifiedEntry<'_> {
     #[must_use]
     pub const fn context(&self) -> FileContext {
         self.chain.context
+    }
+
+    /// This entry's version hash under its file's format: the value the
+    /// next version's `parent_hash` links to. It identifies the version
+    /// in acceptance records and archives.
+    #[must_use]
+    pub const fn version_hash(&self) -> [u8; 32] {
+        self.checked.version_hash
     }
 }
 

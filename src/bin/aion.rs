@@ -59,6 +59,47 @@ enum Commands {
 
     /// Bulk-verify a directory of `.aion` files (issue #48)
     Archive(ArchiveArgs),
+
+    /// Accept a verified file with replay defense (RFC-0039): refuses
+    /// older versions, forks, and foreign chains recorded in a state file
+    Accept(AcceptArgs),
+}
+
+#[derive(Args, Debug)]
+struct AcceptArgs {
+    /// Path to the AION file
+    #[arg(value_name = "FILE")]
+    path: PathBuf,
+
+    /// Path to a JSON registry file (RFC-0034)
+    #[arg(long, value_name = "REGISTRY_FILE")]
+    registry: PathBuf,
+
+    /// Accepted-version state file, created if missing. One process at a
+    /// time per state file.
+    #[arg(long, value_name = "STATE_FILE")]
+    state: PathBuf,
+
+    /// Pin this file's expected genesis version hash (64 hex characters)
+    /// before accepting
+    #[arg(long, value_name = "GENESIS_HASH")]
+    pin: Option<String>,
+
+    /// Reject files whose format is older than this version (2 or 3)
+    #[arg(long, value_name = "VERSION")]
+    min_format: Option<u16>,
+
+    /// Require confidential rules for the head, or for every version
+    #[arg(long, value_enum, value_name = "SCOPE")]
+    require_confidential: Option<ConfidentialArg>,
+}
+
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum ConfidentialArg {
+    /// The latest version must be confidential
+    Head,
+    /// Every version must be confidential
+    All,
 }
 
 #[derive(Args, Debug)]
@@ -704,6 +745,7 @@ fn main() -> Result<ExitCode> {
         Commands::Registry(args) => cmd_registry(&args),
         Commands::Release(args) => cmd_release(&args),
         Commands::Archive(args) => cmd_archive(&args),
+        Commands::Accept(args) => cmd_accept(&args),
     }
 }
 
@@ -858,6 +900,59 @@ fn cmd_verify(args: &VerifyArgs) -> Result<ExitCode> {
     }
 
     Ok(report.exit_code())
+}
+
+fn cmd_accept(args: &AcceptArgs) -> Result<ExitCode> {
+    use aion_context::acceptance::{accept_file, AcceptedVersionStore, FileStore};
+    use aion_context::AionError;
+    println!("📥 Accepting AION file: {}", args.path.display());
+    let registry = load_registry_from_path(&args.registry)?;
+    let store = FileStore::new(&args.state);
+    let policy = accept_policy(args)?;
+    if let Some(pin) = &args.pin {
+        let chain = aion_context::chain::verify_file_chain(&args.path, &registry)
+            .with_context(|| format!("Cannot pin: {}", args.path.display()))?;
+        store.pin(chain.context().file_id(), parse_hash32(pin)?)?;
+    }
+    match accept_file(&args.path, &registry, &policy, &store) {
+        Ok(chain) => {
+            println!("✅ Accepted at version {}", chain.head().version().as_u64());
+            if let Some(genesis) = chain.entry(aion_context::types::VersionNumber::GENESIS) {
+                println!("   Genesis: {}", hex::encode(genesis.version_hash()));
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        Err(
+            e @ (AionError::ChainRejected { .. }
+            | AionError::PolicyRejected { .. }
+            | AionError::VersionRejected { .. }),
+        ) => {
+            eprintln!("❌ Not accepted: {e}");
+            Ok(ExitCode::FAILURE)
+        }
+        Err(e) => Err(e).with_context(|| format!("Failed to accept: {}", args.path.display())),
+    }
+}
+
+fn accept_policy(args: &AcceptArgs) -> Result<aion_context::acceptance::AcceptPolicy> {
+    use aion_context::acceptance::{AcceptPolicy, ConfidentialScope};
+    let mut policy = AcceptPolicy::new();
+    if let Some(version) = args.min_format {
+        policy = policy.min_format(aion_context::format::FormatVersion::from_u16(version)?);
+    }
+    policy = match args.require_confidential {
+        None => policy,
+        Some(ConfidentialArg::Head) => policy.require_confidential(ConfidentialScope::Head),
+        Some(ConfidentialArg::All) => policy.require_confidential(ConfidentialScope::AllVersions),
+    };
+    Ok(policy)
+}
+
+fn parse_hash32(text: &str) -> Result<[u8; 32]> {
+    let bytes = hex::decode(text.trim()).context("--pin must be hex")?;
+    bytes
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("--pin must be 32 bytes (64 hex characters)"))
 }
 
 fn load_registry_from_path(

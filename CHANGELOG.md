@@ -12,6 +12,29 @@ and the project follows [Semantic Versioning].
 
 ### Added
 
+- **RFC-0039 Phase A4: receiver-side acceptance with replay defense**
+  (`acceptance` module).
+  - `accept_file(path, &registry, &AcceptPolicy, &dyn
+    AcceptedVersionStore)` verifies the chain, applies the policy, and
+    only then consults the store, which is mandatory.
+  - The store keys records by `file_id`. It advances only along the
+    chain it already accepted, and rejects rollbacks
+    (`version_replay`), forks or equivocation
+    (`version_equivocation`), and a different genesis
+    (`file_id_conflict`) as `AionError::VersionRejected`. Re-accepting
+    the same head is idempotent.
+  - The decision table is the public pure function `decide`, so custom
+    stores apply it inside their own compare-and-swap.
+  - `AcceptPolicy` sets a minimum format and a required confidentiality
+    scope, rejecting as `AionError::PolicyRejected`.
+  - Two stores ship with the crate: `MemoryStore`, and a single-process
+    `FileStore` that writes a temp file, fsyncs it, renames it, and
+    fsyncs the directory. Store failures fail closed with
+    `AionError::StoreUnavailable`.
+  - `VerifiedEntry::version_hash()` is new.
+  - New CLI command: `aion accept <FILE> --registry … --state …
+    [--pin GENESIS] [--min-format 3] [--require-confidential
+    head|all]`.
 - **RFC-0039 Phase A3: verified chains** (`chain` module).
   - `verify_file_chain(path, &registry)` and
     `VerifiedChain::from_bytes(&bytes, &registry)` run exactly

@@ -506,6 +506,21 @@ can't be forgotten by omission:
 - **Failure:** any store error fails the acceptance closed, as a
   `StoreUnavailable` error. The store is never skipped.
 
+*Implementation note (Phase A4):*
+- **Module:** these live in the `acceptance` module.
+- **Decision table:** it is the public pure function
+  `decide(record, chain)`, which every store calls inside its
+  compare-and-swap.
+- **Trait signature:** the store trait is
+  `check_and_advance(&self, ChainSummary)`, without a separate
+  `file_id`, because the summary carries it.
+- **Policy errors:** violations return
+  `AionError::PolicyRejected { reason }` (`format_below_minimum`,
+  `head_not_confidential`, `version_not_confidential`).
+- **Stores:** `MemoryStore` and the single-process `FileStore` ship
+  with the crate.
+- **CLI:** it adds `--min-format` and `--require-confidential`.
+
 The CLI gets `aion accept <FILE> --registry … --state <path>`, backed
 by a file store. The store writes a temp file, fsyncs it, renames it
 over the old one, and fsyncs the directory, so a crash cannot lose an

@@ -247,6 +247,31 @@ pub enum AionError {
         reason: &'static str,
     },
 
+    /// A verified file was not accepted because it does not extend the
+    /// version this receiver already accepted for its `file_id`
+    /// (RFC-0039 replay defense)
+    #[error("Version rejected: {reason}")]
+    VersionRejected {
+        /// Why the version was rejected
+        reason: crate::acceptance::VersionRejectReason,
+    },
+
+    /// A verified file was not accepted because it violates the
+    /// receiver's acceptance policy (RFC-0039)
+    #[error("Rejected by acceptance policy: {reason}")]
+    PolicyRejected {
+        /// Bounded reason code, e.g. `head_not_confidential`
+        reason: &'static str,
+    },
+
+    /// The accepted-version store could not be read or updated, so the
+    /// acceptance failed closed (RFC-0039)
+    #[error("Accepted-version store unavailable: {reason}")]
+    StoreUnavailable {
+        /// Bounded reason code, e.g. `store_write_failed`
+        reason: &'static str,
+    },
+
     /// The rules section is confidential and no recipient key was
     /// supplied to open it (RFC-0039)
     #[error("Rules are confidential: a recipient key is required to read them")]

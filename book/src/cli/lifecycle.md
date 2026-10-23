@@ -127,6 +127,37 @@ Errors:
 JSON format emits a structured `VerificationReport` for
 downstream tooling.
 
+## `aion accept`
+
+Accept a file only if it is verified **and** newer than, or the same as,
+what this receiver accepted before (RFC-0039 replay defense).
+
+```bash
+aion accept <FILE> \
+    --registry <REGISTRY_FILE> \
+    --state <STATE_FILE> \                # created if missing; one process at a time
+    [--pin <GENESIS_HASH>]               # expected genesis, 64 hex chars
+    [--min-format 3]                     # refuse format-v2 files
+    [--require-confidential head|all]    # refuse public rules
+```
+
+`aion verify` is stateless: it answers whether a file is intact and
+correctly signed, and an older, correctly signed copy passes it.
+`aion accept` remembers, per `file_id`, the genesis and the head it
+accepted, and refuses:
+
+| Situation | Reason |
+|---|---|
+| An older version than the one accepted | `version_replay` |
+| A chain that does not extend the accepted head (a fork) | `version_equivocation` |
+| A different genesis under the same `file_id` | `file_id_conflict` |
+
+Re-accepting the same head succeeds without changing the state. The
+state only advances after full verification and the policy checks pass.
+On first acceptance it prints the genesis hash. Pin that hash on other
+receivers with `--pin`, so a different chain can never be learned first.
+Exit code 0 means accepted, and 1 means not accepted.
+
 ## How the lifecycle interacts with the registry
 
 A common operator flow:
