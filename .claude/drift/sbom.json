@@ -1,8 +1,8 @@
 {
   "version": "1",
-  "generated_at": "2026-10-23T15:23:35Z",
+  "generated_at": "2026-10-23T19:16:51Z",
   "workspace_members": [
-    "path+file:///home/ops/Project/aion-context#2.0.0"
+    "path+file:///home/ops/Project/aion-context#3.0.0"
   ],
   "packages": [
     {
@@ -28,7 +28,7 @@
     },
     {
       "name": "aion-context",
-      "version": "2.0.0",
+      "version": "3.0.0",
       "source": "workspace",
       "license": "MIT OR Apache-2.0",
       "license_file": null

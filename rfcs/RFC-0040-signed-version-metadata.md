@@ -1,7 +1,7 @@
 # RFC 0040: Signed Version Metadata (Format v4)
 
 - **Author:** copyleftdev
-- **Status:** ACCEPTED (2026-10-23; crypto-auditor PASS, round 3)
+- **Status:** IMPLEMENTED (3.0.0, #216; accepted 2026-10-23, crypto-auditor PASS)
 - **Created:** 2026-10-23
 - **Updated:** 2026-10-23 (crypto-auditor rounds 1–2 addressed; see Review history)
 - **Depends on:** RFC-0002 (file format), RFC-0005 (signature chain),

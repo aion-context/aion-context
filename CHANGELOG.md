@@ -8,11 +8,33 @@ and the project follows [Semantic Versioning].
 [Keep a Changelog 1.1.0]: https://keepachangelog.com/en/1.1.0/
 [Semantic Versioning]: https://semver.org/spec/v2.0.0.html
 
-## [Unreleased]
+## [3.0.0] — 2026-10-23
+
+Major release. New files are format v4 (RFC-0040): each version's
+signature now covers its commit message and audit trail, which fixes
+GHSA-69cp-fwrw-82vh. Rules can be confidential (RFC-0039 Phase B and
+C1): encrypted to X25519 or X-Wing recipients, or to an external key
+service.
+
+**Upgrading from 2.x:**
+
+- **Upgrade readers before writers.** 3.0.0 reads, verifies and commits
+  format v2, v3 and v4 files. 2.x rejects v4 files with
+  `UnsupportedVersion`.
+- **Existing v2/v3 files still verify, but their commit messages and
+  audit trail are not authenticated** (GHSA-69cp-fwrw-82vh). `aion
+  verify`, `show` and `commit` print a note for them. `aion migrate
+  SOURCE DEST` writes a v4 file that continues one; keep the old file
+  as the record of its history. Receivers can require v4 with `aion
+  accept --min-format 4` or `AcceptPolicy::min_format`.
+- Code that matches on the enums or builds the report structs listed
+  under Breaking needs updating. Implementers of
+  `AcceptedVersionStore` get fail-closed defaults for the new migration
+  methods.
 
 ### Breaking
 
-Release 3.0.0. Each item below is deliberate (RFC-0040).
+Each item below is deliberate (RFC-0040).
 
 - **New files are format v4.** `init_file` and `aion init` write v4,
   which 2.x readers reject with `UnsupportedVersion`. 3.x reads and

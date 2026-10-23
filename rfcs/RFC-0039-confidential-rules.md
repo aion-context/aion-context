@@ -1,7 +1,7 @@
 # RFC 0039: Confidential Rules (Format v3)
 
 - **Author:** copyleftdev
-- **Status:** ACCEPTED (2026-10-23). Phase A IMPLEMENTED (2.0.0). Questions 1 and 8 decided 2026-10-23 (native HPKE envelope; X25519 and X-Wing stanzas, X-Wing by default). Question 3 must be decided before Phase D.
+- **Status:** ACCEPTED (2026-10-23). Phase A IMPLEMENTED (2.0.0); Phases B and C1 IMPLEMENTED (3.0.0). Questions 1 and 8 decided 2026-10-23 (native HPKE envelope; X25519 and X-Wing stanzas, X-Wing by default). Question 3 must be decided before Phase D.
 - **Created:** 2026-10-23
 - **Updated:** 2026-10-23 (five crypto-review rounds; Phase B decisions; see Review history)
 - **Depends on:** RFC-0002 (file format), RFC-0003 (cryptography),
