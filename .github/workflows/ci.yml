@@ -79,6 +79,9 @@ jobs:
     permissions:
       contents: read
       checks: write
+      # Scheduled runs file an issue per new advisory warning; without
+      # this the API call fails and turns the job red on warnings alone.
+      issues: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v6
       - uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998  # v2

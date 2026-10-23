@@ -101,4 +101,12 @@ ignore = [
     { id = "RUSTSEC-2026-0166", reason = "pqcrypto-mldsa unmaintained (PQClean archival); no CVE, no safe upgrade; ML-DSA confined to RFC-0027 hybrid path; migrate to pure-Rust ml-dsa crate via RFC" },
     { id = "RUSTSEC-2026-0162", reason = "pqcrypto-traits unmaintained (PQClean archival); shared traits for pqcrypto-mldsa; tracked with RUSTSEC-2026-0166; remove on ml-dsa migration" },
     { id = "RUSTSEC-2026-0163", reason = "pqcrypto-internals unmaintained (PQClean archival); internal FFI for pqcrypto-mldsa; tracked with RUSTSEC-2026-0166; remove on ml-dsa migration" },
+    # `unsafe-libyaml` is a c2rust translation of libyaml, archived
+    # upstream 2024-03-25. Pulled in by the deprecated `serde_yaml`,
+    # which backs `export::{export_yaml, import_yaml}` and the CLI's
+    # `--format yaml` output. No CVE. `import_yaml` parses caller-
+    # supplied input, so this is not a no-op exposure: migrate to a
+    # safe-Rust YAML crate in a dedicated PR with output-compatibility
+    # tests, then remove this entry.
+    { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml unmaintained via deprecated serde_yaml; no CVE; import_yaml parses external input, so migrate to a safe-Rust YAML crate in a follow-up PR and remove" },
 ]
