@@ -10,7 +10,7 @@ cargo install aion-context
 
 `cargo install` fetches the latest published `aion-context` from
 crates.io and puts the `aion` binary on your `PATH`. To pin to a
-specific version: `cargo install aion-context --version 2.0.0`.
+specific version: `cargo install aion-context --version 3.0.0`.
 
 To use the library from your own crate:
 

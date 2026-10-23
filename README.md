@@ -203,11 +203,11 @@ Production-shaped examples that show aion-context wired into a real domain, end 
 
 ## Status
 
-**2.0.0** — public API, on-disk binary format, CLI exit-code
+**3.0.0** — public API, on-disk binary format, CLI exit-code
 contract, structured tracing event vocabulary, and bounded
-`reason` codes are under semver. 2.0.0 writes format v3 and still
-reads format v2; 1.0.x readers reject v3 files, so upgrade readers
-first. [CHANGELOG.md] has the migration notes. The full written stability
+`reason` codes are under semver. 3.0.0 writes format v4 and still
+reads formats v2 and v3; 2.x readers reject v4 files, so upgrade
+readers first. [CHANGELOG.md] has the migration notes. The full written stability
 promise lives at [`book/src/architecture/stability.md`].
 
 The crypto primitives (Ed25519, BLAKE3, ChaCha20-Poly1305,
