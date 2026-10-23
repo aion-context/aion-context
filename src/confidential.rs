@@ -16,10 +16,15 @@
 //! `hpke` takes an infallible RNG. Encapsulation randomness is therefore
 //! drawn first through [`crate::crypto::fill_os_entropy`], so an OS RNG
 //! failure is an error rather than a panic, and served to `hpke` from that
-//! buffer. If `hpke` asks for more than was drawn, the result is discarded.
+//! buffer. If `hpke` consumes anything other than exactly what was drawn,
+//! the result is discarded.
 //!
 //! Crate-private: RFC-0039 Phase B3 builds the public reading and writing
-//! API on top of this module.
+//! API on top of this module. B3 is also responsible for:
+//! - capping the ciphertext and framed length at the reader's rules-size
+//!   limit before [`open_content`] allocates the plaintext;
+//! - storing each seed with its kind, so one seed is never loaded as two
+//!   KEMs ([`EncryptionIdentity::from_seed`] cannot tell).
 #![cfg_attr(not(test), allow(dead_code))] // Phase B3 writers and readers are the first non-test callers.
 
 use std::convert::Infallible;
@@ -214,6 +219,9 @@ impl EncryptionIdentity {
     }
 
     /// Rebuild an identity from its stored seed.
+    ///
+    /// The caller must pass the kind the seed was generated for: a seed
+    /// serves exactly one KEM, and nothing in the seed records which.
     pub fn from_seed(kind: KemKind, seed: Zeroizing<[u8; 32]>) -> Result<Self> {
         let public_key = match kind {
             KemKind::X25519 => public_key_from_seed::<X25519HkdfSha256>(&seed)?,
@@ -319,9 +327,9 @@ fn seal_dek<K: KemTrait>(
         aad,
         &mut rng,
     );
-    if rng.overdrawn {
+    if rng.overdrawn || !rng.remaining.is_empty() {
         return Err(AionError::EntropyUnavailable {
-            reason: "HPKE requested more randomness than was drawn".to_string(),
+            reason: "HPKE did not consume exactly the randomness drawn for it".to_string(),
         });
     }
     let (enc, wrapped) = sealed.map_err(|_| AionError::EncryptionFailed {
@@ -355,8 +363,12 @@ pub fn unwrap_dek(
         } => open_dek::<XWing>(&identity.seed, enc, wrapped_dek, &info, dek_commitment),
         _ => Err(unopenable()),
     }?;
-    let bytes: [u8; 32] = opened.as_slice().try_into().map_err(|_| unopenable())?;
-    let dek = Dek::from_bytes(Zeroizing::new(bytes));
+    if opened.len() != 32 {
+        return Err(unopenable());
+    }
+    let mut bytes = Zeroizing::new([0u8; 32]);
+    bytes.copy_from_slice(&opened);
+    let dek = Dek::from_bytes(bytes);
     if bool::from(dek.commitment().ct_eq(dek_commitment)) {
         Ok(dek)
     } else {
@@ -695,7 +707,7 @@ mod tests {
     }
 
     #[test]
-    fn a_stanza_wrapping_a_different_dek_fails_the_commitment() {
+    fn a_stanza_under_another_commitment_fails_hpke_open() {
         let (x, _) = two_identities();
         let honest = Dek::generate().unwrap_or_else(|_| std::process::abort());
         let other = Dek::generate().unwrap_or_else(|_| std::process::abort());
@@ -710,6 +722,77 @@ mod tests {
         ));
         let envelope = ok(Envelope::parse(&bytes));
         assert!(open_section(&envelope, &x, &ctx()).is_err());
+    }
+
+    /// A malicious sealer's stanza: HPKE-sealed under the envelope's own
+    /// commitment, so the HPKE open succeeds, but wrapping a different DEK.
+    /// Only the key-commitment check can reject it.
+    #[test]
+    fn a_stanza_wrapping_a_different_dek_under_the_honest_commitment_is_rejected() {
+        let (x, w) = two_identities();
+        let honest = ok(Dek::generate());
+        let other = ok(Dek::generate());
+        let info = wrap_info(&ctx());
+        for id in [&x, &w] {
+            let mut randomness = Zeroizing::new(vec![0u8; id.kind().encap_randomness_len()]);
+            ok(crate::crypto::fill_os_entropy(&mut randomness));
+            let (enc, wrapped) = ok(match id.kind() {
+                KemKind::X25519 => seal_dek::<X25519HkdfSha256>(
+                    id.public_key(),
+                    &other,
+                    &info,
+                    &honest.commitment(),
+                    &randomness,
+                ),
+                KemKind::XWing => seal_dek::<XWing>(
+                    id.public_key(),
+                    &other,
+                    &info,
+                    &honest.commitment(),
+                    &randomness,
+                ),
+            });
+            let mut body = id.public_key().to_vec();
+            body.extend_from_slice(&enc);
+            body.extend_from_slice(&wrapped);
+            let framed = ok(crate::format::frame_rules(b"rules"));
+            let (nonce, ct) = ok(seal_content(&honest, &ctx(), &framed));
+            let stanzas = vec![(id.kind().stanza_kind(), body)];
+            let bytes = ok(encode_envelope(&honest.commitment(), stanzas, &nonce, &ct));
+            let envelope = ok(Envelope::parse(&bytes));
+            let stanza = envelope.stanzas()[0].recipient();
+            let unwrapped = unwrap_dek(id, stanza, &ctx(), envelope.dek_commitment());
+            assert!(matches!(unwrapped, Err(AionError::DecryptionFailed { .. })));
+        }
+    }
+
+    #[test]
+    fn randomness_must_be_consumed_exactly() {
+        let dek = Dek::from_bytes(Zeroizing::new([0x42; 32]));
+        let (x, w) = two_identities();
+        for (id, exact) in [(&x, 32usize), (&w, 64)] {
+            for len in [exact - 1, exact + 1] {
+                let result = wrap_dek_with_randomness(
+                    id.kind(),
+                    id.public_key(),
+                    &dek,
+                    &ctx(),
+                    &vec![7; len],
+                );
+                assert!(
+                    matches!(result, Err(AionError::EntropyUnavailable { .. })),
+                    "{len}"
+                );
+            }
+            assert!(wrap_dek_with_randomness(
+                id.kind(),
+                id.public_key(),
+                &dek,
+                &ctx(),
+                &vec![7; exact]
+            )
+            .is_ok());
+        }
     }
 
     #[test]
