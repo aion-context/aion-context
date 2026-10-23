@@ -1705,13 +1705,7 @@ pub fn show_version_history(path: &Path) -> Result<Vec<VersionInfo>> {
     let parser = AionParser::new(&file_bytes)?;
 
     let header = parser.header();
-    if header.format()?.signs_metadata() {
-        return Err(AionError::InvalidFormat {
-            reason: "format-v4 history is shown only from a verified chain: use \
-                     chain::verify_file_chain and chain::verified_history"
-                .to_string(),
-        });
-    }
+    refuse_unverified_v4(header)?;
     let version_count = header.version_chain_count;
 
     #[allow(clippy::cast_possible_truncation)] // version_count is header field, won't exceed usize
@@ -1938,6 +1932,19 @@ fn build_string_table_with_message(
     new_table.push(0); // Null terminator
 
     Ok((new_table, message_offset))
+}
+
+/// Format-v4 metadata is signed, so it is shown only from a verified chain
+/// (RFC-0040): a registry-less reader must not present it as if checked.
+fn refuse_unverified_v4(header: &crate::parser::FileHeader) -> Result<()> {
+    if header.format()?.signs_metadata() {
+        return Err(AionError::InvalidFormat {
+            reason: "format-v4 history is shown only from a verified chain: use \
+                     chain::verify_file_chain and chain::verified_history"
+                .to_string(),
+        });
+    }
+    Ok(())
 }
 
 /// A commit message read leniently from a string table: empty when out of

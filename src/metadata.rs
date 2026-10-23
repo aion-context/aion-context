@@ -577,13 +577,16 @@ mod tests {
                 let parser = ok(AionParser::new(&bytes));
                 let header = parser.header();
                 let start = header.audit_trail_offset as usize;
-                let end = (header.string_table_offset + header.string_table_length) as usize;
+                let end = header
+                    .string_table_offset
+                    .saturating_add(header.string_table_length) as usize;
                 (start, end)
             };
             if end <= start {
                 return;
             }
-            let index = tc.draw(gs::integers::<usize>().min_value(start).max_value(end - 1));
+            let last = end.saturating_sub(1);
+            let index = tc.draw(gs::integers::<usize>().min_value(start).max_value(last));
             let flip = tc.draw(gs::integers::<u8>().min_value(1));
             bytes[index] ^= flip;
             recompute_integrity(&mut bytes);

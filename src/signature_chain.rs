@@ -1039,10 +1039,11 @@ mod tests {
         /// commitment inserted after the mode byte.
         fn golden_v4_fields() -> Vec<u8> {
             let v3 = golden_v3_fields();
+            let (head, tail) = v3.split_at(11);
             let mut fields = vec![0x04, 0x00];
-            fields.extend_from_slice(&v3[2..11]);
+            fields.extend_from_slice(head.get(2..).unwrap_or_default());
             fields.extend_from_slice(&[0x5C; 32]);
-            fields.extend_from_slice(&v3[11..]);
+            fields.extend_from_slice(tail);
             fields
         }
 

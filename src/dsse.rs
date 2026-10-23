@@ -370,9 +370,10 @@ pub fn wrap_version_attestation(
 }
 
 /// Build the canonical JSON body for a format-v4 version attestation
-/// (RFC-0040). Unlike [`version_attestation_payload`], it binds the file's
-/// `file_id`, the format, the entry's rules mode, and its metadata
-/// commitment.
+/// (RFC-0040).
+///
+/// Unlike [`version_attestation_payload`], it binds the file's `file_id`,
+/// the format, the entry's rules mode, and its metadata commitment.
 ///
 /// # Errors
 ///
