@@ -82,9 +82,18 @@ and the project follows [Semantic Versioning].
     verified file and printed first. Mixing X-Wing with non-post-quantum
     recipients prints a note.
   - `aion show … --identity N rules` opens confidential rules.
-  - Library: `KeyStore::{store,load,has,delete}_encryption_identity`;
-    `Recipient` gains `Display` / `FromStr` for the text form;
-    `EncryptionKem` gains `as_str`, `Display`, `FromStr`.
+  - Library: `KeyStore::{store,load,has,delete}_encryption_identity`,
+    keyed by the new `types::EncryptionIdentityId` (a namespace separate
+    from `AuthorId`). Storing refuses to overwrite an existing identity;
+    a missing one is `AionError::IdentityNotFound`. `Recipient` gains
+    `Display` / `FromStr` for the canonical text form (lowercase hex only;
+    every parse failure is `InvalidPublicKey`); `EncryptionKem` gains
+    `as_str`, `Display`, `FromStr`.
+  - `aion key delete --encryption` asks for confirmation unless `--force`
+    is given, like signing keys. `aion key list`, `export` and `import`
+    do not cover encryption identities yet.
+  - Keystore files (signing keys and identities) are now created with
+    mode 0600 from the start instead of being restricted after writing.
 
 ### Changed
 

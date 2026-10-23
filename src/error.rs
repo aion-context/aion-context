@@ -375,6 +375,13 @@ pub enum AionError {
         reason: String,
     },
 
+    /// No encryption identity is stored under this ID (RFC-0039)
+    #[error("Encryption identity {id} not found")]
+    IdentityNotFound {
+        /// The identity ID that was looked up
+        id: crate::types::EncryptionIdentityId,
+    },
+
     /// Keyring operation error
     #[error("Keyring {operation} failed: {reason}")]
     KeyringError {

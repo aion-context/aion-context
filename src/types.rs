@@ -129,6 +129,62 @@ impl fmt::Display for AuthorId {
     }
 }
 
+/// Keystore identifier of an encryption identity (RFC-0039).
+///
+/// A separate namespace from [`AuthorId`]: encryption identity 7 and
+/// signing key 7 are unrelated, and the distinct type keeps one from being
+/// passed where the other is meant.
+///
+/// # Examples
+///
+/// ```
+/// use aion_context::types::EncryptionIdentityId;
+///
+/// let id: EncryptionIdentityId = "501".parse()?;
+/// assert_eq!(id, EncryptionIdentityId::new(501));
+/// assert_eq!(id.to_string(), "501");
+/// # Ok::<(), aion_context::AionError>(())
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct EncryptionIdentityId(u64);
+
+impl EncryptionIdentityId {
+    /// Create an identity ID.
+    #[must_use]
+    pub const fn new(id: u64) -> Self {
+        Self(id)
+    }
+
+    /// The inner number.
+    #[must_use]
+    pub const fn as_u64(self) -> u64 {
+        self.0
+    }
+}
+
+impl fmt::Display for EncryptionIdentityId {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl std::str::FromStr for EncryptionIdentityId {
+    type Err = crate::AionError;
+
+    /// Parse a decimal `u64`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::AionError::InvalidFormat`] for anything else.
+    fn from_str(text: &str) -> crate::Result<Self> {
+        text.parse::<u64>()
+            .map(Self)
+            .map_err(|_| crate::AionError::InvalidFormat {
+                reason: "encryption identity ID must be a decimal number".to_string(),
+            })
+    }
+}
+
 /// Version number (monotonically increasing)
 ///
 /// Version numbers start at 1 (GENESIS) and increment sequentially.

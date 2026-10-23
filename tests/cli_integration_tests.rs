@@ -2491,7 +2491,7 @@ fn test_cli_confidential_rules_round_trip() {
     assert!(String::from_utf8_lossy(&no_key.stderr).contains("--identity"));
     let wrong = show(&["--identity", &stranger]);
     assert!(!wrong.status.success());
-    assert!(String::from_utf8_lossy(&wrong.stderr).contains("recipient"));
+    assert!(String::from_utf8_lossy(&wrong.stderr).contains("None of the supplied identities"));
     let opened = show(&["--identity", &reader]);
     assert!(
         opened.status.success(),
@@ -2614,4 +2614,99 @@ fn test_cli_keep_recipients_and_protection_flags() {
     cleanup_identity(&pq);
     cleanup_identity(&classic);
     cleanup_key(&key_id);
+}
+
+#[test]
+fn test_cli_rejects_malformed_recipients_and_misplaced_identity() {
+    let (temp_dir, key_id) = setup_test_env();
+    let x25519_key = "ab".repeat(32);
+    let bad = [
+        format!("aion-recipient:x25519:{}", x25519_key.to_uppercase()),
+        format!("aion-recipient:x25519:{}", "ab".repeat(31)),
+        format!("aion-recipient:rsa:{x25519_key}"),
+        temp_dir
+            .path()
+            .join("missing.recipient")
+            .display()
+            .to_string(),
+    ];
+    for (index, recipient) in bad.iter().enumerate() {
+        let path = temp_dir.path().join(format!("bad-{index}.aion"));
+        let init = run_cli_with_stdin(
+            &[
+                "init",
+                path.to_str().unwrap(),
+                "--author",
+                "7103",
+                "--key",
+                &key_id,
+                "--recipient",
+                recipient,
+            ],
+            b"rules",
+        );
+        assert!(!init.status.success(), "accepted {recipient}");
+        assert!(!path.exists(), "wrote a file for {recipient}");
+    }
+
+    let registry_path = temp_dir.path().join("registry.json");
+    pin_author(&registry_path, "7103", &key_id);
+    let public = temp_dir.path().join("public.aion");
+    let init = run_cli_with_stdin(
+        &[
+            "init",
+            "--public",
+            public.to_str().unwrap(),
+            "--author",
+            "7103",
+            "--key",
+            &key_id,
+        ],
+        b"rules",
+    );
+    assert!(init.status.success());
+    let history = run_cli(&[
+        "show",
+        public.to_str().unwrap(),
+        "--registry",
+        registry_path.to_str().unwrap(),
+        "--identity",
+        "1",
+        "history",
+    ]);
+    assert!(!history.status.success());
+    assert!(String::from_utf8_lossy(&history.stderr).contains("--identity only applies"));
+    cleanup_key(&key_id);
+}
+
+#[test]
+fn test_cli_deleting_an_identity_asks_first() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let (identity, _) = encryption_identity(temp_dir.path(), "x25519");
+    let declined = run_cli_with_stdin(&["key", "delete", &identity, "--encryption"], b"n\n");
+    assert!(declined.status.success());
+    assert!(String::from_utf8_lossy(&declined.stdout).contains("Cancelled"));
+    let still_there = run_cli(&["key", "recipient", &identity]);
+    assert!(
+        still_there.status.success(),
+        "declined delete removed the identity"
+    );
+
+    let forced = run_cli(&["key", "delete", &identity, "--encryption", "--force"]);
+    assert!(forced.status.success());
+    assert!(!run_cli(&["key", "recipient", &identity]).status.success());
+    let bad_kem = run_cli(&[
+        "key",
+        "generate",
+        "--id",
+        &identity,
+        "--encryption",
+        "--kem",
+        "rsa",
+    ]);
+    assert_eq!(
+        bad_kem.status.code(),
+        Some(2),
+        "unknown --kem is an argument error"
+    );
 }

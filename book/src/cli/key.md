@@ -47,6 +47,11 @@ signing keys: identity `501` and signing key `501` are unrelated.
 `aion key recipient` prints the public half as one line,
 `aion-recipient:<kem>:<hex>`, which writers pass to `--recipient`.
 
+Deleting an identity asks for confirmation unless `--force` is given:
+nothing else can read files sealed only to it. `aion key list`,
+`export` and `import` do not cover encryption identities yet, so back
+up the keystore directory if an identity matters.
+
 ## `aion key list`
 
 Prints every key the backend knows about. On keyring backends

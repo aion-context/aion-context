@@ -12,7 +12,7 @@ use aion_context::operations::{
     commit_version, commit_version_force_unregistered, init_file, show_file_info, show_signatures,
     show_version_history, verify_file, CommitOptions, InitOptions,
 };
-use aion_context::types::AuthorId;
+use aion_context::types::{AuthorId, EncryptionIdentityId};
 use anyhow::{Context, Result};
 use clap::{ArgGroup, Args, Parser, Subcommand};
 use std::io::{self, Read, Write};
@@ -98,6 +98,23 @@ struct AcceptArgs {
     /// Require confidential rules for the head, or for every version
     #[arg(long, value_enum, value_name = "SCOPE")]
     require_confidential: Option<ConfidentialArg>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum KemArg {
+    /// X-Wing (ML-KEM-768 + X25519), post-quantum hybrid
+    Xwing,
+    /// X25519 alone; not post-quantum
+    X25519,
+}
+
+impl From<KemArg> for EncryptionKem {
+    fn from(kem: KemArg) -> Self {
+        match kem {
+            KemArg::Xwing => Self::XWing,
+            KemArg::X25519 => Self::X25519,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
@@ -259,7 +276,7 @@ struct ShowArgs {
     /// Encryption identity ID from the keystore, to read confidential
     /// rules (RFC-0039). Repeatable; each listed identity is tried.
     #[arg(long, value_name = "IDENTITY_ID")]
-    identity: Vec<u64>,
+    identity: Vec<EncryptionIdentityId>,
 
     /// Path to a JSON registry file (RFC-0034). Required post-Phase-E
     /// by every subcommand that verifies signatures or summarises the
@@ -307,15 +324,10 @@ enum KeySubcommand {
         #[arg(long)]
         encryption: bool,
 
-        /// KEM for `--encryption`: `xwing` (post-quantum hybrid, the
-        /// default) or `x25519`
-        #[arg(
-            long,
-            value_name = "KEM",
-            default_value = "xwing",
-            requires = "encryption"
-        )]
-        kem: String,
+        /// KEM for `--encryption`. `xwing` is a post-quantum hybrid;
+        /// `x25519` is smaller but not post-quantum.
+        #[arg(long, value_enum, default_value_t = KemArg::Xwing, requires = "encryption")]
+        kem: KemArg,
     },
 
     /// Print an encryption identity's recipient string, for writers to
@@ -323,7 +335,7 @@ enum KeySubcommand {
     Recipient {
         /// Encryption identity ID
         #[arg(value_name = "IDENTITY_ID")]
-        id: u64,
+        id: EncryptionIdentityId,
 
         /// Write the recipient to this file instead of stdout
         #[arg(short, long, value_name = "FILE")]
@@ -890,6 +902,7 @@ fn confidential_to(recipients: Vec<Recipient>) -> RulesProtection {
         "   Rules: confidential to {} recipient(s); verification stays key-free",
         recipients.len()
     );
+    // TODO(rfc-0039-phase-c): count classical external wrappers once they exist.
     let xwing = recipients.iter().any(|r| r.kem() == EncryptionKem::XWing);
     let classical = recipients.iter().any(|r| r.kem() != EncryptionKem::XWing);
     if xwing && classical {
@@ -901,6 +914,22 @@ fn confidential_to(recipients: Vec<Recipient>) -> RulesProtection {
     RulesProtection::Confidential { recipients }
 }
 
+/// Read a recipient file, refusing anything larger than a recipient line
+/// can be (an X-Wing key is 2,432 hex characters).
+fn read_recipient_file(path: &str) -> Result<String> {
+    const LIMIT: u64 = 8 * 1024;
+    let file = std::fs::File::open(path)
+        .with_context(|| format!("Failed to read recipient file: {path}"))?;
+    let mut text = String::new();
+    file.take(LIMIT.saturating_add(1))
+        .read_to_string(&mut text)
+        .with_context(|| format!("Failed to read recipient file: {path}"))?;
+    if text.len() as u64 > LIMIT {
+        anyhow::bail!("Recipient file is too large to be a recipient: {path}");
+    }
+    Ok(text)
+}
+
 /// Each `--recipient` is an `aion-recipient:…` string or a file holding one.
 fn load_recipients(values: &[String]) -> Result<Vec<Recipient>> {
     values
@@ -909,8 +938,7 @@ fn load_recipients(values: &[String]) -> Result<Vec<Recipient>> {
             let text = if value.trim_start().starts_with("aion-recipient:") {
                 value.clone()
             } else {
-                std::fs::read_to_string(value)
-                    .with_context(|| format!("Failed to read recipient file: {value}"))?
+                read_recipient_file(value)?
             };
             text.parse::<Recipient>()
                 .with_context(|| format!("Invalid recipient: {value}"))
@@ -1188,6 +1216,9 @@ fn cmd_show(args: &ShowArgs) -> Result<ExitCode> {
         anyhow::bail!("File not found: {}", args.path.display());
     }
 
+    if !args.identity.is_empty() && !matches!(args.subcommand, ShowSubcommand::Rules) {
+        anyhow::bail!("--identity only applies to `aion show … rules`");
+    }
     match &args.subcommand {
         ShowSubcommand::Rules => show_rules_subcommand(args)?,
         ShowSubcommand::History => show_history_subcommand(args)?,
@@ -1223,7 +1254,9 @@ fn show_rules_subcommand(args: &ShowArgs) -> Result<()> {
 }
 
 /// Load each `--identity` from the keystore.
-fn reader_keys(identity_ids: &[u64]) -> Result<aion_context::chain::RecipientKeys> {
+fn reader_keys(
+    identity_ids: &[EncryptionIdentityId],
+) -> Result<aion_context::chain::RecipientKeys> {
     let keystore = KeyStore::new();
     let identities = identity_ids
         .iter()
@@ -1332,7 +1365,7 @@ fn cmd_key(args: &KeyArgs) -> Result<ExitCode> {
             encryption: true,
             kem,
             ..
-        } => cmd_key_generate_encryption(&keystore, id, kem)?,
+        } => cmd_key_generate_encryption(&keystore, id, *kem)?,
         KeySubcommand::Recipient { id, output } => {
             cmd_key_recipient(&keystore, *id, output.as_ref())?;
         }
@@ -1342,28 +1375,15 @@ fn cmd_key(args: &KeyArgs) -> Result<ExitCode> {
         KeySubcommand::Delete {
             id,
             force,
-            encryption: false,
-        } => cmd_key_delete(&keystore, id, *force)?,
-        KeySubcommand::Delete {
-            id,
-            encryption: true,
-            ..
-        } => {
-            let identity_id = parse_key_id(id)?.as_u64();
-            keystore
-                .delete_encryption_identity(identity_id)
-                .context("Failed to delete encryption identity")?;
-            println!("✅ Encryption identity {identity_id} deleted from keystore");
-        }
+            encryption,
+        } => cmd_key_delete(&keystore, id, *force, *encryption)?,
     }
     Ok(ExitCode::SUCCESS)
 }
 
-fn cmd_key_generate_encryption(keystore: &KeyStore, key_id: &str, kem: &str) -> Result<()> {
-    let identity_id = parse_key_id(key_id)?.as_u64();
-    let kem: aion_context::confidential::EncryptionKem = kem
-        .parse()
-        .with_context(|| format!("Unknown --kem '{kem}': use xwing or x25519"))?;
+fn cmd_key_generate_encryption(keystore: &KeyStore, key_id: &str, kem: KemArg) -> Result<()> {
+    let identity_id: EncryptionIdentityId = key_id.parse()?;
+    let kem = EncryptionKem::from(kem);
     if keystore.has_encryption_identity(identity_id) {
         anyhow::bail!(
             "Encryption identity {identity_id} already exists\n\
@@ -1378,7 +1398,7 @@ fn cmd_key_generate_encryption(keystore: &KeyStore, key_id: &str, kem: &str) -> 
     println!("✅ Encryption identity generated");
     println!("   Identity ID: {identity_id}");
     println!("   KEM: {kem}");
-    if kem == aion_context::confidential::EncryptionKem::X25519 {
+    if kem == EncryptionKem::X25519 {
         eprintln!("note: x25519 is not post-quantum; xwing is the default for that reason");
     }
     println!("\nGive writers this recipient (or: aion key recipient {identity_id} -o FILE):");
@@ -1388,7 +1408,7 @@ fn cmd_key_generate_encryption(keystore: &KeyStore, key_id: &str, kem: &str) -> 
 
 fn cmd_key_recipient(
     keystore: &KeyStore,
-    identity_id: u64,
+    identity_id: EncryptionIdentityId,
     output: Option<&PathBuf>,
 ) -> Result<()> {
     let identity = keystore
@@ -1569,36 +1589,48 @@ fn cmd_key_import(keystore: &KeyStore, path: &PathBuf, key_id: &str) -> Result<(
     Ok(())
 }
 
-fn cmd_key_delete(keystore: &KeyStore, key_id: &str, force: bool) -> Result<()> {
-    // Parse key ID
-    let author_id = parse_key_id(key_id)?;
-
-    // Check if key exists
-    if !keystore.has_signing_key(author_id) {
-        anyhow::bail!("Key not found: {key_id}\nUse 'aion key list' to see available keys");
+fn cmd_key_delete(keystore: &KeyStore, key_id: &str, force: bool, encryption: bool) -> Result<()> {
+    let what = if encryption {
+        "Encryption identity"
+    } else {
+        "Key"
+    };
+    let exists = if encryption {
+        keystore.has_encryption_identity(key_id.parse()?)
+    } else {
+        keystore.has_signing_key(parse_key_id(key_id)?)
+    };
+    if !exists {
+        anyhow::bail!("{what} not found: {key_id}\nUse 'aion key list' to see available keys");
     }
-
-    // Confirmation prompt unless --force
     if !force {
-        print!("⚠️  Are you sure you want to delete key {key_id}? This cannot be undone. (y/N): ");
+        let consequence = if encryption {
+            " Files sealed to it can no longer be read with it."
+        } else {
+            ""
+        };
+        print!(
+            "⚠️  Are you sure you want to delete {} {key_id}? This cannot be undone.{consequence} (y/N): ",
+            what.to_lowercase()
+        );
         std::io::stdout().flush()?;
-
         let mut response = String::new();
         std::io::stdin().read_line(&mut response)?;
-
         if !response.trim().eq_ignore_ascii_case("y") {
             println!("Cancelled.");
             return Ok(());
         }
     }
-
-    // Delete key
-    keystore
-        .delete_signing_key(author_id)
-        .context("Failed to delete key")?;
-
-    println!("✅ Key {key_id} deleted from keystore");
-
+    if encryption {
+        keystore
+            .delete_encryption_identity(key_id.parse()?)
+            .context("Failed to delete encryption identity")?;
+    } else {
+        keystore
+            .delete_signing_key(parse_key_id(key_id)?)
+            .context("Failed to delete key")?;
+    }
+    println!("✅ {what} {key_id} deleted from keystore");
     Ok(())
 }
 

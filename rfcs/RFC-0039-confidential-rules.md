@@ -709,7 +709,7 @@ should have been removed from carrying over by default.
 - Committing with any X25519 recipient or any external wrapper next
   to an X-Wing recipient prints a note: the version is only as
   post-quantum-safe as its weakest stanza.
-- `aion show <FILE> rules --identity <key-id>` decrypts. Without an
+- `aion show <FILE> --identity <IDENTITY_ID> rules` decrypts. Without an
   identity, a confidential file reports `RecipientKeyRequired` and
   exits 1. With an identity that isn't listed, it reports
   `NotARecipient`; with one that is listed but can't open the stanza,
