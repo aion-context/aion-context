@@ -987,6 +987,10 @@ transport and key-derivation boundary only, gating no comparison.
   `--no-encryption`.
 - No new dependencies. This closes Problem Statement item 3 for every
   v3 file: the signature now commits to the stored bytes.
+- *Implementation note:* `fuzz_verify_chain` fuzzes
+  `VerifiedChain::from_bytes` and `unframe_rules` from signed v3 seeds
+  in `fuzz/seeds/fuzz_verify_chain/`. The same seeds extend
+  `fuzz_file_parser` to v3 headers.
 
 ### Phase B: Confidential mode with X25519 recipients
 

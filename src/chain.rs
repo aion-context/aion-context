@@ -543,6 +543,30 @@ mod tests {
         ));
     }
 
+    /// Fuzz regression (`fuzz_verify_chain`): an entry count of 2^32
+    /// asked for a 652 GB buffer and aborted; `u64::MAX` overflowed
+    /// capacity and panicked.
+    #[test]
+    fn oversized_entry_counts_are_rejected_without_allocating() {
+        let dir = ok(TempDir::new());
+        let path = dir.path().join("counts.aion");
+        let key = ok(SigningKey::generate());
+        let registry = grow_v3(&path, &key, AuthorId::new(90_009), &[b"rules"]);
+        let original = ok(std::fs::read(&path));
+        for field in [128usize, 144, 160] {
+            for count in [1u64 << 32, u64::MAX] {
+                let mut bytes = original.clone();
+                bytes[field..field.saturating_add(8)].copy_from_slice(&count.to_le_bytes());
+                assert!(matches!(
+                    VerifiedChain::from_bytes(&bytes, &registry),
+                    Err(AionError::ChainRejected {
+                        reason: "structure_invalid"
+                    })
+                ));
+            }
+        }
+    }
+
     #[test]
     fn unpinned_signer_yields_no_chain() {
         let dir = ok(TempDir::new());

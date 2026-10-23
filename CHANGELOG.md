@@ -141,6 +141,10 @@ and the project follows [Semantic Versioning].
   authorization passes.
 - **`AionError::SigningFailed`** — provider-safe failure propagation for
   external signing adapters.
+- **Fuzz target `fuzz_verify_chain`** for format-v3 verification. It
+  drives `VerifiedChain::from_bytes` and `format::unframe_rules`. Signed
+  v3 seeds in `fuzz/seeds/fuzz_verify_chain/` carry a fixed fuzz-only
+  key, so mutations reach the commitment, framing, and mode-byte checks.
 
 ### Changed
 
@@ -223,6 +227,17 @@ and the project follows [Semantic Versioning].
 
 ### Security
 
+- **GHSA-9c6x-g6hv-mpvr: unbounded header entry counts let a crafted
+  `.aion` file abort the verifying process.** `AionParser::new` did not
+  check `version_chain_count`, `signatures_count`, or
+  `audit_trail_count` against the file length, and readers sized
+  buffers from them. A file of a few hundred bytes, with no key, made
+  `verify_file`, `VerifiedChain::from_bytes`, `aion verify`, and the
+  history readers abort on a huge allocation or panic with `capacity
+  overflow`. `AionParser::new` now rejects such headers with
+  `InvalidFormat` and a `parser_rejected` / `section_out_of_bounds`
+  trace event. Found by the new `fuzz_verify_chain` target. Also fixed
+  in 1.0.2.
 - **GHSA-7625-44v8-v62f: `verify_file` did not bind the rules payload to
   the signed `rules_hash`.** The rules key is public and the whole-file
   integrity hash is unkeyed. So a substituted payload, with the
