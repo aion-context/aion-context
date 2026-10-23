@@ -136,16 +136,40 @@ additionally:
 #### Header
 
 - `version = 3`.
-- `flags` bit 0 is redefined as **CONFIDENTIAL** for v3 files (1 =
-  confidential envelope, 0 = public). Bits 1–15 stay reserved and
-  must be zero.
+- `flags` bit 0 is redefined as **HEAD_CONFIDENTIAL** for v3 files: it
+  mirrors the mode of the latest version, so tools can tell from the
+  header alone whether the inline section is an envelope. Bits 1–15
+  stay reserved and must be zero.
 - v3 readers interpret bit 0 by `version`. The v2 "Encrypted" bit
   keeps its v2 meaning: obfuscated, not confidential.
-- The reader takes the mode **only** from flags bit 0, never by
-  sniffing the section (for example its magic). It then cross-checks
-  that mode against the mode byte in the commitment preimage and in
-  the signed message. Any disagreement is a verification failure.
 - Every other header field is unchanged.
+
+#### Version entry: per-version mode
+
+Modes may differ between versions, and only the latest section is
+stored inline. So each version records its own mode, in
+`VersionEntry.reserved[0]` as `rules_mode`: `0x00` public, `0x01`
+confidential. The other 51 reserved bytes must still be zero. The
+152-byte layout is unchanged.
+
+v2 readers already reject any non-zero reserved byte, so this is a
+v3-only change. That rejection, together with the format-version
+check, is the migration guard.
+
+**The mode's single source of truth is the stored `rules_mode` of
+each entry.** The reader never infers a mode from the section's bytes
+(for example by sniffing the envelope magic). It checks:
+
+1. Each entry's signature over the v3 canonical message, which
+   includes that entry's stored `rules_mode`. So a modified mode byte
+   fails the signature.
+2. For the latest entry, `rules_commitment` is recomputed over the
+   inline section using the stored `rules_mode`.
+3. Header flags bit 0 must equal the latest entry's `rules_mode`.
+
+Any disagreement fails verification. Historical entries' modes are
+covered by step 1. Their sections are not in the file; see
+[Reading](#reading) for archived sections.
 
 #### Rules commitment (replaces the meaning of `rules_hash` in v3)
 
@@ -159,9 +183,9 @@ The mode byte makes the two encodings unambiguous. A public section
 whose bytes happen to look like an envelope commits differently from
 the same bytes read as an envelope.
 
-The commitment is stored in `VersionEntry.rules_hash`. The 152-byte
-layout is unchanged, only the field's definition changes. It is also
-mirrored in the header's `current_hash` / `root_hash`, as in v2.
+The commitment is stored in `VersionEntry.rules_hash`; only the
+field's definition changes. It is also mirrored in the header's
+`current_hash` / `root_hash`, as in v2.
 
 #### Plaintext framing (both modes)
 
@@ -210,19 +234,23 @@ Parsing limits and canonical form:
 - It is fresh for every version **and for every attempt**: a failed
   or retried commit, such as an external wrapper timing out, draws a
   new DEK and a new nonce rather than reusing either.
-- All derivations use the existing `crypto::derive_key` (HKDF-SHA256)
-  with `ctx = file_id_le ‖ author_id_le ‖ version_le` as the salt.
-
-| Output | HKDF `info` |
-|---|---|
-| `K_enc` (content key) | `AION_V3_RULES_KEY_V1\0` |
-| `dek_commitment` | `AION_V3_DEK_COMMIT_V1\0` |
+- `ctx = file_id_le ‖ author_id_le ‖ version_le` (24 bytes).
 
 ```
-nonce      = 12 random bytes
-ciphertext = ChaCha20-Poly1305(K_enc, nonce, framed,
-             aad = b"AION_V3_RULES_AAD_V1\0" ‖ ctx)
+K_enc          = crypto::derive_key(ikm = DEK, salt = ctx,
+                                    info = b"AION_V3_RULES_KEY_V1\0")   // HKDF-SHA256, 32 bytes
+dek_commitment = BLAKE3::derive_key("aion-context v3 2026-10 dek commitment", DEK)
+nonce          = 12 random bytes
+ciphertext     = ChaCha20-Poly1305(K_enc, nonce, framed,
+                                   aad = b"AION_V3_RULES_AAD_V1\0" ‖ ctx)
 ```
+
+`crypto::derive_key(ikm, salt, info, output)` is the existing
+argument order. The commitment uses BLAKE3's `derive_key` mode with a
+fixed, globally unique context string, which is BLAKE3's own
+domain-separation mechanism. Every value compared in an accept or
+reject decision is therefore a BLAKE3 output, as
+`.claude/rules/crypto.md` requires.
 
 `file_id` is chosen by the author and is only 64 bits. It is a binding
 input, never a uniqueness assumption: nothing stops two authors from
@@ -234,8 +262,8 @@ name.
 
 **Why `dek_commitment` is a key commitment.**
 
-- **Binding:** it is a deterministic HKDF-SHA256 output of the DEK,
-  and HKDF-SHA256 is collision-resistant. So no two DEKs produce the
+- **Binding:** it is a deterministic BLAKE3 `derive_key` output of the
+  DEK, and BLAKE3 is collision-resistant. So no two DEKs produce the
   same commitment.
 - **Fixed key:** `K_enc` is a deterministic function of the DEK and
   `ctx`, both fixed by the signed section. A given ciphertext
@@ -257,6 +285,19 @@ recipients and selective-disclosure parties alike.
 | `0x01` | HPKE X25519 recipient | `recipient_pk[32] ‖ enc[32] ‖ wrapped_dek[48]` |
 | `0x02` | External wrapper | `provider_id_len u8 ‖ provider_id ‖ key_ref_len u16 ‖ key_ref ‖ blob_len u16 ‖ blob` |
 | `0x03`–`0xFF` | Reserved | Readers skip unknown kinds. A file with no stanza the reader can open fails with `RecipientKeyRequired`. |
+
+**Stanza ordering and identity.**
+
+- Stanzas are sorted by bytewise-lexicographic comparison of
+  `kind ‖ body`.
+- A section with two stanzas for the same **recipient identity** is
+  rejected. The identity is `recipient_pk` for kind `0x01`, and
+  `(provider_id, key_ref)` for kind `0x02`. Different `enc` or blob
+  bytes do not make them different recipients.
+- Sorting is deterministic even though HPKE `enc` is random per seal.
+  For kind `0x01` the identity is the body prefix, and kind `0x02`
+  bodies are length-prefixed. So a re-wrap to the same recipient set
+  always yields the same order.
 
 **HPKE (kind `0x01`).**
 
@@ -321,12 +362,19 @@ version u64 ‖ parent_hash[32] ‖ rules_commitment[32] ‖ author u64 ‖
 timestamp u64 ‖ message_offset u64 ‖ message_length u32
 ```
 
-A signed entry therefore cannot be moved into a header with another
-`file_id` or mode, or replayed as v2. A non-author cannot flip a
-version between public and confidential. Doing so changes the mode
-byte, which both the signature and the commitment cover. RFC-0021
-attestations get `AION_V3_ATTESTATION_V1\0` with the same added
-fields.
+Here `mode` is the entry's stored `rules_mode`, `format_version` is
+the header's `version`, and `file_id` is the header's `file_id`.
+
+- **No transplant:** a signed entry cannot be moved into a header with
+  another `file_id` or format version.
+- **No mode change:** no version's mode can be changed without
+  breaking its signature. A non-author therefore cannot flip any
+  version, historical or head, between public and confidential.
+- **Other signed messages:** RFC-0021 attestations get
+  `AION_V3_ATTESTATION_V1\0` with the same added fields.
+- **Registry paths:** registry-aware verification
+  (`verify_signature_with_registry`, `verify_signatures_batch`, and
+  the RFC-0028/0034 paths) uses the v3 canonical message for v3 files.
 
 Every new v3 domain string ends in `\0`, so no domain is a prefix of
 another. This follows the transparency-log and hybrid-signature
@@ -349,14 +397,23 @@ hand a verifier an older file. `verify_file` gains an optional
 `VerifyPolicy` covering:
 
 - `min_format_version`: reject v2 files where v3 is required;
-- `require_confidential`: reject any version, or only the head, that
-  is not confidential;
-- the per-`(author, version)` last-accepted tracking already required
-  by `.claude/rules/distributed.md`, so that an older section cannot
-  be replayed.
+- `require_confidential: Option<ConfidentialScope>`:
+  - `Head` rejects a file whose latest `rules_mode` is public.
+  - `AllVersions` rejects a file in which **any** entry's `rules_mode`
+    is public.
+  - Both read the signed per-entry modes, so neither needs a key.
+- `accepted: Option<&mut dyn AcceptedVersionStore>`: the
+  per-`(author, version)` last-accepted tracking required by
+  `.claude/rules/distributed.md`.
+  - The store is a caller-provided trait, as `AttestationStore` is in
+    RFC-0036. The library defines the check; the caller owns where
+    the state persists, whether a file, a database, or memory.
+  - A file whose head `(author, version)` is at or below the stored
+    value is rejected as a replay.
 
-The default policy keeps today's behavior. Deployments that rely on
-confidentiality must set it.
+`VerifyPolicy::default()` keeps today's behavior, so existing callers
+are unaffected. Deployments that rely on confidentiality must set
+`require_confidential`, and should supply a store.
 
 #### Reading
 
@@ -364,7 +421,12 @@ confidentiality must set it.
 |---|---|
 | `show_current_rules(path)` | Public mode: returns the plaintext. Confidential mode: `Err(AionError::RecipientKeyRequired)` (new variant; `AionError` is `#[non_exhaustive]`). |
 | `open_current_rules(path, &RecipientKeys)` | **New.** Tries each held identity (X25519 secret keys and/or `&dyn DekUnwrapper`) against the stanzas. Checks `dek_commitment`, decrypts, checks framing, and returns `Zeroizing<Vec<u8>>`. Every failure after parsing returns the single opaque error `RecipientKeyRequired`: no openable stanza, a commitment mismatch, an AEAD failure, or bad framing. The padding check runs only after the AEAD verifies, so there is no padding oracle. |
-| `disclose_version_key(path, &RecipientKeys)` | **New.** Returns the version's DEK for selective disclosure. A third party with that DEK, and nothing else, can run `open_current_rules` for that version only. |
+| `disclose_version_key(path, &RecipientKeys)` | **New.** Returns the **current** version's DEK, for selective disclosure. |
+| `open_rules_section(section, &entry, file_id, &RecipientKeys \| &Dek)` | **New.** Opens an **archived** section, such as a historical version's section stored by its `rules_commitment` outside the file.<br>It first recomputes the commitment against the signed `entry`, using the entry's stored `rules_mode` and `ctx`, then unwraps or uses the given DEK.<br>A disclosed DEK opens that one section and no other, because each DEK is independent random. |
+
+The file holds only the latest section, as in v2. Historical versions
+can be opened only if someone archived their sections. Archival is
+the operator's job, and the commitment is the archive key.
 
 #### Writing
 
@@ -385,9 +447,15 @@ pub enum Recipient<'a> {
 There is **no default**. Callers name the mode. This is a breaking
 change, and the next release is already 2.0.0.
 
-`commit_version` never needs the previous version's plaintext. The
-CLI defaults a commit's recipient set to the previous version's
-`0x01` stanzas, and the operator can override it.
+`commit_version` never needs the previous version's plaintext.
+
+The CLI never carries recipients over silently. `aion commit` takes
+either explicit `--recipient …` arguments or `--keep-recipients`.
+`--keep-recipients` prints the inherited X25519 set before committing,
+and fails if the previous version had any external (`0x02`) stanza.
+External wrappers need live provider handles, which the file cannot
+supply, so those must be re-specified. This keeps a recipient who
+should have been removed from carrying over by default.
 
 #### CLI
 
@@ -464,9 +532,11 @@ let rules = open_current_rules(path, &RecipientKeys::x25519(&auditor_sk))?;
 - **DSSE, SLSA, and attestation payloads** that embed `rules_hash`
   carry the v3 commitment. Their consumers must not treat it as a
   plaintext hash.
-- **Mixed modes across versions.** These are allowed. A public v1
-  followed by a confidential v2 is valid, but v1's plaintext stays
-  public in any copy of the file made before v2.
+- **Mixed modes across versions.** These are allowed. Each entry's
+  signed `rules_mode` records its own mode. A public v1 followed by a
+  confidential v2 is valid, but v1's plaintext stays public in any
+  copy of the file made before v2. `VerifyPolicy` with
+  `AllVersions` exists for deployments that must forbid this.
 
 ## Rationale and Alternatives
 
@@ -597,14 +667,26 @@ Adversaries:
 ### SHA-256 usage (crypto-rule exception)
 
 `.claude/rules/crypto.md` allows non-BLAKE3 hashes only at named
-boundaries. Phase B adds an exception entry with this scope:
+boundaries. Phase A adds an exception entry, because the existing
+`crypto::derive_key` already uses HKDF-SHA256. Its scope:
 
-- SHA-256 appears only as the hash inside HKDF-SHA256 and inside
-  HPKE's DHKEM(X25519, HKDF-SHA256) and HKDF-SHA256 KDF.
-- It is never used as a content hash, and never as a commitment
-  compared in an accept/reject decision.
-- HKDF-SHA256 is already in use through `crypto::derive_key`. The
-  exception records that existing use as well.
+- **Where:** SHA-256 appears only as the hash function inside
+  HKDF-SHA256 (v3 `K_enc`, and the existing v2 rules-key derivation in
+  `operations::{encrypt_rules, decrypt_rules}`) and
+  inside HPKE's DHKEM(X25519, HKDF-SHA256) and HKDF-SHA256 KDF.
+- **Key derivation only:** it derives keys and nothing else. No
+  SHA-256 output is ever stored, signed, or compared. Every
+  commitment and every hash compared in an accept/reject decision is
+  BLAKE3: `rules_commitment`, `dek_commitment`, the version chain, and
+  the integrity hash.
+- **How it can fail:** a SHA-256 weakness could at worst cause a
+  derived key to be wrong, which shows up as a failed AEAD or HPKE
+  open, an opaque `RecipientKeyRequired`. It cannot turn a forgery
+  into an accept, because acceptance is decided by Ed25519 signatures
+  over BLAKE3 commitments.
+
+The exception text in `crypto.md` mirrors the OCI entry's form:
+transport and key-derivation boundary only, gating no comparison.
 
 ## Performance Impact
 
@@ -641,8 +723,19 @@ boundaries. Phase B adds an exception entry with this scope:
   recipient's open fails.
 - Writers emit stanzas in canonical order. A permuted or duplicated
   stanza list ⇒ the parser rejects.
-- `VerifyPolicy { require_confidential }` rejects a public head, and
+- `VerifyPolicy { require_confidential: Head }` rejects a public head,
+  and `AllVersions` rejects a chain with any public entry.
   `min_format_version = 3` rejects v2.
+- Flipping any entry's stored `rules_mode`, historical or head ⇒ that
+  entry's signature fails. Flipping header flags bit 0 alone ⇒ the
+  head cross-check fails.
+- Two stanzas for one recipient identity, even with different `enc`
+  or blob bytes ⇒ the parser rejects. A re-wrap to the same recipient
+  set yields the same stanza order.
+- An archived section opened with `open_rules_section` against the
+  wrong entry, or with another version's DEK ⇒ rejected.
+- With an `AcceptedVersionStore`: presenting an older
+  `(author, version)` after a newer one ⇒ rejected as a replay.
 
 ### Unit and Known-Answer Tests
 
@@ -666,7 +759,11 @@ boundaries. Phase B adds an exception entry with this scope:
   `file_id`, format version, and mode.
 - The new `\0`-terminated signature domains, the framing, and the
   Padmé decoder.
-- `VerifyPolicy` (minimum format version, replay tracking hook).
+- Per-entry `rules_mode` in `VersionEntry.reserved[0]`, and the header
+  flag cross-check.
+- `VerifyPolicy`: `min_format_version`, `require_confidential`
+  (`Head` / `AllVersions`), and the `AcceptedVersionStore` trait.
+- The SHA-256 exception entry in `.claude/rules/crypto.md`.
 - `RulesProtection::Public` only. `--public` replaces
   `--no-encryption`.
 - No new dependencies. This closes Problem Statement item 3 for every
@@ -685,8 +782,8 @@ boundaries. Phase B adds an exception entry with this scope:
     major bump goes through the full fuzz suite.
   - Before merge: `cargo deny`, `cargo audit`, the SBOM diff, and the
     fuzz suite, per `supply-chain.md`.
-- Add the SHA-256 exception from Security Considerations to
-  `.claude/rules/crypto.md`.
+- `hpke`'s own HKDF and DHKEM use falls under the SHA-256 exception
+  that Phase A adds.
 - `hpke` requires Rust 1.85. That is already the effective minimum
   through `ed25519-dalek` 3.0, `rand` 0.10, and `chacha20poly1305`
   0.11, but `Cargo.toml` still declares `rust-version = "1.70"`.
@@ -775,3 +872,23 @@ boundaries. Phase B adds an exception entry with this scope:
   - S6: `\0` on every v3 domain, and the book's domain table
     corrected.
   - N1–N4: incorporated as notes.
+- **2026-10-23, `crypto-auditor`, round 2: BLOCK.** Round 1's S1, S4
+  and S5 were judged only partially resolved. New findings and their
+  resolutions:
+  - N1 (blocker): the per-version mode had no stored source. Now
+    `VersionEntry.reserved[0] = rules_mode`, signed per entry. Header
+    flags bit 0 mirrors the head, and the cross-check is defined
+    against stored values.
+  - N2: the SHA-256 exception contradicted a SHA-256-based key
+    commitment. `dek_commitment` is now BLAKE3 `derive_key`; the
+    exception covers key derivation only and lands in Phase A.
+  - N3: canonical order is now bytewise `kind ‖ body`, and duplicates
+    are rejected by recipient identity, not body bytes.
+  - N4: added `open_rules_section` for archived historical sections,
+    and scoped `disclose_version_key` to the current version.
+  - N5: registry verification paths use the v3 message.
+  - N6: the CLI requires `--keep-recipients` explicitly, and refuses
+    it when the previous version had external stanzas.
+  - N7: the `derive_key` argument order is stated.
+  - S4: now specifies `Head` versus `AllVersions`, and a
+    caller-provided `AcceptedVersionStore`.
