@@ -1705,6 +1705,13 @@ pub fn show_version_history(path: &Path) -> Result<Vec<VersionInfo>> {
     let parser = AionParser::new(&file_bytes)?;
 
     let header = parser.header();
+    if header.format()?.signs_metadata() {
+        return Err(AionError::InvalidFormat {
+            reason: "format-v4 history is shown only from a verified chain: use \
+                     chain::verify_file_chain and chain::verified_history"
+                .to_string(),
+        });
+    }
     let version_count = header.version_chain_count;
 
     #[allow(clippy::cast_possible_truncation)] // version_count is header field, won't exceed usize
@@ -1895,7 +1902,12 @@ pub fn show_file_info(
 
     let header = parser.header();
 
-    let versions = show_version_history(path)?;
+    let versions = if header.format()?.signs_metadata() {
+        let chain = crate::chain::VerifiedChain::from_bytes(&file_bytes, registry)?;
+        crate::chain::verified_history(&chain)
+    } else {
+        show_version_history(path)?
+    };
     let signatures = show_signatures(path, registry)?;
 
     let current_version = versions.last().map_or(0, |v| v.version_number);
@@ -1926,6 +1938,18 @@ fn build_string_table_with_message(
     new_table.push(0); // Null terminator
 
     Ok((new_table, message_offset))
+}
+
+/// A commit message read leniently from a string table: empty when out of
+/// range, lossy for invalid UTF-8. Only for formats whose messages are not
+/// signed (v2, v3); v4 messages come from the metadata check.
+pub(crate) fn lossy_message(table: &[u8], entry: &VersionEntry) -> String {
+    let start = usize::try_from(entry.message_offset).unwrap_or(usize::MAX);
+    let end = start.saturating_add(entry.message_length as usize);
+    table
+        .get(start..end)
+        .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
+        .unwrap_or_default()
 }
 
 /// Get current timestamp in nanoseconds since Unix epoch
@@ -4193,6 +4217,24 @@ mod tests {
             assert!(parser.get_version_entry(0).is_err());
         }
 
+        /// GHSA-69cp-fwrw-82vh: in format v3 a commit message is not signed,
+        /// so this forgery still verifies. Kept to document why v3 reports
+        /// `metadata_signed == false`; RFC-0040 format v4 rejects it.
+        #[test]
+        fn v3_commit_messages_are_documented_as_unsigned() {
+            let dir = TempDir::new().unwrap_or_else(|_| std::process::abort());
+            let (mut bytes, registry) = fixture(&[(b"rules", RulesMode::Public)]);
+            let at = bytes
+                .windows(2)
+                .position(|w| w == b"v1")
+                .unwrap_or_else(|| std::process::abort());
+            bytes[at..at + 2].copy_from_slice(b"v9");
+            recompute_integrity(&mut bytes);
+            let (_, report) = write_and_verify(&dir, &bytes, &registry);
+            assert!(report.is_valid, "{:?}", report.errors);
+            assert!(!report.metadata_signed);
+        }
+
         #[test]
         fn unknown_format_version_is_rejected() {
             let (mut bytes, _) = fixture(&[(b"rules", RulesMode::Public)]);
@@ -4878,7 +4920,9 @@ mod tests {
             let after = current_timestamp_nanos();
 
             // Check timestamp is reasonable
-            let versions = show_version_history(&file_path).unwrap();
+            let registry = test_reg(author_id, &signing_key);
+            let chain = crate::chain::verify_file_chain(&file_path, &registry).unwrap();
+            let versions = crate::chain::verified_history(&chain);
             assert_eq!(versions.len(), 1);
             assert!(versions[0].timestamp >= before);
             assert!(versions[0].timestamp <= after);
@@ -4951,7 +4995,10 @@ mod tests {
             init_file(&file_path, b"rules", &options).unwrap();
 
             // Check message is preserved
-            let versions = show_version_history(&file_path).unwrap();
+            let registry = test_reg(author_id, &signing_key);
+            let chain = crate::chain::verify_file_chain(&file_path, &registry).unwrap();
+            let versions = crate::chain::verified_history(&chain);
+            assert!(show_version_history(&file_path).is_err(), "v4 history needs verification");
             assert_eq!(versions[0].message, long_message);
         }
     }

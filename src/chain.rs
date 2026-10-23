@@ -75,11 +75,12 @@ pub struct VerifiedChain {
 /// A version entry together with its rules mode and version hash, both
 /// computed once during verification so no accessor ever has to drop a
 /// decoding error.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct CheckedEntry {
     entry: VersionEntry,
     mode: Option<RulesMode>,
     version_hash: [u8; 32],
+    message: String,
 }
 
 /// Read and fully verify a file, returning a [`VerifiedChain`] over the
@@ -162,9 +163,14 @@ impl VerifiedChain {
         let header = parser.header();
         let context = header.context()?;
         let count = usize::try_from(header.version_chain_count).map_err(|_| empty_chain())?;
-        let entries = (0..count)
-            .map(|index| {
-                let entry = parser.get_version_entry(index)?;
+        let raw = (0..count)
+            .map(|index| parser.get_version_entry(index))
+            .collect::<Result<Vec<_>>>()?;
+        let messages = messages_of(&parser, context.format(), &raw)?;
+        let entries = raw
+            .into_iter()
+            .zip(messages)
+            .map(|(entry, message)| {
                 let mode = match context.format() {
                     FormatVersion::V2 => None,
                     format @ (FormatVersion::V3 | FormatVersion::V4) => {
@@ -176,10 +182,11 @@ impl VerifiedChain {
                     entry,
                     mode,
                     version_hash,
+                    message,
                 })
             })
             .collect::<Result<Vec<_>>>()?;
-        let head = *entries.last().ok_or_else(empty_chain)?;
+        let head = entries.last().cloned().ok_or_else(empty_chain)?;
         Ok(Self {
             context,
             entries,
@@ -227,6 +234,15 @@ impl VerifiedChain {
         })
     }
 
+    /// Whether this file's commit messages and audit trail are covered by
+    /// its signatures (RFC-0040): true for format v4. For v2 and v3 the
+    /// messages [`VerifiedEntry::message`] returns are unauthenticated
+    /// (GHSA-69cp-fwrw-82vh).
+    #[must_use]
+    pub const fn metadata_signed(&self) -> bool {
+        self.context.format().signs_metadata()
+    }
+
     /// The head version's recipients, so the next version can be sealed to
     /// the same set. Read from the verified head section, never re-read.
     ///
@@ -259,6 +275,48 @@ impl VerifiedChain {
     }
 }
 
+/// Each version's commit message. For v4, from the full metadata check, so
+/// every message is the signed one. For v2 and v3, read leniently and
+/// unauthenticated.
+fn messages_of(
+    parser: &AionParser<'_>,
+    format: FormatVersion,
+    entries: &[VersionEntry],
+) -> Result<Vec<String>> {
+    if format.signs_metadata() {
+        return Ok(crate::metadata::verify_v4_metadata(parser, entries)?
+            .into_iter()
+            .map(|metadata| metadata.message)
+            .collect());
+    }
+    let table = parser.string_table_bytes()?;
+    Ok(entries
+        .iter()
+        .map(|entry| crate::operations::lossy_message(table, entry))
+        .collect())
+}
+
+/// The verified history of a chain, oldest first, for display.
+///
+/// For format v4 every message is covered by its version's signature. For
+/// v2 and v3, check [`VerifiedChain::metadata_signed`]: their messages are
+/// unauthenticated.
+#[must_use]
+pub fn verified_history(chain: &VerifiedChain) -> Vec<crate::operations::VersionInfo> {
+    chain
+        .entries
+        .iter()
+        .map(|checked| crate::operations::VersionInfo {
+            version_number: checked.entry.version_number,
+            author_id: checked.entry.author_id,
+            timestamp: checked.entry.timestamp,
+            message: checked.message.clone(),
+            rules_hash: checked.entry.rules_hash,
+            parent_hash: (checked.entry.version_number != 1).then_some(checked.entry.parent_hash),
+        })
+        .collect()
+}
+
 fn empty_chain() -> AionError {
     AionError::InvalidFormat {
         reason: "Version chain is empty".to_string(),
@@ -280,6 +338,13 @@ impl VerifiedEntry<'_> {
     #[must_use]
     pub const fn version(&self) -> VersionNumber {
         VersionNumber(self.checked.entry.version_number)
+    }
+
+    /// The version's commit message: signed in format v4, unauthenticated
+    /// in v2 and v3 (see [`VerifiedChain::metadata_signed`]).
+    #[must_use]
+    pub fn message(&self) -> &str {
+        &self.checked.message
     }
 
     /// The author who signed this version.

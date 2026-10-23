@@ -10,7 +10,7 @@ use aion_context::format::{Recipient, RulesProtection};
 use aion_context::keystore::KeyStore;
 use aion_context::operations::{
     commit_version, commit_version_force_unregistered, init_file, show_file_info, show_signatures,
-    show_version_history, verify_file, CommitOptions, InitOptions,
+    verify_file, CommitOptions, InitOptions,
 };
 use aion_context::types::{AuthorId, EncryptionIdentityId};
 use anyhow::{Context, Result};
@@ -1273,7 +1273,18 @@ fn reader_keys(
 }
 
 fn show_history_subcommand(args: &ShowArgs) -> Result<()> {
-    let versions = show_version_history(&args.path)?;
+    let registry = load_registry_from_path(&args.registry)?;
+    let chain = aion_context::chain::verify_file_chain(&args.path, &registry)
+        .with_context(|| format!("Refusing to show history: {}", args.path.display()))?;
+    if !chain.metadata_signed() {
+        eprintln!(
+            "note: {} is format v{}; its commit messages and audit trail are not signed. \
+             `aion migrate` re-signs it as format v4.",
+            args.path.display(),
+            chain.context().format().as_u16()
+        );
+    }
+    let versions = aion_context::chain::verified_history(&chain);
     match args.format {
         OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&versions)?),
         OutputFormat::Yaml => println!("{}", serde_yaml::to_string(&versions)?),
@@ -1284,7 +1295,7 @@ fn show_history_subcommand(args: &ShowArgs) -> Result<()> {
                 println!("Version {}:", v.version_number);
                 println!("  Author:    {}", v.author_id);
                 println!("  Timestamp: {}", v.timestamp);
-                println!("  Message:   {}", v.message);
+                println!("  Message:   {}", escape_controls(&v.message));
                 println!("  Rules Hash: {}", hex::encode(v.rules_hash));
                 if let Some(parent) = v.parent_hash {
                     println!("  Parent Hash: {}", hex::encode(parent));
@@ -1294,6 +1305,21 @@ fn show_history_subcommand(args: &ShowArgs) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Escape control characters so signer-authored text cannot drive the
+/// terminal.
+fn escape_controls(text: &str) -> String {
+    text.chars()
+        .flat_map(|c| {
+            let escaped: Vec<char> = if c.is_control() {
+                c.escape_default().collect()
+            } else {
+                vec![c]
+            };
+            escaped
+        })
+        .collect()
 }
 
 fn show_signatures_subcommand(args: &ShowArgs) -> Result<()> {
