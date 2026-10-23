@@ -32,9 +32,12 @@ What you get from it:
 
 - **No casual exposure.** The rules don't appear as plaintext in the
   raw bytes, so `strings` or `grep` on the file won't find them.
-- **Integrity, from the AEAD tag.** The ciphertext is bound to its
-  version number, and on top of that the signature chain and the
-  whole-file BLAKE3 hash detect any change.
+- **Accidental-corruption detection only, from the AEAD tag.** The
+  tag catches bit rot and a payload spliced in from another version.
+  It gives no integrity against an attacker, because the key is
+  public and anyone can compute a valid tag. Real integrity comes
+  from the signed `rules_hash`, the signature chain, and the
+  whole-file BLAKE3 hash.
 
 What you do **not** get: secrecy from anyone who has the file.
 Treat an `.aion` file as **public to everyone who can read it**, and

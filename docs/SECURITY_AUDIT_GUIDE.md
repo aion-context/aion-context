@@ -367,7 +367,8 @@ impl Drop for SensitiveData {
 - Key size: 256 bits (32 bytes)
 - Nonce size: 96 bits (12 bytes)
 - Tag size: 128 bits (16 bytes)
-- Security level: 256 bits (confidentiality), 128 bits (authenticity)
+- Security level: 256 bits (confidentiality), 128 bits (authenticity) — only with a secret key. The rules
+  section derives its key from public header fields, so neither property holds against an attacker there.
 - Standard: RFC 8439
 
 **BLAKE3**:
@@ -619,7 +620,7 @@ See `rfcs/RFC-0001-file-format.md` for complete specification.
 1. Load and parse existing file
 2. Verify all existing signatures
 3. Encrypt new rules under the per-version key (same public-input derivation)
-4. Compute new content hash
+4. Compute new rules_hash: BLAKE3(plaintext rules)
 5. Link to parent via hash chain
 6. Increment version number
 7. Sign new version

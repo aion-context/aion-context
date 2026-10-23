@@ -144,58 +144,34 @@ fn verify_single_signature(
 
 ## 🔴 CRITICAL: Key Derivation
 
-### Location: `src/crypto.rs`
+### Location: `src/operations.rs` (`encrypt_rules` / `decrypt_rules`), via `crypto::derive_key`
 
-#### Function: `derive_file_key()`
+> This section previously described a `derive_file_key()` function with
+> different salt and info strings. That function does not exist.
 
-**Lines**: ~200-250
+**Purpose**: Derives the per-version ChaCha20-Poly1305 key for the rules
+section.
 
-**Purpose**: Derives deterministic encryption key for file
-
-**Security Requirements**:
-1. ✅ MUST be deterministic (same input → same output)
-2. ✅ MUST use HKDF correctly
-3. ✅ MUST NOT include random entropy
-4. ✅ MUST produce 256-bit keys
-
-**Code Section**:
+**Actual derivation**:
 ```rust
-pub fn derive_file_key(file_id: FileId) -> Result<[u8; 32]> {
-    // CRITICAL: Fixed salt for determinism
-    const SALT: &[u8] = b"AION-v2-file-key-derivation-salt";
-    
-    // CRITICAL: File ID as input keying material
-    let ikm = file_id.0.to_le_bytes();
-    
-    // CRITICAL: Fixed info string
-    const INFO: &[u8] = b"AION-v2-file-encryption-key";
-    
-    // CRITICAL: Derive key using HKDF-SHA256
-    let hkdf = Hkdf::<Sha256>::new(Some(SALT), &ikm);
-    
-    let mut okm = [0u8; 32];
-    hkdf.expand(INFO, &mut okm)
-        .map_err(|_| AionError::KeyDerivationFailed)?;
-    
-    Ok(okm)
-}
+// ikm  = "aion-v2-master-{file_id}"
+// salt = file_id as 8 little-endian bytes
+// info = "aion-v2-rules-v{version}"
+derive_key(master_secret.as_bytes(), &salt, info.as_bytes(), &mut encryption_key)?;
 ```
 
-**Attack Vectors**:
-- Non-deterministic key derivation
-- Wrong HKDF parameters
-- Incorrect salt or info strings
-- Key length mismatch
-
-**Test Coverage**:
-- `src/crypto.rs::tests::test_key_derivation_deterministic()`
-- `tests/crypto_test_vectors.rs::test_deterministic_signing()`
+**Security property: none for confidentiality.** Every input is a
+public header field, so anyone holding the file derives the same key
+and can read the rules. The AEAD tag catches accidental corruption
+only, since anyone can compute a valid one. Integrity comes from the
+signed `rules_hash` and the signature chain. See
+`book/src/architecture/crypto.md` § "The rules section is not
+confidential".
 
 **Audit Focus**:
-- [ ] Verify determinism (no random input)
-- [ ] Check HKDF usage is correct
-- [ ] Confirm salt and info strings are appropriate
-- [ ] Validate output key length is 256 bits
+- [ ] Confirm `encrypt_rules` and `decrypt_rules` derive identically
+- [ ] Confirm no documentation or UI claims rules confidentiality
+- [ ] Any future confidentiality design (key held outside the file) goes through an RFC and a format-version bump
 
 ---
 
