@@ -65,6 +65,68 @@ enum Commands {
     /// Accept a verified file with replay defense (RFC-0039): refuses
     /// older versions, forks, and foreign chains recorded in a state file
     Accept(AcceptArgs),
+
+    /// Write a new format-v4 file that continues a verified file's head
+    /// (RFC-0040): its genesis carries a signed link to the source, whose
+    /// commit messages and audit trail it signs from then on
+    Migrate(MigrateArgs),
+}
+
+#[derive(Args, Debug)]
+#[command(group(
+    ArgGroup::new("protection")
+        .required(true)
+        .multiple(false)
+        .args(["public", "recipient", "keep_recipients"])
+))]
+struct MigrateArgs {
+    /// The file to migrate. It is verified first and never modified
+    #[arg(value_name = "SOURCE")]
+    source: PathBuf,
+
+    /// The new format-v4 file to write. Must not exist
+    #[arg(value_name = "DEST")]
+    dest: PathBuf,
+
+    /// Path to a JSON registry file (RFC-0034). The source must verify
+    /// against it, and it must pin `--author` with `--key`
+    #[arg(long, value_name = "REGISTRY_FILE")]
+    registry: PathBuf,
+
+    /// Author ID signing the new genesis (the migrating author)
+    #[arg(short, long, value_name = "AUTHOR_ID")]
+    author: u64,
+
+    /// Signing key ID from keystore
+    #[arg(short, long, value_name = "KEY_ID")]
+    key: String,
+
+    /// Commit message for the new genesis
+    #[arg(
+        short,
+        long,
+        value_name = "MESSAGE",
+        default_value = "Migrated to format v4"
+    )]
+    message: String,
+
+    /// Store the new genesis rules in the clear
+    #[arg(long)]
+    public: bool,
+
+    /// Encrypt the new genesis rules to this recipient: a recipient file or
+    /// an `aion-recipient:…` string. Repeatable
+    #[arg(long, value_name = "RECIPIENT")]
+    recipient: Vec<String>,
+
+    /// Encrypt to the same recipients as the source's head version
+    #[arg(long)]
+    keep_recipients: bool,
+
+    /// Encryption identity ID from the keystore, to open a confidential
+    /// source head. Repeatable
+    #[arg(long, value_name = "IDENTITY_ID")]
+    identity: Vec<EncryptionIdentityId>,
 }
 
 #[derive(Args, Debug)]
@@ -824,6 +886,7 @@ fn main() -> Result<ExitCode> {
         Commands::Release(args) => cmd_release(&args),
         Commands::Archive(args) => cmd_archive(&args),
         Commands::Accept(args) => cmd_accept(&args),
+        Commands::Migrate(args) => cmd_migrate(&args),
     }
 }
 
@@ -862,19 +925,26 @@ fn cmd_init(args: &InitArgs) -> Result<ExitCode> {
 
 /// Advisory only: `commit_version` reports any read or parse error
 /// itself, so a file this cannot read is left for it to reject.
-fn note_legacy_v2_protection(path: &std::path::Path) {
+fn note_legacy_format(path: &std::path::Path) {
     let Ok(bytes) = std::fs::read(path) else {
         return;
     };
     let Ok(parser) = aion_context::parser::AionParser::new(&bytes) else {
         return;
     };
-    if parser.header().version == 2 {
-        eprintln!(
+    match parser.header().version {
+        2 => eprintln!(
             "note: {} is format v2; --public keeps its v2 encoding (obfuscated, not \
-             confidential). RFC-0039 Phase C adds `aion migrate` to convert it.",
+             confidential), and its commit messages and audit trail are unsigned. \
+             `aion migrate` writes a format-v4 file that continues it.",
             path.display()
-        );
+        ),
+        3 => eprintln!(
+            "note: {} is format v3; its commit messages and audit trail are unsigned. \
+             `aion migrate` writes a format-v4 file that continues it.",
+            path.display()
+        ),
+        _ => {}
     }
 }
 
@@ -967,7 +1037,7 @@ fn cmd_commit(args: &CommitArgs) -> Result<ExitCode> {
     if !args.path.exists() {
         anyhow::bail!("File not found: {}", args.path.display());
     }
-    note_legacy_v2_protection(&args.path);
+    note_legacy_format(&args.path);
 
     let rules = load_rules_content(args.rules.as_ref())?;
     println!("   New rules size: {} bytes", rules.len());
@@ -1001,6 +1071,74 @@ fn cmd_commit(args: &CommitArgs) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
+fn cmd_migrate(args: &MigrateArgs) -> Result<ExitCode> {
+    println!(
+        "🔁 Migrating {} → {}",
+        args.source.display(),
+        args.dest.display()
+    );
+    if args.dest.exists() {
+        anyhow::bail!("Destination already exists: {}", args.dest.display());
+    }
+    let registry = load_registry_from_path(&args.registry)?;
+    let source = aion_context::chain::verify_file_chain(&args.source, &registry)
+        .with_context(|| format!("Refusing to migrate: {}", args.source.display()))?;
+    let rules = aion_context::chain::open_current_rules(&source, &reader_keys(&args.identity)?)
+        .map_err(|e| match e {
+            aion_context::AionError::RecipientKeyRequired => anyhow::anyhow!(
+                "The source's rules are confidential: pass --identity <IDENTITY_ID> for a \
+                 listed recipient"
+            ),
+            other => anyhow::anyhow!("Cannot open the source's rules: {other}"),
+        })?;
+    let protection = if args.keep_recipients {
+        kept_recipients(&source)?
+    } else {
+        chosen_protection(&args.recipient)?
+    };
+    let signing_key = load_signing_key_for(&args.key)?;
+    let options = InitOptions {
+        author_id: AuthorId::new(args.author),
+        signing_key: &signing_key,
+        message: &args.message,
+        timestamp: None,
+        protection,
+    };
+    let result =
+        aion_context::operations::migrate_file(&source, &rules, &args.dest, &options, &registry)
+            .with_context(|| format!("Failed to write: {}", args.dest.display()))?;
+    println!("\n✅ Migrated to format v4");
+    println!(
+        "   Source: format v{}, file ID 0x{:016x}, head version {}",
+        source.context().format().as_u16(),
+        source.context().file_id().as_u64(),
+        source.head().version().as_u64()
+    );
+    println!("   New file ID: 0x{:016x}", result.file_id.as_u64());
+    println!("   Path: {}", args.dest.display());
+    println!(
+        "   The source is unchanged; archive it. Receivers check the link with \
+         aion_context::migration::verify_migration."
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
+fn kept_recipients(chain: &aion_context::chain::VerifiedChain) -> Result<RulesProtection> {
+    let recipients = chain.head_recipients().map_err(|e| match e {
+        aion_context::AionError::NoRecipients => anyhow::anyhow!(
+            "--keep-recipients: the current version is public, so there are no recipients to keep"
+        ),
+        other => anyhow::anyhow!(
+            "--keep-recipients: the current version has a recipient that cannot be re-sealed \
+             from the file alone; name the recipients with --recipient ({other})"
+        ),
+    })?;
+    for recipient in &recipients {
+        println!("   Keeping recipient: {recipient:?}");
+    }
+    Ok(confidential_to(recipients))
+}
+
 /// `--keep-recipients` re-seals to the current version's recipients, read
 /// from the verified file and printed so nothing carries over unseen.
 fn commit_protection(
@@ -1017,19 +1155,7 @@ fn commit_protection(
                 args.path.display()
             )
         })?;
-    let recipients = chain.head_recipients().map_err(|e| match e {
-        aion_context::AionError::NoRecipients => anyhow::anyhow!(
-            "--keep-recipients: the current version is public, so there are no recipients to keep"
-        ),
-        other => anyhow::anyhow!(
-            "--keep-recipients: the current version has a recipient that cannot be re-sealed \
-             from the file alone; name the recipients with --recipient ({other})"
-        ),
-    })?;
-    for recipient in &recipients {
-        println!("   Keeping recipient: {recipient:?}");
-    }
-    Ok(confidential_to(recipients))
+    kept_recipients(&chain)
 }
 
 fn cmd_verify(args: &VerifyArgs) -> Result<ExitCode> {

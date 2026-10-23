@@ -130,6 +130,84 @@ pub struct InitResult {
 /// // println!("Created file {} with version {}", result.file_id.as_u64(), result.version.as_u64());
 /// ```
 pub fn init_file(path: &Path, initial_rules: &[u8], options: &InitOptions) -> Result<InitResult> {
+    init_with_link(path, initial_rules, options, None)
+}
+
+/// Write `dest` as a new format-v4 file that continues `source` (RFC-0040,
+/// RFC-0039 Phase C2).
+///
+/// The new file has a new random `file_id`. Its genesis audit entry has
+/// action [`ActionCode::MigratedFrom`] and the
+/// [`crate::migration::MigrationLink`] to `source`'s head as its details,
+/// and the genesis signature covers both. `source` must already be
+/// verified; it is not modified. `rules` become the new genesis rules,
+/// usually `source`'s head rules. No history is imported.
+///
+/// A receiver checks the result with
+/// [`crate::migration::verify_migration`].
+///
+/// # Errors
+///
+/// As [`init_file`], and [`AionError::UnauthorizedSigner`] or
+/// [`AionError::KeyMismatch`] if `registry` does not pin
+/// `options.signing_key` for `options.author_id` at the new genesis, so a
+/// migration that could never verify is not written.
+///
+/// # Example
+///
+/// ```no_run
+/// use aion_context::chain::{open_current_rules, verify_file_chain, RecipientKeys};
+/// use aion_context::crypto::SigningKey;
+/// use aion_context::format::RulesProtection;
+/// use aion_context::key_registry::KeyRegistry;
+/// use aion_context::operations::{migrate_file, InitOptions};
+/// use aion_context::types::AuthorId;
+/// use std::path::Path;
+///
+/// # fn example(registry: &KeyRegistry, key: &SigningKey) -> aion_context::Result<()> {
+/// let source = verify_file_chain(Path::new("policy.aion"), registry)?;
+/// let rules = open_current_rules(&source, &RecipientKeys::none())?;
+/// let options = InitOptions {
+///     author_id: AuthorId::new(42),
+///     signing_key: key,
+///     message: "migrate to format v4",
+///     timestamp: None,
+///     protection: RulesProtection::Public,
+/// };
+/// migrate_file(&source, &rules, Path::new("policy-v4.aion"), &options, registry)?;
+/// # Ok(())
+/// # }
+/// ```
+pub fn migrate_file(
+    source: &crate::chain::VerifiedChain,
+    rules: &[u8],
+    dest: &Path,
+    options: &InitOptions,
+    registry: &crate::key_registry::KeyRegistry,
+) -> Result<InitResult> {
+    let public_key = options.signing_key.verifying_key().to_bytes();
+    preflight_registry_public_key(
+        options.author_id,
+        &public_key,
+        VersionNumber::GENESIS,
+        registry,
+    )?;
+    let link = crate::migration::MigrationLink::of(source);
+    let result = init_with_link(dest, rules, options, Some(&link))?;
+    tracing::info!(
+        event = "file_migrated",
+        file_id = %crate::obs::short_hex(&result.file_id.as_u64().to_le_bytes()),
+        version = link.source_head_version().as_u64(),
+    );
+    Ok(result)
+}
+
+fn init_with_link(
+    path: &Path,
+    initial_rules: &[u8],
+    options: &InitOptions,
+    link: Option<&crate::migration::MigrationLink>,
+) -> Result<InitResult> {
     if path.exists() {
         return Err(AionError::FileExists {
             path: path.to_path_buf(),
@@ -148,7 +226,7 @@ pub fn init_file(path: &Path, initial_rules: &[u8], options: &InitOptions) -> Re
     )?;
     let rules_hash = encoded.rules_hash;
 
-    let aion_file = build_genesis_file(&context, timestamp, encoded, options)?;
+    let aion_file = build_genesis_file(&context, timestamp, encoded, options, link)?;
     write_serialized_file(&aion_file, path)?;
 
     tracing::info!(
@@ -170,16 +248,25 @@ fn build_genesis_file(
     timestamp: u64,
     encoded: EncodedRules,
     options: &InitOptions,
+    link: Option<&crate::migration::MigrationLink>,
 ) -> Result<AionFile> {
-    let (string_table, offsets) = AionSerializer::build_string_table(&[options.message]);
+    let details = link.map(crate::migration::MigrationLink::to_details);
+    let strings: Vec<&str> = std::iter::once(options.message)
+        .chain(details.as_deref())
+        .collect();
+    let (string_table, offsets) = AionSerializer::build_string_table(&strings);
     let message_offset = offsets.first().copied().unwrap_or(0);
+    let (action, details_offset, details_length) = match (&details, offsets.get(1)) {
+        (Some(text), Some(&offset)) => (ActionCode::MigratedFrom, offset, text.len() as u32),
+        _ => (ActionCode::CreateGenesis, 0, 0),
+    };
 
     let audit_entry = AuditEntry::new(
         timestamp,
         options.author_id,
-        ActionCode::CreateGenesis,
-        0,
-        0,
+        action,
+        details_offset,
+        details_length,
         [0u8; 32],
     );
     let mut genesis_version = encoded.apply_mode(create_genesis_version(
@@ -190,7 +277,8 @@ fn build_genesis_file(
         options.message.len() as u32,
     ));
     if context.format().signs_metadata() {
-        let audit_hash = crate::metadata::audit_hash_v4(&audit_entry, &[])?;
+        let details_bytes = details.as_deref().unwrap_or_default().as_bytes();
+        let audit_hash = crate::metadata::audit_hash_v4(&audit_entry, details_bytes)?;
         let commitment = crate::format::metadata_commitment(
             VersionNumber::GENESIS.as_u64(),
             options.message.as_bytes(),
@@ -2140,7 +2228,7 @@ fn audit_details<'a>(parser: &AionParser<'a>, audit: &AuditEntry) -> Result<&'a 
 #[allow(clippy::inconsistent_digit_grouping)]
 #[allow(clippy::indexing_slicing)]
 #[allow(clippy::cast_possible_truncation)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::audit::ActionCode;
     use crate::key_registry::KeyRegistry;
@@ -3920,7 +4008,7 @@ mod tests {
     /// writers land in A2b, so these files are assembled from the format
     /// primitives. A confidential section here is opaque stand-in bytes:
     /// verification is key-free and never opens it.
-    mod format_v3_read_tests {
+    pub mod format_v3_read_tests {
         use super::*;
         use crate::format::{rules_commitment, FileContext, FormatVersion, RulesMode};
 
@@ -3951,7 +4039,7 @@ mod tests {
         }
 
         /// Build a signed v3 file with one version per `(rules, mode)`.
-        fn build_v3_file(
+        pub fn build_v3_file(
             versions: &[(&[u8], RulesMode)],
             context: FileContext,
             signing_key: &SigningKey,
@@ -4020,7 +4108,7 @@ mod tests {
             assert!(matches!(result, Err(AionError::ConfidentialityUnsupported)));
         }
 
-        fn v3_context() -> FileContext {
+        pub fn v3_context() -> FileContext {
             FileContext::new(FormatVersion::V3, FileId::new(V3_FILE_ID))
         }
 

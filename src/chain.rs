@@ -70,6 +70,7 @@ pub struct VerifiedChain {
     entries: Vec<CheckedEntry>,
     head: CheckedEntry,
     head_section: Vec<u8>,
+    migration_details: Option<String>,
 }
 
 /// A version entry together with its rules mode and version hash, both
@@ -166,7 +167,7 @@ impl VerifiedChain {
         let raw = (0..count)
             .map(|index| parser.get_version_entry(index))
             .collect::<Result<Vec<_>>>()?;
-        let messages = messages_of(&parser, context.format(), &raw)?;
+        let (messages, migration_details) = messages_of(&parser, context.format(), &raw)?;
         let entries = raw
             .into_iter()
             .zip(messages)
@@ -192,6 +193,7 @@ impl VerifiedChain {
             entries,
             head,
             head_section: parser.encrypted_rules_bytes()?.to_vec(),
+            migration_details,
         })
     }
 
@@ -243,6 +245,14 @@ impl VerifiedChain {
         self.context.format().signs_metadata()
     }
 
+    /// The signed details text of a format-v4 genesis whose audit action is
+    /// `MigratedFrom`, unparsed. [`crate::migration::verify_migration`]
+    /// parses and checks it.
+    #[must_use]
+    pub fn migration_details(&self) -> Option<&str> {
+        self.migration_details.as_deref()
+    }
+
     /// The head version's recipients, so the next version can be sealed to
     /// the same set. Read from the verified head section, never re-read.
     ///
@@ -275,25 +285,32 @@ impl VerifiedChain {
     }
 }
 
-/// Each version's commit message. For v4, from the full metadata check, so
-/// every message is the signed one. For v2 and v3, read leniently and
-/// unauthenticated.
+/// Each version's commit message, and the genesis migration details if
+/// any. For v4, from the full metadata check, so every message is the
+/// signed one. For v2 and v3, read leniently and unauthenticated; they
+/// carry no migration details.
 fn messages_of(
     parser: &AionParser<'_>,
     format: FormatVersion,
     entries: &[VersionEntry],
-) -> Result<Vec<String>> {
+) -> Result<(Vec<String>, Option<String>)> {
     if format.signs_metadata() {
-        return Ok(crate::metadata::verify_v4_metadata(parser, entries)?
-            .into_iter()
-            .map(|metadata| metadata.message)
-            .collect());
+        let metadata = crate::metadata::verify_v4_metadata(parser, entries)?;
+        let details = metadata
+            .first()
+            .filter(|genesis| {
+                genesis.audit.action_code_raw() == crate::audit::ActionCode::MigratedFrom as u16
+            })
+            .map(|genesis| genesis.details.clone());
+        let messages = metadata.into_iter().map(|m| m.message).collect();
+        return Ok((messages, details));
     }
     let table = parser.string_table_bytes()?;
-    Ok(entries
+    let messages = entries
         .iter()
         .map(|entry| crate::operations::lossy_message(table, entry))
-        .collect())
+        .collect();
+    Ok((messages, None))
 }
 
 /// The verified history of a chain, oldest first, for display.

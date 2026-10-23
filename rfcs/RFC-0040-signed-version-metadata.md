@@ -405,6 +405,24 @@ verify_migration(&migrated, &original, &MigrationPolicy::SameAuthor)?;
   order (header, rules, versions, signatures, audit, string table,
   integrity hash), with one signature per version, so no byte lies
   outside a checked section.
+- **Migration (P3).**
+  - `operations::migrate_file(source, rules, dest, options, registry)`
+    refuses, before writing, an author/key pair the registry does not
+    pin for the new genesis, as `commit_version` does.
+  - Errors are `AionError::MigrationRejected` with `not_migrated`,
+    `link_malformed`, `source_mismatch`, `policy_unmet`, or
+    `empty_author_set`. `VersionRejectReason::MigrationConflict` is the
+    store's first-claim-wins rejection.
+  - `AcceptedVersionStore` gains `check_and_advance_migration` (the
+    migration record and the destination's version record in one
+    compare-and-swap) and `clear_migration`. Both default to failing
+    closed with `migration_unsupported`, so a custom store written for
+    2.x refuses migrations rather than accepting them unrecorded.
+  - `FileStore` saves `{"records", "migrations"}` and still reads the
+    flat 2.x layout; a 2.x reader of the new layout fails closed.
+  - `VerifiedChain::migration_details()` is the raw signed text;
+    `MigrationLink::parse` checks it, so a malformed link fails
+    `verify_migration`, not chain verification.
 - **One bounded reason.** A v4 metadata failure reports
   `audit_chain_valid = false` and classifies as `metadata_invalid`; the
   specific code (`audit_version_mismatch`, `string_table_noncanonical`,

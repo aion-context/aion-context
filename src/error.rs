@@ -266,6 +266,15 @@ pub enum AionError {
         reason: &'static str,
     },
 
+    /// A migrated file's link does not match its claimed source, is
+    /// malformed, or its migrating author is not allowed by the
+    /// [`crate::migration::MigrationPolicy`] (RFC-0040).
+    #[error("Migration rejected: {reason}")]
+    MigrationRejected {
+        /// Bounded reason code, e.g. `source_mismatch`
+        reason: &'static str,
+    },
+
     /// The accepted-version store could not be read or updated, so the
     /// acceptance failed closed (RFC-0039). Custom stores may add their
     /// own bounded reason codes.
