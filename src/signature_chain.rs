@@ -364,20 +364,12 @@ fn v3_bound_fields(version: &VersionEntry, file_id: FileId) -> Result<Vec<u8>> {
 /// Returns [`crate::AionError::InvalidFormat`] if the entry's rules mode
 /// byte is unknown or another reserved byte is non-zero.
 ///
-/// # Example
-///
-/// ```
-/// use aion_context::format::RulesMode;
-/// use aion_context::serializer::VersionEntry;
-/// use aion_context::signature_chain::{canonical_version_message_v3, SIGNATURE_DOMAIN_V3};
-/// use aion_context::types::{AuthorId, FileId, VersionNumber};
-///
-/// let entry = VersionEntry::new(VersionNumber::GENESIS, [0; 32], [7; 32], AuthorId::new(1), 0, 0, 0)
-///     .with_rules_mode(RulesMode::Public);
-/// let message = canonical_version_message_v3(&entry, FileId::new(42)).unwrap_or_default();
-/// assert!(message.starts_with(SIGNATURE_DOMAIN_V3));
-/// ```
-pub fn canonical_version_message_v3(version: &VersionEntry, file_id: FileId) -> Result<Vec<u8>> {
+/// Crate-internal: callers go through [`crate::format::FileContext`], so
+/// v3 construction cannot be applied to a v2 file by mistake.
+pub(crate) fn canonical_version_message_v3(
+    version: &VersionEntry,
+    file_id: FileId,
+) -> Result<Vec<u8>> {
     let fields = v3_bound_fields(version, file_id)?;
     let mut message = Vec::with_capacity(SIGNATURE_DOMAIN_V3.len().saturating_add(fields.len()));
     message.extend_from_slice(SIGNATURE_DOMAIN_V3);
@@ -396,7 +388,7 @@ pub fn canonical_version_message_v3(version: &VersionEntry, file_id: FileId) -> 
 ///
 /// Returns [`crate::AionError::InvalidFormat`] if the entry's rules mode
 /// byte is unknown or another reserved byte is non-zero.
-pub fn compute_version_hash_v3(version: &VersionEntry, file_id: FileId) -> Result<[u8; 32]> {
+pub(crate) fn compute_version_hash_v3(version: &VersionEntry, file_id: FileId) -> Result<[u8; 32]> {
     let fields = v3_bound_fields(version, file_id)?;
     let mut hasher = blake3::Hasher::new();
     hasher.update(VERSION_HASH_DOMAIN_V3);
@@ -412,7 +404,7 @@ pub fn compute_version_hash_v3(version: &VersionEntry, file_id: FileId) -> Resul
 ///
 /// Returns [`crate::AionError::InvalidFormat`] if the entry's rules mode
 /// byte is unknown or another reserved byte is non-zero.
-pub fn canonical_attestation_message_v3(
+pub(crate) fn canonical_attestation_message_v3(
     version: &VersionEntry,
     file_id: FileId,
     signer: AuthorId,
@@ -792,6 +784,74 @@ mod tests {
             let msg1 = canonical_version_message(&version);
             let msg2 = canonical_version_message(&version);
             assert_eq!(msg1, msg2);
+        }
+
+        /// RFC-0039 golden vectors. The expected bytes are written out
+        /// literally rather than rebuilt with `to_le_bytes`, so a swapped,
+        /// resized, or reordered field fails here even when every
+        /// round-trip property still passes.
+        fn golden_v3_entry() -> VersionEntry {
+            VersionEntry::new(
+                crate::types::VersionNumber(0x0102_0304_0506_0708),
+                [0x11; 32],
+                [0x22; 32],
+                AuthorId::new(0x0A0B_0C0D_0E0F_1011),
+                0x2122_2324_2526_2728,
+                0x3132_3334_3536_3738,
+                0x4142_4344,
+            )
+            .with_rules_mode(crate::format::RulesMode::Confidential)
+        }
+
+        fn golden_v3_fields() -> Vec<u8> {
+            let mut fields = vec![0x03, 0x00];
+            fields.extend_from_slice(&[0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11]);
+            fields.push(0x01);
+            fields.extend_from_slice(&[0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01]);
+            fields.extend_from_slice(&[0x11; 32]);
+            fields.extend_from_slice(&[0x22; 32]);
+            fields.extend_from_slice(&[0x11, 0x10, 0x0F, 0x0E, 0x0D, 0x0C, 0x0B, 0x0A]);
+            fields.extend_from_slice(&[0x28, 0x27, 0x26, 0x25, 0x24, 0x23, 0x22, 0x21]);
+            fields.extend_from_slice(&[0x38, 0x37, 0x36, 0x35, 0x34, 0x33, 0x32, 0x31]);
+            fields.extend_from_slice(&[0x44, 0x43, 0x42, 0x41]);
+            fields
+        }
+
+        const GOLDEN_FILE_ID: u64 = 0x1122_3344_5566_7788;
+
+        #[test]
+        fn v3_version_message_matches_golden_layout() {
+            let mut expected = b"AION_V3_VERSION_SIGNATURE_V1\0".to_vec();
+            expected.extend_from_slice(&golden_v3_fields());
+            assert_eq!(expected.len(), 29 + 111);
+            let actual =
+                canonical_version_message_v3(&golden_v3_entry(), FileId::new(GOLDEN_FILE_ID))
+                    .unwrap_or_else(|_| std::process::abort());
+            assert_eq!(actual, expected);
+        }
+
+        #[test]
+        fn v3_version_hash_matches_golden_layout() {
+            let mut input = b"AION_V3_VERSION_HASH_V1\0".to_vec();
+            input.extend_from_slice(&golden_v3_fields());
+            let expected = *blake3::hash(&input).as_bytes();
+            let actual = compute_version_hash_v3(&golden_v3_entry(), FileId::new(GOLDEN_FILE_ID))
+                .unwrap_or_else(|_| std::process::abort());
+            assert_eq!(actual, expected);
+        }
+
+        #[test]
+        fn v3_attestation_message_matches_golden_layout() {
+            let mut expected = b"AION_V3_ATTESTATION_V1\0".to_vec();
+            expected.extend_from_slice(&golden_v3_fields());
+            expected.extend_from_slice(&[0xEF, 0xCD, 0xAB, 0x89, 0x67, 0x45, 0x23, 0x01]);
+            let actual = canonical_attestation_message_v3(
+                &golden_v3_entry(),
+                FileId::new(GOLDEN_FILE_ID),
+                AuthorId::new(0x0123_4567_89AB_CDEF),
+            )
+            .unwrap_or_else(|_| std::process::abort());
+            assert_eq!(actual, expected);
         }
 
         #[test]

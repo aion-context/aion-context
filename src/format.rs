@@ -23,12 +23,13 @@
 //! ```
 //! use aion_context::format::{frame_rules, rules_commitment, unframe_rules, RulesMode};
 //!
-//! let framed = frame_rules(b"allow: read").unwrap_or_default();
-//! assert_eq!(unframe_rules(&framed).ok(), Some(&b"allow: read"[..]));
+//! let framed = frame_rules(b"allow: read")?;
+//! assert_eq!(unframe_rules(&framed)?, b"allow: read");
 //!
 //! let public = rules_commitment(RulesMode::Public, &framed);
 //! let confidential = rules_commitment(RulesMode::Confidential, &framed);
 //! assert_ne!(public, confidential);
+//! # Ok::<(), aion_context::AionError>(())
 //! ```
 
 use crate::serializer::VersionEntry;
@@ -39,9 +40,12 @@ use crate::{AionError, Result};
 pub const RULES_COMMIT_DOMAIN: &[u8] = b"AION_V3_RULES_COMMIT_V1\0";
 
 /// Length in bytes of the framing header (plaintext length, `u64` LE).
-pub const FRAME_HEADER_LEN: usize = 8;
+pub(crate) const FRAME_HEADER_LEN: usize = 8;
 
 /// An on-disk format version this crate understands.
+///
+/// Not `#[non_exhaustive]`: a new on-disk format is a major-version event
+/// with its own RFC, so callers may match exhaustively.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FormatVersion {
     /// Format v2: the rules section is obfuscated, not confidential, and
@@ -85,6 +89,10 @@ impl FormatVersion {
 /// Stored per version in `VersionEntry.reserved[0]` and covered by that
 /// version's v3 signature, so it can never change without breaking the
 /// signature.
+///
+/// Not `#[non_exhaustive]`: RFC-0039 reserves room for new recipient
+/// stanza kinds and suites, not for new modes, so callers may match
+/// exhaustively.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RulesMode {
     /// The rules section holds the framed plaintext.
@@ -277,15 +285,50 @@ fn frame_error(reason: &str) -> AionError {
 /// format version, the `file_id`, and the entry's [`RulesMode`], so a
 /// signed entry cannot be moved into another file or reinterpreted under
 /// another mode (RFC-0039).
+///
+/// This is the only public entry point for building version messages and
+/// hashes, so a caller cannot apply v3 construction to a v2 file by
+/// mistake.
+///
+/// # Example
+///
+/// ```
+/// use aion_context::format::{FileContext, FormatVersion, RulesMode};
+/// use aion_context::serializer::VersionEntry;
+/// use aion_context::types::{AuthorId, FileId, VersionNumber};
+///
+/// let entry = VersionEntry::new(VersionNumber::GENESIS, [0; 32], [7; 32], AuthorId::new(1), 0, 0, 0)
+///     .with_rules_mode(RulesMode::Public);
+/// let context = FileContext::new(FormatVersion::V3, FileId::new(42));
+/// let message = context.canonical_version_message(&entry)?;
+/// assert!(message.starts_with(aion_context::signature_chain::SIGNATURE_DOMAIN_V3));
+/// # Ok::<(), aion_context::AionError>(())
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FileContext {
-    /// The file's on-disk format.
-    pub format: FormatVersion,
-    /// The file's identifier, from its header.
-    pub file_id: FileId,
+    format: FormatVersion,
+    file_id: FileId,
 }
 
 impl FileContext {
+    /// Build the context for a file's format and identifier.
+    #[must_use]
+    pub const fn new(format: FormatVersion, file_id: FileId) -> Self {
+        Self { format, file_id }
+    }
+
+    /// The file's on-disk format.
+    #[must_use]
+    pub const fn format(&self) -> FormatVersion {
+        self.format
+    }
+
+    /// The file's identifier.
+    #[must_use]
+    pub const fn file_id(&self) -> FileId {
+        self.file_id
+    }
+
     /// The canonical message a version signature covers.
     ///
     /// # Errors
@@ -378,6 +421,22 @@ mod tests {
     }
 
     #[test]
+    fn unframe_rejects_frames_shorter_than_canonical() {
+        let framed = frame_rules(b"abc").unwrap_or_else(|_| std::process::abort());
+        assert_eq!(framed.len(), 12);
+        assert!(unframe_rules(&framed[..11]).is_err());
+        let mut nine = 9u64.to_le_bytes().to_vec();
+        nine.extend_from_slice(&[0x41; 9]);
+        assert_eq!(nine.len(), 17);
+        assert!(unframe_rules(&nine).is_err());
+        nine.push(0);
+        assert_eq!(
+            unframe_rules(&nine).unwrap_or_else(|_| std::process::abort()),
+            &[0x41; 9]
+        );
+    }
+
+    #[test]
     fn unframe_rejects_truncated_and_overlong_frames() {
         assert!(unframe_rules(&[0u8; 7]).is_err());
         let mut declared_too_long = frame_rules(b"abc").unwrap_or_else(|_| std::process::abort());
@@ -433,14 +492,8 @@ mod tests {
             0,
             0,
         );
-        let v2 = FileContext {
-            format: FormatVersion::V2,
-            file_id: FileId::new(5),
-        };
-        let v3 = FileContext {
-            format: FormatVersion::V3,
-            ..v2
-        };
+        let v2 = FileContext::new(FormatVersion::V2, FileId::new(5));
+        let v3 = FileContext::new(FormatVersion::V3, v2.file_id());
         assert_eq!(
             v2.version_hash(&entry)
                 .unwrap_or_else(|_| std::process::abort()),
@@ -512,12 +565,15 @@ mod tests {
 
         #[hegel::test]
         fn prop_unframe_rejects_nonzero_padding(tc: hegel::TestCase) {
-            let plaintext = tc.draw(gs::binary().min_size(9).max_size(4096));
+            let mut plaintext = tc.draw(gs::binary().min_size(9).max_size(4096));
+            if (plaintext.len() & 1) == 0 {
+                plaintext.push(0xAA);
+            }
+            // 8 + len is now odd and at least 17, so Padmé rounds it up by
+            // at least one byte: every run has padding to corrupt.
             let mut framed = frame_rules(&plaintext).unwrap_or_else(|_| std::process::abort());
             let body_end = FRAME_HEADER_LEN.saturating_add(plaintext.len());
-            if framed.len() == body_end {
-                return;
-            }
+            assert!(framed.len() > body_end);
             let index = tc.draw(
                 gs::integers::<usize>()
                     .min_value(body_end)

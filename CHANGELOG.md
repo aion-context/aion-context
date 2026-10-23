@@ -17,12 +17,13 @@ and the project follows [Semantic Versioning].
   - A new `format` module with `FormatVersion`, `RulesMode`,
     `rules_commitment` (a BLAKE3 commitment to the stored rules
     section), Padmé `padme_len` / `frame_rules` / `unframe_rules`, and
-    `FileContext`, which dispatches to the v2 or v3 canonical message
-    and version hash.
-  - `signature_chain::{canonical_version_message_v3,
-    compute_version_hash_v3, canonical_attestation_message_v3}` bind
-    `file_id`, the format version, and the per-entry rules mode under
-    new NUL-terminated domains.
+    `FileContext`. `FileContext` is constructor-only and is the single
+    public entry point for building v2 or v3 version messages, version
+    hashes, and attestation messages.
+  - The v3 message and hash bind `file_id`, the format version, and the
+    per-entry rules mode under new NUL-terminated domains, exported as
+    `signature_chain::{SIGNATURE_DOMAIN_V3, VERSION_HASH_DOMAIN_V3,
+    ATTESTATION_DOMAIN_V3}`. Golden-vector tests pin the byte layout.
   - `VersionEntry::with_rules_mode`.
   - The SHA-256 key-derivation exception is recorded in
     `.claude/rules/crypto.md`.
