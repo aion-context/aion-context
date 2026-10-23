@@ -12,6 +12,26 @@ and the project follows [Semantic Versioning].
 
 _Nothing here yet. Next changes land in this section._
 
+## [1.0.1] — 2026-10-23
+
+Security patch release. No API, format, or CLI changes.
+
+### Security
+
+- **GHSA-7625-44v8-v62f: `verify_file` did not bind the rules payload to
+  the signed `rules_hash`.** The rules-section key is derived from public
+  header fields and the whole-file integrity hash is unkeyed. So a
+  substituted payload, with the integrity hash recomputed, passed
+  `verify_file`, `aion verify`, and `aion archive verify`.
+  `verify_file` now decrypts the latest payload and compares it with the
+  latest signed `rules_hash`. A mismatch fails `hash_chain_valid` and
+  `is_valid`. Reads through `show_current_rules` were already
+  fail-closed.
+
+  Note: the rules section is not confidential. Anyone holding an
+  `.aion` file can read its rules. This is documented behavior, not
+  part of this advisory.
+
 ## [1.0.0] — 2026-04-25
 
 The 1.0.0 cut. The public API surface, the on-disk binary format,
