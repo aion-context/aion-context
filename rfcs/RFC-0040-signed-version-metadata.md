@@ -570,7 +570,10 @@ with a stability-page row "3.x: writes v4; reads v2, v3, v4."
    (2026-10-23):** Phase B and v4 ship together in 3.0.0.
 2. **CLI default for v2/v3.** Should `aion verify` warn, or fail unless
    `--allow-unsigned-metadata`, on v2/v3 files? Should
-   `AcceptPolicy::min_format` default to v4 in 3.0.0?
+   `AcceptPolicy::min_format` default to v4 in 3.0.0? **Decided
+   (2026-10-23):** warn only. `aion verify` passes v2/v3 files with a
+   warning, and `min_format` stays opt-in (`--min-format 4`); `aion
+   migrate` is the upgrade path.
 3. **History import.** Should `aion migrate` optionally carry the source's
    messages into the destination as signed, clearly labelled "imported,
    unverified" records? This RFC says no.
