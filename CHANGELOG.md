@@ -27,9 +27,15 @@ and the project follows [Semantic Versioning].
 
   `show_current_rules` returns a public v3 head's plaintext, and
   returns the new `AionError::RecipientKeyRequired` for a confidential
-  one. New `FileContext` methods (`sign_version`, `verify_signature`,
-  `verify_signatures`, `verify_hash_chain`, `sign_attestation`,
-  `verify_attestation`) are the format-aware signing API. Committing to
+  one. New `FileContext` methods are the format-aware signing API:
+  `sign_version`, `verify_signature`, `verify_signatures`,
+  `verify_hash_chain`, `sign_attestation`, `verify_attestation`, and
+  `verify_multisig`, which takes RFC-0021 quorums with v3 attestations.
+  The v2 free functions in `signature_chain` and `multisig` are
+  unchanged and documented as format-v2 only. Readers accept format 2
+  and 3; `parser::FORMAT_VERSION` is now documented as the version
+  written by default. **Breaking:** `AionFile` gains a `format` field
+  and is now `#[non_exhaustive]`. Build files through `AionFile::builder()`. Committing to
   a v3 file returns `UnsupportedVersion` until the v3 writer lands
   (Phase A2b). Writers still produce v2.
 - **RFC-0039 Phase A1: format-v3 primitives.** No change to what is

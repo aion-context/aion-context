@@ -259,6 +259,10 @@ impl FileHeader {
 
     /// The signing context version messages in this file bind (RFC-0039).
     ///
+    /// Cannot fail for a header returned by [`AionParser`], which has
+    /// already validated the version; a hand-built header can hold any
+    /// value, hence the `Result`.
+    ///
     /// # Errors
     ///
     /// Returns [`AionError::UnsupportedVersion`] for an unknown version.

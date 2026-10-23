@@ -3604,8 +3604,11 @@ mod tests {
 
         const FRAME_BODY_START: usize = 8;
 
+        const FLAG_MISMATCH: &str =
+            "Rules payload unreadable: Invalid file format: header rules-mode flag does not match the head version";
+
         #[test]
-        fn header_mode_flag_mismatch_is_rejected() {
+        fn header_flag_set_on_a_public_head_is_rejected() {
             let dir = TempDir::new().unwrap_or_else(|_| std::process::abort());
             let (mut bytes, registry) = fixture(&[(b"rules", RulesMode::Public)]);
             bytes[6] |= 0x01;
@@ -3613,6 +3616,51 @@ mod tests {
             let (_, report) = write_and_verify(&dir, &bytes, &registry);
             assert!(!report.hash_chain_valid);
             assert!(!report.is_valid);
+            assert_eq!(report.errors, vec![FLAG_MISMATCH.to_string()]);
+        }
+
+        #[test]
+        fn header_flag_cleared_on_a_confidential_head_is_rejected() {
+            let dir = TempDir::new().unwrap_or_else(|_| std::process::abort());
+            let (mut bytes, registry) = fixture(&[(b"secret", RulesMode::Confidential)]);
+            bytes[6] &= !0x01;
+            recompute_integrity(&mut bytes);
+            let (_, report) = write_and_verify(&dir, &bytes, &registry);
+            assert!(!report.hash_chain_valid);
+            assert!(!report.is_valid);
+            assert_eq!(report.errors, vec![FLAG_MISMATCH.to_string()]);
+        }
+
+        #[test]
+        fn v3_attestations_meet_quorum_only_through_the_file_context() {
+            let first = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+            let second = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+            let (a, b) = (AuthorId::new(81_001), AuthorId::new(81_002));
+            let mut registry = test_reg(a, &first);
+            let master = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+            registry
+                .register_author(b, master.verifying_key(), second.verifying_key(), 0)
+                .unwrap_or_else(|_| std::process::abort());
+            let entry = VersionEntry::new(VersionNumber::GENESIS, [0; 32], [5; 32], a, 1, 0, 0)
+                .with_rules_mode(RulesMode::Public);
+            let context = v3_context();
+            let attestations = [
+                context
+                    .sign_attestation(&entry, a, &first)
+                    .unwrap_or_else(|_| std::process::abort()),
+                context
+                    .sign_attestation(&entry, b, &second)
+                    .unwrap_or_else(|_| std::process::abort()),
+            ];
+            let policy = crate::multisig::MultiSigPolicy::m_of_n(2, vec![a, b])
+                .unwrap_or_else(|_| std::process::abort());
+            let v3 = context
+                .verify_multisig(&entry, &attestations, &policy, &registry)
+                .unwrap_or_else(|_| std::process::abort());
+            assert!(v3.threshold_met);
+            let v2 = crate::multisig::verify_multisig(&entry, &attestations, &policy, &registry)
+                .unwrap_or_else(|_| std::process::abort());
+            assert!(!v2.threshold_met);
         }
 
         #[test]

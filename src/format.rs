@@ -422,7 +422,8 @@ impl FileContext {
         )
     }
 
-    /// Verify every version signature in a chain.
+    /// Verify every version signature in a chain. The format-aware
+    /// counterpart of [`crate::signature_chain::verify_signatures_batch`].
     ///
     /// # Errors
     ///
@@ -486,6 +487,25 @@ impl FileContext {
     ) -> Result<()> {
         let message = self.attestation_message(version, AuthorId::new(signature.author_id))?;
         crate::signature_chain::verify_attestation_over(version, signature, registry, &message)
+    }
+
+    /// Evaluate an RFC-0021 multi-signature policy over attestations,
+    /// each checked against `registry` under this file's format.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` only for structural problems; rejected signers are
+    /// reported in the returned [`crate::multisig::MultiSigVerification`].
+    pub fn verify_multisig(
+        &self,
+        version: &VersionEntry,
+        signatures: &[SignatureEntry],
+        policy: &crate::multisig::MultiSigPolicy,
+        registry: &KeyRegistry,
+    ) -> Result<crate::multisig::MultiSigVerification> {
+        crate::multisig::verify_multisig_with(version, signatures, policy, |version, signature| {
+            self.verify_attestation(version, signature, registry)
+        })
     }
 }
 

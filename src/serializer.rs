@@ -122,6 +122,7 @@ impl SignatureEntry {
 
 /// AION file data for serialization
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct AionFile {
     /// On-disk format version written to the header (RFC-0039)
     pub format: FormatVersion,
