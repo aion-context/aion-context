@@ -12,29 +12,6 @@ and the project follows [Semantic Versioning].
 
 ### Added
 
-- **RFC-0039 Phase A2b: writers produce format v3. BREAKING.**
-  - `init_file` writes format-v3 files.
-  - `commit_version` / `commit_version_with_signer` keep the file's
-    format: a v3 file gains v3 entries, and a v2 file stays v2 with its
-    legacy encoding.
-  - `InitOptions`, `CommitOptions` and `ExternalCommitOptions` gain a
-    required `protection: RulesProtection` field. There is no default,
-    so every write names its protection.
-  - `RulesProtection::Public` stores the rules in the clear, framed and
-    Padmé-padded, and signs a commitment to the stored bytes.
-    `RulesProtection` is `#[non_exhaustive]`; `Confidential` arrives in
-    Phase B.
-  - CLI: `aion init` and `aion commit` require `--public`.
-    `--no-encryption` is a deprecated alias that prints a note.
-  - `CommitResult.rules_hash` / `InitResult.rules_hash` are the v3 rules
-    commitment for v3 files.
-  - The commit path is split into small format-generic steps, which
-    brings the old 90-line `commit_version_with_signer_inner` under the
-    60-line limit.
-  - The README and developer-guide examples are fixed to call
-    `SigningKey::generate()?`; the call returns `Result` since #165.
-  - The user guide's `commit` synopsis now lists the required
-    `--registry`.
 - **RFC-0039 Phase A2a: reading and verifying format-v3 files.** The
   parser accepts format 2 and 3 (`FileHeader::format`,
   `FileHeader::context`). For v3 it reads a per-entry rules mode from
@@ -110,6 +87,32 @@ and the project follows [Semantic Versioning].
 
 ### Changed
 
+- **BREAKING (RFC-0039 Phase A2b): new files are format v3.**
+  - `init_file` and `aion init` write format v3. Readers older than
+    Phase A2a, including every 1.0.x release, reject these files with
+    `UnsupportedVersion`.
+  - `commit_version` and `commit_version_with_signer` keep the file's
+    format. A v3 file gains v3 entries. A v2 file stays v2 with its
+    legacy encoding, and `aion commit` prints a note saying so.
+  - `CommitResult.rules_hash` and `InitResult.rules_hash` are the v3
+    rules commitment for v3 files.
+- **BREAKING (RFC-0039 Phase A2b): rules protection is always named.**
+  - `InitOptions`, `CommitOptions`, and `ExternalCommitOptions` have a
+    new required `protection: RulesProtection` field with no default.
+  - `RulesProtection::Public` stores the rules in the clear, framed and
+    Padmé-padded, and signs a commitment to the stored bytes.
+    `RulesProtection` is `#[non_exhaustive]`; Phase B adds
+    `Confidential`.
+  - `aion init` and `aion commit` require `--public`. `--no-encryption`
+    is a hidden, deprecated alias that prints a note and will be
+    removed in 3.0.
+  - **Migration:** add `protection: RulesProtection::Public` to option
+    literals, and `--public` to `aion init` / `aion commit` invocations.
+- The commit path is split into small format-generic steps;
+  `commit_version_with_signer_inner` goes from 90 to 58 lines.
+- An external `VersionSigner`'s returned signature is now checked
+  against its own public key on every path, including
+  `commit_version_force_unregistered`, which skips the registry check.
 - **BREAKING (RFC-0037, #165)** — `SigningKey::generate`,
   `crypto::generate_nonce`, and `HybridSigningKey::generate` return
   `Result`, propagating `AionError::EntropyUnavailable` instead of
@@ -128,6 +131,10 @@ and the project follows [Semantic Versioning].
 
 ### Fixed
 
+- **Stale documentation examples.** The README and developer-guide
+  examples called `SigningKey::generate()` without `?`; the call returns
+  `Result` since #165. The user guide's `aion commit` synopsis now lists
+  the required `--registry`.
 - **Declared `rust-version` corrected from 1.70 to 1.85.** The 1.70
   declaration has been wrong since the RFC-0037 dependency upgrade
   (#165): `ed25519-dalek` 3.0, `rand` 0.10, `chacha20poly1305` 0.11, and

@@ -581,6 +581,14 @@ Adding the parameter later would have been a second breaking change.
 Phase B's `Confidential` variant holds an owned recipient list, with
 external wrappers held behind a shared pointer.
 
+*Decision (Phase A2b):* `InitOptions`, `CommitOptions`, and
+`ExternalCommitOptions` stay struct-literal, with no
+`#[non_exhaustive]` and no constructors. They borrow keys and messages,
+so literals read naturally, and the required `protection` field keeps
+the no-default rule visible at every call site. Their fields are
+frozen. New per-write choices grow inside `RulesProtection` (Phase B's
+recipients) rather than as new fields.
+
 `commit_version` never needs the previous version's plaintext.
 
 The CLI never carries recipients over silently. `aion commit` takes

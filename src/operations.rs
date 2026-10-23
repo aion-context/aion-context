@@ -502,7 +502,10 @@ fn verify_chain_before_commit(
 }
 
 /// Ask the provider for exactly one signature over the new entry's
-/// canonical message for this file's format (RFC-0038, RFC-0039).
+/// canonical message for this file's format (RFC-0038, RFC-0039), and
+/// check it against the provider's own public key on every path,
+/// including `commit_version_force_unregistered`, which skips the
+/// registry check.
 fn sign_new_entry(
     context: &FileContext,
     entry: &VersionEntry,
@@ -511,6 +514,7 @@ fn sign_new_entry(
 ) -> Result<SignatureEntry> {
     let message = context.canonical_version_message(entry)?;
     let signature = options.signer.sign_version_message(&message)?;
+    crate::crypto::VerifyingKey::from_bytes(&public_key)?.verify(&message, &signature)?;
     Ok(SignatureEntry::new(
         options.author_id,
         public_key,
@@ -2231,6 +2235,119 @@ mod tests {
                 std::fs::read(&file_path).unwrap_or_else(|_| std::process::abort()),
                 initial_bytes
             );
+        }
+
+        fn init_v3(path: &Path, key: &SigningKey, author_id: AuthorId) -> Vec<u8> {
+            let options = InitOptions {
+                author_id,
+                signing_key: key,
+                message: "genesis",
+                timestamp: Some(1_700_000_000_000_000_000),
+                protection: RulesProtection::Public,
+            };
+            init_file(path, b"v1 rules", &options).unwrap_or_else(|_| std::process::abort());
+            std::fs::read(path).unwrap_or_else(|_| std::process::abort())
+        }
+
+        #[test]
+        fn external_signer_on_a_v3_file_signs_the_v3_message_exactly_once() {
+            let temp_dir = TempDir::new().unwrap_or_else(|_| std::process::abort());
+            let file_path = temp_dir.path().join("external-v3.aion");
+            let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+            let author_id = AuthorId::new(50_020);
+            init_v3(&file_path, &key, author_id);
+            let registry = test_reg(author_id, &key);
+            let signer = RecordingSigner {
+                key: &key,
+                calls: Cell::new(0),
+                message: RefCell::new(Vec::new()),
+            };
+
+            commit_version_with_signer(
+                &file_path,
+                b"v2 rules",
+                &ExternalCommitOptions {
+                    author_id,
+                    signer: &signer,
+                    message: "external v3",
+                    timestamp: Some(1_700_000_001_000_000_000),
+                    protection: RulesProtection::Public,
+                },
+                &registry,
+            )
+            .unwrap_or_else(|_| std::process::abort());
+            assert_eq!(signer.calls.get(), 1);
+
+            let bytes = std::fs::read(&file_path).unwrap_or_else(|_| std::process::abort());
+            let parser = AionParser::new(&bytes).unwrap_or_else(|_| std::process::abort());
+            let context = parser
+                .header()
+                .context()
+                .unwrap_or_else(|_| std::process::abort());
+            assert_eq!(context.format(), FormatVersion::V3);
+            let landed = parser
+                .get_version_entry(1)
+                .unwrap_or_else(|_| std::process::abort());
+            let expected = context
+                .canonical_version_message(&landed)
+                .unwrap_or_else(|_| std::process::abort());
+            assert_eq!(*signer.message.borrow(), expected);
+            let report =
+                verify_file(&file_path, &registry).unwrap_or_else(|_| std::process::abort());
+            assert!(report.is_valid, "{:?}", report.errors);
+        }
+
+        #[test]
+        fn invalid_external_signature_on_a_v3_file_leaves_it_untouched() {
+            let temp_dir = TempDir::new().unwrap_or_else(|_| std::process::abort());
+            let file_path = temp_dir.path().join("bad-external-v3.aion");
+            let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+            let author_id = AuthorId::new(50_021);
+            let initial_bytes = init_v3(&file_path, &key, author_id);
+            let registry = test_reg(author_id, &key);
+
+            let result = commit_version_with_signer(
+                &file_path,
+                b"v2 rules",
+                &ExternalCommitOptions {
+                    author_id,
+                    signer: &InvalidSignatureSigner(&key),
+                    message: "bad signature",
+                    timestamp: Some(1_700_000_001_000_000_000),
+                    protection: RulesProtection::Public,
+                },
+                &registry,
+            );
+            assert!(result.is_err());
+            assert_eq!(
+                std::fs::read(&file_path).unwrap_or_else(|_| std::process::abort()),
+                initial_bytes
+            );
+        }
+
+        #[test]
+        fn provider_signature_is_checked_even_without_the_registry() {
+            let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+            let context = FileContext::new(FormatVersion::V3, FileId::new(9));
+            let entry = VersionEntry::new(
+                VersionNumber::GENESIS,
+                [0; 32],
+                [1; 32],
+                AuthorId::new(50_022),
+                1,
+                0,
+                0,
+            )
+            .with_rules_mode(RulesMode::Public);
+            let options = ExternalCommitOptions {
+                author_id: AuthorId::new(50_022),
+                signer: &InvalidSignatureSigner(&key),
+                message: "",
+                timestamp: None,
+                protection: RulesProtection::Public,
+            };
+            let public_key = key.verifying_key().to_bytes();
+            assert!(sign_new_entry(&context, &entry, &options, public_key).is_err());
         }
 
         #[test]

@@ -98,7 +98,7 @@ struct InitArgs {
     #[arg(long)]
     public: bool,
 
-    /// Deprecated alias for `--public`.
+    /// Deprecated alias for `--public`; removed in 3.0.
     #[arg(long, hide = true)]
     no_encryption: bool,
 }
@@ -739,13 +739,31 @@ fn cmd_init(args: &InitArgs) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// Advisory only: `commit_version` reports any read or parse error
+/// itself, so a file this cannot read is left for it to reject.
+fn note_legacy_v2_protection(path: &std::path::Path) {
+    let Ok(bytes) = std::fs::read(path) else {
+        return;
+    };
+    let Ok(parser) = aion_context::parser::AionParser::new(&bytes) else {
+        return;
+    };
+    if parser.header().version == 2 {
+        eprintln!(
+            "note: {} is format v2; --public keeps its v2 encoding (obfuscated, not \
+             confidential). RFC-0039 Phase C adds `aion migrate` to convert it.",
+            path.display()
+        );
+    }
+}
+
 fn print_init_banner(args: &InitArgs) {
     println!("🚀 Initializing AION file: {}", args.path.display());
     println!("   Author: {}", args.author);
     println!("   Message: {}", args.message);
     println!("   Rules: public (tamper-evident, readable by anyone holding the file)");
     if args.no_encryption {
-        eprintln!("note: --no-encryption is deprecated; use --public");
+        eprintln!("note: --no-encryption is deprecated and will be removed in 3.0; use --public");
     }
 }
 
@@ -770,6 +788,7 @@ fn cmd_commit(args: &CommitArgs) -> Result<ExitCode> {
     if !args.path.exists() {
         anyhow::bail!("File not found: {}", args.path.display());
     }
+    note_legacy_v2_protection(&args.path);
 
     // Load new rules from file or stdin
     let rules = load_rules_content(args.rules.as_ref())?;

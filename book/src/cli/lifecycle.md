@@ -22,7 +22,8 @@ default, so `--public` is required: it stores the rules in the clear,
 framed and padded, where anyone holding the file can read them. The
 signature makes them tamper-evident, not secret. Confidential rules,
 readable only by named recipients, arrive with RFC-0039 Phase B.
-`--no-encryption` is a deprecated alias for `--public`.
+`--no-encryption` is a deprecated alias for `--public` and will be
+removed in 3.0.
 
 `init` deliberately does **not** take a registry. Genesis trust
 flows from the original signing key alone; the registry is

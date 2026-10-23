@@ -217,7 +217,7 @@ aion init <FILE> --author <ID> --key <KEY_ID> --public [OPTIONS]
 | `-m, --message` | No | Commit message (default: "Genesis version") |
 | `--public` | Yes | Store the rules in the clear (format v3). Anyone holding the file can read them; the signature makes them tamper-evident. The rules protection has no default. |
 | `--force` | No | Overwrite existing file |
-| `--no-encryption` | No | Deprecated alias for `--public` |
+| `--no-encryption` | No | Deprecated alias for `--public`; removed in 3.0 |
 
 **Examples:**
 
