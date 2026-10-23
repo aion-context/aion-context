@@ -12,6 +12,23 @@ and the project follows [Semantic Versioning].
 
 _Nothing here yet. Next changes land in this section._
 
+## [1.0.2] — 2026-10-23
+
+Security patch release. No API, format, or CLI changes.
+
+### Security
+
+- **GHSA-9c6x-g6hv-mpvr: unbounded header entry counts let a crafted
+  `.aion` file abort the verifying process.** `AionParser::new` did not
+  check `version_chain_count`, `signatures_count`, or
+  `audit_trail_count` against the file length, and readers sized
+  buffers from them. A file of a few hundred bytes, with no key, made
+  `verify_file`, `aion verify`, `aion archive verify`, and the history
+  readers abort on a huge allocation or panic with `capacity overflow`.
+  `AionParser::new` now rejects such headers with `InvalidFormat` and a
+  `parser_rejected` / `section_out_of_bounds` trace event. Denial of
+  service only: no forged file is accepted.
+
 ## [1.0.1] — 2026-10-23
 
 Security patch release. No API, format, or CLI changes.

@@ -2524,6 +2524,40 @@ mod tests {
         }
     }
 
+    /// GHSA-9c6x-g6hv-mpvr — header entry counts must be bounded by the
+    /// file before any reader allocates from them.
+    mod entry_count_tests {
+        use super::*;
+
+        #[test]
+        fn oversized_entry_counts_are_rejected_without_allocating() {
+            let dir = TempDir::new().unwrap_or_else(|_| std::process::abort());
+            let path = dir.path().join("counts.aion");
+            let key = SigningKey::generate();
+            let author = AuthorId::new(70_101);
+            let registry = test_reg(author, &key);
+            let options = InitOptions {
+                author_id: author,
+                signing_key: &key,
+                message: "genesis",
+                timestamp: Some(1_700_000_000_000_000_000),
+            };
+            init_file(&path, b"rules", &options).unwrap_or_else(|_| std::process::abort());
+            let original = std::fs::read(&path).unwrap_or_else(|_| std::process::abort());
+
+            for field in [128usize, 144, 160] {
+                for count in [1u64 << 32, u64::MAX] {
+                    let mut bytes = original.clone();
+                    bytes[field..field.saturating_add(8)].copy_from_slice(&count.to_le_bytes());
+                    assert!(AionParser::new(&bytes).is_err());
+                    std::fs::write(&path, &bytes).unwrap_or_else(|_| std::process::abort());
+                    let verdict = verify_file(&path, &registry);
+                    assert!(verdict.map_or(true, |report| !report.is_valid));
+                }
+            }
+        }
+    }
+
     /// GHSA-7625-44v8-v62f — `verify_file` must bind the stored rules
     /// payload to the latest signed `rules_hash`.
     mod payload_binding_tests {

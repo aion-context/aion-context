@@ -409,7 +409,46 @@ impl<'a> AionParser<'a> {
             e
         })?;
 
-        Ok(Self { data, header })
+        let parser = Self { data, header };
+        parser.validate_entry_counts().map_err(|e| {
+            tracing::warn!(
+                event = "parser_rejected",
+                bytes = data.len(),
+                reason = "section_out_of_bounds",
+            );
+            e
+        })?;
+        Ok(parser)
+    }
+
+    /// Reject a header whose entry counts do not fit inside the file.
+    ///
+    /// Readers size buffers and loops from these counts, so an
+    /// adversarial count must fail here rather than as an allocation
+    /// of `count × entry_size` bytes.
+    fn validate_entry_counts(&self) -> Result<()> {
+        self.version_chain_bytes()?;
+        self.signatures_bytes()?;
+        if self.header.audit_trail_count == 0 {
+            return Ok(());
+        }
+        let available = u64::try_from(self.audit_trail_bytes()?.len()).unwrap_or(u64::MAX);
+        let needed = self
+            .header
+            .audit_trail_count
+            .checked_mul(crate::serializer::AUDIT_ENTRY_SIZE as u64)
+            .ok_or_else(|| AionError::InvalidFormat {
+                reason: "Audit trail size overflow".to_string(),
+            })?;
+        if needed > available {
+            return Err(AionError::InvalidFormat {
+                reason: format!(
+                    "audit trail out of bounds: {} entries need {needed} bytes, section has {available}",
+                    self.header.audit_trail_count
+                ),
+            });
+        }
+        Ok(())
     }
 
     /// Get reference to the file header.
@@ -452,11 +491,10 @@ impl<'a> AionParser<'a> {
                 reason: "Version chain size overflow".to_string(),
             })?;
 
-        self.get_section(
-            header.version_chain_offset as usize,
-            size as usize,
-            "version chain",
-        )
+        let size = usize::try_from(size).map_err(|_| AionError::InvalidFormat {
+            reason: "Version chain size overflow".to_string(),
+        })?;
+        self.get_section(header.version_chain_offset as usize, size, "version chain")
     }
 
     /// Get signatures section as byte slice
@@ -474,11 +512,10 @@ impl<'a> AionParser<'a> {
                 reason: "Signatures size overflow".to_string(),
             })?;
 
-        self.get_section(
-            header.signatures_offset as usize,
-            size as usize,
-            "signatures",
-        )
+        let size = usize::try_from(size).map_err(|_| AionError::InvalidFormat {
+            reason: "Signatures size overflow".to_string(),
+        })?;
+        self.get_section(header.signatures_offset as usize, size, "signatures")
     }
 
     /// Get audit trail section as byte slice
@@ -1147,9 +1184,9 @@ mod tests {
             let middle = data.len() / 2;
             data[middle] ^= 0xFF;
 
-            let parser = AionParser::new(&data).unwrap();
-            let result = parser.verify_integrity();
-            assert!(result.is_err());
+            let detected =
+                AionParser::new(&data).map_or(true, |parser| parser.verify_integrity().is_err());
+            assert!(detected);
         }
 
         #[test]
