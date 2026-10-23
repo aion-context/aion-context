@@ -283,8 +283,8 @@ recipients and selective-disclosure parties alike.
 | kind | Name | Body |
 |---|---|---|
 | `0x01` | HPKE X25519 recipient | `recipient_pk[32] ‖ enc[32] ‖ wrapped_dek[48]` |
-| `0x02` | External wrapper | `provider_id_len u8 ‖ provider_id ‖ key_ref_len u16 ‖ key_ref ‖ blob_len u16 ‖ blob` |
-| `0x03`–`0xFF` | Reserved | Readers skip unknown kinds. A file with no stanza the reader can open fails with `RecipientKeyRequired`. |
+| `0x02` | External wrapper | `provider_id_len u8 ‖ provider_id ‖ key_ref_len u16 ‖ key_ref ‖ blob_len u16 ‖ blob`. The inner lengths plus their 5 length bytes must sum exactly to `body_len`; trailing or missing bytes reject. |
+| `0x03`–`0xFF` | Reserved | Readers skip unknown kinds. A reader that holds no identity matching any stanza fails with `NotARecipient`. |
 
 **Stanza ordering and identity.**
 
@@ -372,9 +372,15 @@ the header's `version`, and `file_id` is the header's `file_id`.
   version, historical or head, between public and confidential.
 - **Other signed messages:** RFC-0021 attestations get
   `AION_V3_ATTESTATION_V1\0` with the same added fields.
-- **Registry paths:** registry-aware verification
-  (`verify_signature_with_registry`, `verify_signatures_batch`, and
-  the RFC-0028/0034 paths) uses the v3 canonical message for v3 files.
+- **Every path that signs or verifies a version uses the v3 canonical
+  message for v3 files.** That includes:
+  - registry-aware verification: `verify_signature_with_registry`,
+    `verify_signatures_batch`, and the RFC-0028/0034 paths;
+  - RFC-0027 hybrid signatures;
+  - RFC-0038 external signers: the provider receives the v3 message;
+  - RFC-0021 multisig attestations;
+  - the DSSE version-attestation payload, which adds `rules_mode`,
+    `file_id`, and `format_version` fields for v3.
 
 Every new v3 domain string ends in `\0`, so no domain is a prefix of
 another. This follows the transparency-log and hybrid-signature
@@ -390,11 +396,20 @@ For v3, `verify_file` adds one check to the v2 set, and needs no key:
 This is the structural form of the 1.0.1 fix. Public-mode files also
 validate the framing.
 
-**Downgrade and rollback policy.** A v3 reader accepts v2 files, and
-modes may change between versions. So a compromised signer could
-commit a public version after confidential ones, and anyone could
-hand a verifier an older file. `verify_file` gains an optional
-`VerifyPolicy` covering:
+**Integrity versus acceptance.** Two separate APIs, so replay defense
+can't be forgotten by omission:
+
+- `verify_file(path, &registry) -> VerificationReport` stays a
+  **stateless integrity verdict**: "is this file internally consistent
+  and correctly signed?". It does not, and cannot, defend against
+  replay. Its docs say so.
+- `accept_file(path, &registry, &AcceptPolicy, &dyn
+  AcceptedVersionStore) -> Result<VerifiedChain>` is the
+  **receiver-side acceptance** API required by `crypto.md` property 1
+  and `distributed.md`. The store is a mandatory parameter: there is
+  no default and no `Option`.
+
+`AcceptPolicy` carries:
 
 - `min_format_version`: reject v2 files where v3 is required;
 - `require_confidential: Option<ConfidentialScope>`:
@@ -402,27 +417,72 @@ hand a verifier an older file. `verify_file` gains an optional
   - `AllVersions` rejects a file in which **any** entry's `rules_mode`
     is public.
   - Both read the signed per-entry modes, so neither needs a key.
-- `accepted: Option<&mut dyn AcceptedVersionStore>`: the
-  per-`(author, version)` last-accepted tracking required by
-  `.claude/rules/distributed.md`.
-  - The store is a caller-provided trait, as `AttestationStore` is in
-    RFC-0036. The library defines the check; the caller owns where
-    the state persists, whether a file, a database, or memory.
-  - A file whose head `(author, version)` is at or below the stored
-    value is rejected as a replay.
 
-`VerifyPolicy::default()` keeps today's behavior, so existing callers
-are unaffected. Deployments that rely on confidentiality must set
-`require_confidential`, and should supply a store.
+`AcceptedVersionStore` semantics:
+
+- **Key:** `(file_id, head author_id)`. `file_id` is in the key
+  because one author's version numbers are independent across files.
+- **Value:** `(head version, head version hash)`.
+- **Decision**, applied only **after** every integrity, signature and
+  policy check has passed, so an attacker cannot burn version numbers
+  with invalid files:
+
+  | Stored vs presented | Result |
+  |---|---|
+  | no record | accept and record |
+  | presented version > stored | accept and record |
+  | same version, same hash | accept (idempotent re-verification) |
+  | same version, different hash | reject as **equivocation** (`reason = "version_equivocation"`) |
+  | presented version < stored | reject as **rollback** (`reason = "version_replay"`) |
+
+- **Atomicity:** one trait method,
+  `fn check_and_advance(&self, key, version, hash) -> Result<StoreDecision>`,
+  which must be atomic as a compare-and-swap. It takes `&self`;
+  implementations provide their own synchronization, as
+  `AttestationStore` does in RFC-0036. Concurrent acceptances of the
+  same key cannot both win.
+- **Failure:** any store error fails the acceptance closed, as a
+  `StoreUnavailable` error. The store is never skipped.
+
+The CLI gets `aion accept <FILE> --registry … --state <path>`, backed
+by a file store using write-then-rename. `aion verify` remains the
+stateless check.
 
 #### Reading
 
 | Function | Behavior |
 |---|---|
-| `show_current_rules(path)` | Public mode: returns the plaintext. Confidential mode: `Err(AionError::RecipientKeyRequired)` (new variant; `AionError` is `#[non_exhaustive]`). |
-| `open_current_rules(path, &RecipientKeys)` | **New.** Tries each held identity (X25519 secret keys and/or `&dyn DekUnwrapper`) against the stanzas. Checks `dek_commitment`, decrypts, checks framing, and returns `Zeroizing<Vec<u8>>`. Every failure after parsing returns the single opaque error `RecipientKeyRequired`: no openable stanza, a commitment mismatch, an AEAD failure, or bad framing. The padding check runs only after the AEAD verifies, so there is no padding oracle. |
-| `disclose_version_key(path, &RecipientKeys)` | **New.** Returns the **current** version's DEK, for selective disclosure. |
-| `open_rules_section(section, &entry, file_id, &RecipientKeys \| &Dek)` | **New.** Opens an **archived** section, such as a historical version's section stored by its `rules_commitment` outside the file.<br>It first recomputes the commitment against the signed `entry`, using the entry's stored `rules_mode` and `ctx`, then unwraps or uses the given DEK.<br>A disclosed DEK opens that one section and no other, because each DEK is independent random. |
+Reading never trusts an unverified entry. Every opening function
+takes a `VerifiedEntry<'_>`, a typestate value that can only be
+obtained from a `VerifiedChain`. A `VerifiedChain` is returned by
+`accept_file`, or by `verify_file_chain(path, &registry)`, which is the
+stateless form. A `VerifiedEntry` carries the signature-checked
+`file_id`, `format_version`, `author_id`, `version`, `rules_mode` and
+`rules_commitment`. The public API has no way to build one from raw
+fields. So a forged entry can never drive `ctx` or the commitment
+check, a caller cannot pass a mismatched `file_id`, and nothing reads
+state before it is verified.
+
+| Function | Behavior |
+|---|---|
+| `show_current_rules(path)` | Public mode: returns the plaintext (after verification, as in 1.0.1). Confidential mode: `Err(AionError::RecipientKeyRequired)`. |
+| `open_current_rules(&VerifiedChain, &RecipientKeys)` | **New.** Opens the head section. |
+| `open_rules_section(section, VerifiedEntry<'_>, &RecipientKeys \| &Dek)` | **New.** Opens an **archived** section, such as a historical version's section stored outside the file under its `rules_commitment`. It first recomputes the commitment over `section` and compares it with the verified entry's. A disclosed DEK opens that one section and no other, because each DEK is independent random. |
+| `disclose_version_key(VerifiedEntry<'_>, section, &RecipientKeys)` | **New.** Returns that version's DEK, for selective disclosure. |
+
+**Opening errors** (new `AionError` variants; `AionError` is
+`#[non_exhaustive]`):
+
+- `NotARecipient`: none of the held identities matches a stanza. This
+  reveals nothing, because recipient identities are public in the
+  stanzas.
+- `RulesUnopenable`: a matching stanza exists, but any later step
+  failed: unwrap, `dek_commitment`, AEAD, or framing. This one variant
+  is deliberately opaque about *which* step. The padding check runs
+  only after the AEAD verifies, so there is no padding oracle. A
+  recipient whose own key is listed but who gets `RulesUnopenable`
+  knows the author shipped an undecryptable stanza for them. That is
+  the only party who can know it.
 
 The file holds only the latest section, as in v2. Historical versions
 can be opened only if someone archived their sections. Archival is
@@ -459,15 +519,23 @@ should have been removed from carrying over by default.
 
 #### CLI
 
-- `aion init` / `aion commit` require exactly one of `--public` or
-  one or more `--recipient <x25519-pubkey-file | kms:<provider>:<key>>`.
-  `--no-encryption` becomes an alias for `--public` with a
-  deprecation note.
+- `aion init` requires exactly one of `--public` or one or more
+  `--recipient <x25519-pubkey-file | kms:<provider>:<key>>`.
+- `aion commit` requires exactly one of `--public`, one or more
+  `--recipient …`, or `--keep-recipients`.
+  - `--keep-recipients` fails with a message naming the problem if the
+    previous version was public (there are no recipients to keep), or
+    had any external (`0x02`) or unknown-kind stanza (it cannot be
+    re-wrapped from the file alone).
+- `--no-encryption` becomes an alias for `--public` with a deprecation
+  note.
 - `aion key generate --encryption` creates an X25519 identity in the
   keystore. This is a separate key kind from Ed25519 signing keys.
 - `aion show <FILE> rules --identity <key-id>` decrypts. Without an
   identity, a confidential file reports `RecipientKeyRequired` and
-  exit code 1.
+  exits 1. With an identity that isn't listed, it reports
+  `NotARecipient`; with one that is listed but can't open the stanza,
+  `RulesUnopenable`.
 - `aion verify` is unchanged and key-free.
 
 #### What remains visible
@@ -522,7 +590,7 @@ let rules = open_current_rules(path, &RecipientKeys::x25519(&auditor_sk))?;
 - **Duplicate recipients.** Deduplicated by public key or by
   `(provider_id, key_ref)` before wrapping.
 - **Unknown stanza kinds.** Skipped. If nothing is openable, reading
-  fails with `RecipientKeyRequired`; verification is unaffected.
+  fails with `NotARecipient`; verification is unaffected.
 - **Conflict detection (`conflict.rs`).** It compares `rules_hash` to
   decide whether two branches hold the same rules. In confidential
   mode, equal plaintexts produce different commitments, because the
@@ -630,7 +698,8 @@ Adversaries:
     (key commitment).
   - The author *can* include a stanza that does not open, or that
     wraps a different DEK. Only the affected recipient detects that,
-    as `RecipientKeyRequired`; other parties cannot.
+    as `RulesUnopenable` against a stanza listing their own key;
+    other parties cannot.
   - Copying another author's section fails for recipients, because
     `author_id` is in `ctx`.
   - The author can still sign garbage. Authorship is trusted for
@@ -679,7 +748,8 @@ boundaries. Phase A adds an exception entry, because the existing
   commitment and every hash compared in an accept/reject decision is
   BLAKE3: `rules_commitment`, `dek_commitment`, the version chain, and
   the integrity hash.
-- **How it can fail:** a SHA-256 weakness could at worst cause a
+- **How it can fail:** a SHA-256 weakness could weaken the secrecy of
+  derived keys, which affects confidentiality. It could also cause a
   derived key to be wrong, which shows up as a failed AEAD or HPKE
   open, an opaque `RecipientKeyRequired`. It cannot turn a forgery
   into an accept, because acceptance is decided by Ed25519 signatures
@@ -732,6 +802,16 @@ transport and key-derivation boundary only, gating no comparison.
 - Two stanzas for one recipient identity, even with different `enc`
   or blob bytes ⇒ the parser rejects. A re-wrap to the same recipient
   set yields the same stanza order.
+- `open_rules_section` and `disclose_version_key` accept only a
+  `VerifiedEntry`. A test that tries to build one from raw fields must
+  fail to compile (`trybuild`).
+- `accept_file` store semantics: an identical re-verify accepts; the
+  same version with a different hash ⇒ `version_equivocation`; a lower
+  version ⇒ `version_replay`; an invalid file never advances the store;
+  a store error ⇒ fail closed. A Hegel model test runs against a
+  `HashMap` reference implementation.
+- An identity not listed ⇒ `NotARecipient`. A listed identity with a
+  corrupted stanza ⇒ `RulesUnopenable`.
 - An archived section opened with `open_rules_section` against the
   wrong entry, or with another version's DEK ⇒ rejected.
 - With an `AcceptedVersionStore`: presenting an older
@@ -761,8 +841,12 @@ transport and key-derivation boundary only, gating no comparison.
   Padmé decoder.
 - Per-entry `rules_mode` in `VersionEntry.reserved[0]`, and the header
   flag cross-check.
-- `VerifyPolicy`: `min_format_version`, `require_confidential`
-  (`Head` / `AllVersions`), and the `AcceptedVersionStore` trait.
+- The `VerifiedChain` / `VerifiedEntry` typestate, and
+  `verify_file_chain`.
+- `accept_file` with `AcceptPolicy` (`min_format_version`,
+  `require_confidential` `Head` / `AllVersions`), the mandatory
+  `AcceptedVersionStore` trait (atomic `check_and_advance`), a
+  file-backed store, and `aion accept --state`.
 - The SHA-256 exception entry in `.claude/rules/crypto.md`.
 - `RulesProtection::Public` only. `--public` replaces
   `--no-encryption`.
@@ -892,3 +976,31 @@ transport and key-derivation boundary only, gating no comparison.
   - N7: the `derive_key` argument order is stated.
   - S4: now specifies `Head` versus `AllVersions`, and a
     caller-provided `AcceptedVersionStore`.
+- **2026-10-23, `crypto-auditor`, round 3: BLOCK.** Round 2's N1–N3,
+  N5–N7 and round 1's S1 and S5 were judged resolved. N4 and S4 were
+  partial. Findings and their resolutions:
+  - B1: `open_rules_section` trusted an unverified entry. Every
+    opening function now takes a `VerifiedEntry`, a typestate
+    obtainable only from a verified chain, so there is no raw
+    `file_id` parameter.
+  - S1: the replay store key lacked `file_id`, rejected idempotent
+    re-verification, and had no update or failure rules. It is now
+    keyed `(file_id, author)` and stores `(version, head hash)`:
+    - equal version and hash accepts;
+    - equal version with a different hash rejects as equivocation;
+    - a lower version rejects as rollback;
+    - the store advances only after full verification, through an
+      atomic `check_and_advance`;
+    - a store error fails closed.
+  - S2: replay was undefended by default. Split into a stateless
+    `verify_file` (integrity) and `accept_file` (acceptance), where
+    the store is mandatory.
+  - Notes:
+    - the SHA-256 failure wording now admits the confidentiality
+      impact;
+    - the CLI rules cover `--keep-recipients` after a public version
+      or with unknown stanza kinds;
+    - kind `0x02` inner lengths must sum to `body_len`;
+    - `NotARecipient` and `RulesUnopenable` are now separate;
+    - every signing and verification path is enumerated for the v3
+      message.
