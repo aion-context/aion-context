@@ -111,8 +111,7 @@ impl StringTableBuilder {
     /// assert!(builder.is_empty());
     /// ```
     #[must_use]
-    #[allow(clippy::missing_const_for_fn)] // Vec::new() not const in MSRV 1.70
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self { data: Vec::new() }
     }
 

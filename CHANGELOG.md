@@ -64,6 +64,14 @@ and the project follows [Semantic Versioning].
 
 ### Fixed
 
+- **Declared `rust-version` corrected from 1.70 to 1.85.** The 1.70
+  declaration has been wrong since the RFC-0037 dependency upgrade
+  (#165): `ed25519-dalek` 3.0, `rand` 0.10, `chacha20poly1305` 0.11, and
+  `getrandom` 0.4 (edition 2024) all require 1.85, and 1.84 cannot even
+  parse the dependency graph. A new `msrv (1.85)` CI job builds the
+  library and CLI on 1.85.0. Raising the declaration let clippy apply
+  lints it had suppressed for 1.70, so a few setters became `const fn`
+  and `map_err` logging closures became `inspect_err`.
 - **Constant-time public-key comparison** — `hw_attestation::verify_binding`,
   `manifest::verify_manifest_signature`, and
   `signature_chain::{verify_signature, verify_attestation}` compared pinned

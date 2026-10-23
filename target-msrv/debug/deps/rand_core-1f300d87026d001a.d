@@ -1,0 +1,11 @@
+/tmp/claude-1000/-home-ops-Project-aion-context/5e28bb53-857b-4ecf-b55a-1d84187d3028/scratchpad/msrv/target-msrv/debug/deps/librand_core-1f300d87026d001a.rmeta: /home/ops/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rand_core-0.10.1/src/lib.rs /home/ops/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rand_core-0.10.1/src/block.rs /home/ops/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rand_core-0.10.1/src/utils.rs /home/ops/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rand_core-0.10.1/src/seedable_rng.rs /home/ops/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rand_core-0.10.1/src/unwrap_err.rs /home/ops/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rand_core-0.10.1/src/word.rs /home/ops/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rand_core-0.10.1/src/../README.md
+
+/tmp/claude-1000/-home-ops-Project-aion-context/5e28bb53-857b-4ecf-b55a-1d84187d3028/scratchpad/msrv/target-msrv/debug/deps/rand_core-1f300d87026d001a.d: /home/ops/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rand_core-0.10.1/src/lib.rs /home/ops/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rand_core-0.10.1/src/block.rs /home/ops/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rand_core-0.10.1/src/utils.rs /home/ops/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rand_core-0.10.1/src/seedable_rng.rs /home/ops/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rand_core-0.10.1/src/unwrap_err.rs /home/ops/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rand_core-0.10.1/src/word.rs /home/ops/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rand_core-0.10.1/src/../README.md
+
+/home/ops/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rand_core-0.10.1/src/lib.rs:
+/home/ops/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rand_core-0.10.1/src/block.rs:
+/home/ops/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rand_core-0.10.1/src/utils.rs:
+/home/ops/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rand_core-0.10.1/src/seedable_rng.rs:
+/home/ops/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rand_core-0.10.1/src/unwrap_err.rs:
+/home/ops/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rand_core-0.10.1/src/word.rs:
+/home/ops/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rand_core-0.10.1/src/../README.md:

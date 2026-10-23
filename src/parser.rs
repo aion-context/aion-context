@@ -400,13 +400,12 @@ impl<'a> AionParser<'a> {
                 reason: "Failed to parse header".to_string(),
             }
         })?;
-        header.validate().map_err(|e| {
+        header.validate().inspect_err(|_| {
             tracing::warn!(
                 event = "parser_rejected",
                 bytes = data.len(),
                 reason = "header_invalid",
             );
-            e
         })?;
 
         Ok(Self { data, header })
