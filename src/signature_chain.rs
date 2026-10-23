@@ -279,9 +279,8 @@ pub fn verify_signature(
     let verifying_key = VerifyingKey::from_bytes(&signature.public_key)?;
     verifying_key
         .verify(&message, &signature.signature)
-        .map_err(|e| {
+        .inspect_err(|_| {
             emit_sig_rejected(version.version_number, signer, "bad_signature");
-            e
         })
 }
 
@@ -371,9 +370,8 @@ pub fn verify_attestation(
     let verifying_key = VerifyingKey::from_bytes(&signature.public_key)?;
     verifying_key
         .verify(&message, &signature.signature)
-        .map_err(|e| {
+        .inspect_err(|_| {
             emit_sig_rejected(version.version_number, signer, "bad_attestation");
-            e
         })
 }
 

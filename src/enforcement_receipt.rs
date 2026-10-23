@@ -241,7 +241,7 @@ impl EnforcementReceiptBuilder {
     }
 
     /// Record the enforcement decision.
-    pub fn decision(&mut self, decision: EnforcementDecision) -> &mut Self {
+    pub const fn decision(&mut self, decision: EnforcementDecision) -> &mut Self {
         self.decision = Some(decision);
         self
     }
@@ -264,13 +264,17 @@ impl EnforcementReceiptBuilder {
     }
 
     /// Set the enforcing runtime identity and its receipt version.
-    pub fn runtime(&mut self, runtime_author_id: AuthorId, receipt_version: u64) -> &mut Self {
+    pub const fn runtime(
+        &mut self,
+        runtime_author_id: AuthorId,
+        receipt_version: u64,
+    ) -> &mut Self {
         self.runtime = Some((runtime_author_id, receipt_version));
         self
     }
 
     /// Set the 16-byte anti-fabrication nonce.
-    pub fn nonce(&mut self, nonce: [u8; 16]) -> &mut Self {
+    pub const fn nonce(&mut self, nonce: [u8; 16]) -> &mut Self {
         self.nonce = Some(nonce);
         self
     }

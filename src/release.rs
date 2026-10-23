@@ -204,7 +204,7 @@ impl ReleaseBuilder {
     }
 
     /// aion version number at seal time.
-    pub fn current_aion_version(&mut self, v: u64) -> &mut Self {
+    pub const fn current_aion_version(&mut self, v: u64) -> &mut Self {
         self.current_aion_version = v;
         self
     }

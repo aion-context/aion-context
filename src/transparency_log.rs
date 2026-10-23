@@ -310,7 +310,7 @@ impl TransparencyLog {
     }
 
     /// Register the operator master key used to verify STHs.
-    pub fn set_operator(&mut self, master_key: VerifyingKey) {
+    pub const fn set_operator(&mut self, master_key: VerifyingKey) {
         self.operator_master = Some(master_key);
     }
 
