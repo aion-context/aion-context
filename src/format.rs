@@ -208,19 +208,63 @@ pub enum RulesProtection {
 ///
 /// `#[non_exhaustive]`: RFC-0039 Phase C adds external key wrappers, and a
 /// later X-Wing revision would add a variant.
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Clone)]
 #[non_exhaustive]
 pub enum Recipient {
     /// An X25519 public key (stanza kind `0x01`). Not post-quantum.
     X25519([u8; 32]),
     /// An X-Wing (ML-KEM-768 + X25519) public key (stanza kind `0x03`).
     XWing(Box<[u8; 1216]>),
+    /// An external key service such as a KMS (stanza kind `0x02`). Equal
+    /// to another external recipient when provider and key reference
+    /// match. Whether it is post-quantum depends on the provider.
+    External(std::sync::Arc<dyn crate::confidential::DekWrapper>),
 }
 
 impl std::fmt::Debug for Recipient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let prefix = self.public_key().get(..8).unwrap_or_default();
-        write!(f, "Recipient::{:?}({}…)", self.kem(), hex::encode(prefix))
+        match self {
+            Self::External(wrapper) => write!(
+                f,
+                "Recipient::External({}:{})",
+                wrapper.provider_id(),
+                wrapper.key_ref()
+            ),
+            Self::X25519(_) | Self::XWing(_) => {
+                let key = self.public_key().unwrap_or_default();
+                let prefix = key.get(..8).unwrap_or_default();
+                write!(f, "Recipient::{:?}({}…)", self.kem(), hex::encode(prefix))
+            }
+        }
+    }
+}
+
+impl PartialEq for Recipient {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::External(a), Self::External(b)) => {
+                a.provider_id() == b.provider_id() && a.key_ref() == b.key_ref()
+            }
+            (Self::X25519(a), Self::X25519(b)) => a == b,
+            (Self::XWing(a), Self::XWing(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for Recipient {}
+
+impl std::hash::Hash for Recipient {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::mem::discriminant(self).hash(state);
+        match self {
+            Self::External(wrapper) => {
+                wrapper.provider_id().hash(state);
+                wrapper.key_ref().hash(state);
+            }
+            Self::X25519(key) => key.hash(state),
+            Self::XWing(key) => key.hash(state),
+        }
     }
 }
 
@@ -251,21 +295,30 @@ impl Recipient {
         }
     }
 
-    /// The recipient's KEM.
+    /// An external key-service recipient (RFC-0039 Phase C).
     #[must_use]
-    pub const fn kem(&self) -> crate::confidential::EncryptionKem {
+    pub fn external(wrapper: std::sync::Arc<dyn crate::confidential::DekWrapper>) -> Self {
+        Self::External(wrapper)
+    }
+
+    /// The recipient's KEM, or `None` for an external key service.
+    #[must_use]
+    pub const fn kem(&self) -> Option<crate::confidential::EncryptionKem> {
         match self {
-            Self::X25519(_) => crate::confidential::EncryptionKem::X25519,
-            Self::XWing(_) => crate::confidential::EncryptionKem::XWing,
+            Self::X25519(_) => Some(crate::confidential::EncryptionKem::X25519),
+            Self::XWing(_) => Some(crate::confidential::EncryptionKem::XWing),
+            Self::External(_) => None,
         }
     }
 
-    /// The recipient's public key bytes.
+    /// The recipient's public key bytes, or `None` for an external key
+    /// service.
     #[must_use]
-    pub fn public_key(&self) -> &[u8] {
+    pub fn public_key(&self) -> Option<&[u8]> {
         match self {
-            Self::X25519(key) => key,
-            Self::XWing(key) => key.as_slice(),
+            Self::X25519(key) => Some(key),
+            Self::XWing(key) => Some(key.as_slice()),
+            Self::External(_) => None,
         }
     }
 }
@@ -275,6 +328,10 @@ const RECIPIENT_TEXT_PREFIX: &str = "aion-recipient:";
 
 /// The recipient's text form, `aion-recipient:<kem>:<lowercase hex key>`,
 /// as written to a recipient file and read by [`Recipient::from_str`].
+///
+/// An external recipient has no portable text form: it needs a live
+/// provider handle. It displays as `aion-external:<provider>:<key_ref>` for
+/// logs, which [`Recipient::from_str`] rejects.
 ///
 /// # Example
 ///
@@ -290,12 +347,27 @@ const RECIPIENT_TEXT_PREFIX: &str = "aion-recipient:";
 /// ```
 impl std::fmt::Display for Recipient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{RECIPIENT_TEXT_PREFIX}{}:{}",
-            self.kem(),
-            hex::encode(self.public_key())
-        )
+        use crate::confidential::EncryptionKem;
+        match self {
+            Self::X25519(key) => write!(
+                f,
+                "{RECIPIENT_TEXT_PREFIX}{}:{}",
+                EncryptionKem::X25519,
+                hex::encode(key)
+            ),
+            Self::XWing(key) => write!(
+                f,
+                "{RECIPIENT_TEXT_PREFIX}{}:{}",
+                EncryptionKem::XWing,
+                hex::encode(key.as_slice())
+            ),
+            Self::External(wrapper) => write!(
+                f,
+                "aion-external:{}:{}",
+                wrapper.provider_id(),
+                wrapper.key_ref()
+            ),
+        }
     }
 }
 

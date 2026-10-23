@@ -902,9 +902,12 @@ fn confidential_to(recipients: Vec<Recipient>) -> RulesProtection {
         "   Rules: confidential to {} recipient(s); verification stays key-free",
         recipients.len()
     );
-    // TODO(rfc-0039-phase-c): count classical external wrappers once they exist.
-    let xwing = recipients.iter().any(|r| r.kem() == EncryptionKem::XWing);
-    let classical = recipients.iter().any(|r| r.kem() != EncryptionKem::XWing);
+    let xwing = recipients
+        .iter()
+        .any(|r| r.kem() == Some(EncryptionKem::XWing));
+    let classical = recipients
+        .iter()
+        .any(|r| r.kem() == Some(EncryptionKem::X25519));
     if xwing && classical {
         eprintln!(
             "note: this version mixes X-Wing and non-post-quantum recipients; it is only as \

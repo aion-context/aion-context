@@ -48,7 +48,7 @@ use std::path::Path;
 
 use zeroize::Zeroizing;
 
-use crate::confidential::{EncryptionIdentity, VersionKey};
+use crate::confidential::{DekUnwrapper, EncryptionIdentity, VersionKey};
 use crate::envelope::{Envelope, StanzaRecipient};
 use crate::format::{
     rules_commitment, unframe_rules, FileContext, FormatVersion, Recipient, RulesMode,
@@ -342,10 +342,20 @@ impl VerifiedEntry<'_> {
 /// assert!(RecipientKeys::none().is_empty());
 /// # Ok::<(), aion_context::AionError>(())
 /// ```
-#[derive(Debug, Default, Clone)]
+#[derive(Default, Clone)]
 #[non_exhaustive]
 pub struct RecipientKeys {
     identities: Vec<EncryptionIdentity>,
+    unwrappers: Vec<std::sync::Arc<dyn DekUnwrapper>>,
+}
+
+impl std::fmt::Debug for RecipientKeys {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RecipientKeys")
+            .field("identities", &self.identities)
+            .field("unwrappers", &self.unwrappers.len())
+            .finish()
+    }
 }
 
 impl RecipientKeys {
@@ -354,13 +364,25 @@ impl RecipientKeys {
     pub const fn none() -> Self {
         Self {
             identities: Vec::new(),
+            unwrappers: Vec::new(),
         }
     }
 
     /// Hold `identities`; opening tries each one listed by the section.
     #[must_use]
     pub const fn new(identities: Vec<EncryptionIdentity>) -> Self {
-        Self { identities }
+        Self {
+            identities,
+            unwrappers: Vec::new(),
+        }
+    }
+
+    /// Add an external key-service unwrapper (RFC-0039 Phase C). Opening
+    /// asks it about every external stanza it [`DekUnwrapper::accepts`].
+    #[must_use]
+    pub fn with_unwrapper(mut self, unwrapper: std::sync::Arc<dyn DekUnwrapper>) -> Self {
+        self.unwrappers.push(unwrapper);
+        self
     }
 
     /// Add one more identity.
@@ -373,7 +395,7 @@ impl RecipientKeys {
     /// Whether no identity is held.
     #[must_use]
     pub const fn is_empty(&self) -> bool {
-        self.identities.is_empty()
+        self.identities.is_empty() && self.unwrappers.is_empty()
     }
 }
 
@@ -523,9 +545,13 @@ fn open_confidential(
     if keys.is_empty() {
         return Err(AionError::RecipientKeyRequired);
     }
-    let framed =
-        crate::confidential::open_section(&envelope, &keys.identities, &binding_context(entry))
-            .inspect_err(|e| log_unopened(entry, e))?;
+    let framed = crate::confidential::open_section(
+        &envelope,
+        &keys.identities,
+        &keys.unwrappers,
+        &binding_context(entry),
+    )
+    .inspect_err(|e| log_unopened(entry, e))?;
     unframed_secret(&framed).inspect_err(|e| log_unopened(entry, e))
 }
 
@@ -588,9 +614,14 @@ pub fn disclose_version_key(
     if keys.is_empty() {
         return Err(AionError::RecipientKeyRequired);
     }
-    crate::confidential::unwrap_for(&envelope, &keys.identities, &binding_context(entry))
-        .map(VersionKey::from_dek)
-        .inspect_err(|e| log_unopened(entry, e))
+    crate::confidential::unwrap_for(
+        &envelope,
+        &keys.identities,
+        &keys.unwrappers,
+        &binding_context(entry),
+    )
+    .map(VersionKey::from_dek)
+    .inspect_err(|e| log_unopened(entry, e))
 }
 
 /// Open one confidential version's rules with a disclosed [`VersionKey`]
@@ -970,7 +1001,7 @@ mod tests {
         version: VersionNumber,
     ) -> Vec<u8> {
         let ctx = crate::confidential::binding_context(file_id, author, version);
-        let recipients = [(reader.kind(), reader.public_key())];
+        let recipients = [reader.recipient()];
         ok(crate::confidential::seal_section(framed, &recipients, &ctx))
     }
 
@@ -1096,6 +1127,101 @@ mod tests {
             ok(open_current_rules(&chain, &RecipientKeys::from(&reader))).as_slice(),
             b"v2"
         );
+    }
+
+    /// RFC-0039 Phase C: a KMS recipient through the public API.
+    #[test]
+    fn a_kms_recipient_reads_through_recipient_keys() {
+        use crate::confidential::DekUnwrapper;
+        let dir = ok(TempDir::new());
+        let path = dir.path().join("kms.aion");
+        let key = ok(SigningKey::generate());
+        let author = AuthorId::new(90_030);
+        let vault = std::sync::Arc::new(crate::confidential::tests::LocalKms {
+            key: [0x33; 32],
+            key_ref: "projects/p/keys/policy",
+        });
+        let reader = identity(EncryptionKem::XWing);
+        let recipients = vec![
+            Recipient::external(vault.clone()),
+            Recipient::external(vault.clone()),
+            reader.recipient(),
+        ];
+        let registry = grow_confidential(&path, &key, author, &[(b"kms rules", recipients)]);
+        let chain = ok(verify_file_chain(&path, &registry));
+
+        let unwrapper: std::sync::Arc<dyn DekUnwrapper> = vault;
+        let keys = RecipientKeys::none().with_unwrapper(unwrapper);
+        assert!(!keys.is_empty());
+        assert_eq!(
+            ok(open_current_rules(&chain, &keys)).as_slice(),
+            b"kms rules"
+        );
+
+        let envelope = ok(Envelope::parse(&chain.head_section));
+        assert_eq!(
+            envelope.stanzas().len(),
+            2,
+            "the repeated KMS recipient is written once"
+        );
+        assert!(matches!(
+            chain.head_recipients(),
+            Err(AionError::InvalidFormat { .. })
+        ));
+    }
+
+    /// A provider failure, or two different handles naming the same key,
+    /// refuses the commit and leaves the file byte-identical.
+    #[test]
+    fn external_wrapper_failures_leave_the_file_unchanged() {
+        struct Failing;
+        impl crate::confidential::DekWrapper for Failing {
+            #[allow(clippy::unnecessary_literal_bound)] // the trait fixes the signature
+            fn provider_id(&self) -> &str {
+                "local-kms"
+            }
+            #[allow(clippy::unnecessary_literal_bound)] // the trait fixes the signature
+            fn key_ref(&self) -> &str {
+                "down"
+            }
+            fn wrap(&self, _dek: &[u8; 32], _context: &[u8]) -> Result<Vec<u8>> {
+                Err(AionError::EncryptionFailed {
+                    reason: "kms unavailable".to_string(),
+                })
+            }
+        }
+        let dir = ok(TempDir::new());
+        let path = dir.path().join("unchanged.aion");
+        let key = ok(SigningKey::generate());
+        let author = AuthorId::new(90_031);
+        let reader = identity(EncryptionKem::X25519);
+        let registry = grow_confidential(&path, &key, author, &[(b"v1", vec![reader.recipient()])]);
+        let before = ok(std::fs::read(&path));
+
+        let twin = |key_ref: &'static str| {
+            std::sync::Arc::new(crate::confidential::tests::LocalKms {
+                key: [9; 32],
+                key_ref,
+            })
+        };
+        let attempts = [
+            vec![Recipient::external(std::sync::Arc::new(Failing))],
+            vec![
+                Recipient::external(twin("same")),
+                Recipient::external(twin("same")),
+            ],
+        ];
+        for recipients in attempts {
+            let commit = CommitOptions {
+                author_id: author,
+                signing_key: &key,
+                message: "v2",
+                timestamp: None,
+                protection: RulesProtection::Confidential { recipients },
+            };
+            assert!(commit_version(&path, b"v2", &commit, &registry).is_err());
+            assert_eq!(ok(std::fs::read(&path)), before);
+        }
     }
 
     #[test]

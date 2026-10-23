@@ -1178,6 +1178,24 @@ Dependencies (B2):
 
 - The `DekWrapper` / `DekUnwrapper` traits and stanza kind `0x02`,
   plus `aion migrate` with a `MigratedFrom` audit record.
+- *C1 implementation note (external wrappers):*
+  - The traits are `Send + Sync` and live in `confidential`.
+    `DekUnwrapper` gains `accepts(&ExternalStanza)`, so a reader can tell
+    `NotARecipient` (no unwrapper accepts any stanza) from
+    `RulesUnopenable` (one accepted but failed).
+  - `Recipient::External(Arc<dyn DekWrapper>)` compares and hashes by
+    `(provider_id, key_ref)`. `Recipient::kem()` and `public_key()` return
+    `Option`, `None` for external recipients. An external recipient
+    has no parseable text form: it needs a live provider handle.
+  - **Timeouts are the provider's.** The crate is synchronous and cannot
+    preempt a blocked call, the same as RFC-0038's `VersionSigner`. The
+    core bounds what comes back (provider ID 1–64 bytes, key reference
+    1–1024, blob 1–4096) and always checks the unwrapped DEK against
+    `dek_commitment` in constant time.
+  - **Library only.** No provider adapter ships in the crate, so the CLI
+    does not take `kms:` recipients yet; `--keep-recipients` refuses a
+    head with an external stanza, as specified.
+- *C2 (`aion migrate`) follows in a later change.*
 
 ### Phase D (conditional on Unresolved Question 3)
 
