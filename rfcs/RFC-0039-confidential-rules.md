@@ -1,9 +1,9 @@
 # RFC 0039: Confidential Rules (Format v3)
 
 - **Author:** copyleftdev
-- **Status:** ACCEPTED (2026-10-23). Unresolved Questions 1 and 8 must be decided before Phase B, and Question 3 before Phase D.
+- **Status:** ACCEPTED (2026-10-23). Phase A IMPLEMENTED (2.0.0). Questions 1 and 8 decided 2026-10-23 (native HPKE envelope; X25519 and X-Wing stanzas, X-Wing by default). Question 3 must be decided before Phase D.
 - **Created:** 2026-10-23
-- **Updated:** 2026-10-23 (five crypto-review rounds; see Review history)
+- **Updated:** 2026-10-23 (five crypto-review rounds; Phase B decisions; see Review history)
 - **Depends on:** RFC-0002 (file format), RFC-0003 (cryptography),
   RFC-0004 (key management), RFC-0005 (signature chain), RFC-0012
   (versioning), RFC-0028 (key rotation and revocation), RFC-0038
@@ -221,8 +221,9 @@ stanza  := kind: u8
 
 Parsing limits and canonical form:
 
-- The total size of all stanzas is capped at 64 KiB. This is checked
-  before any HPKE or provider work.
+- The total size of all stanzas is capped at 160 KiB. That fits 64
+  X-Wing stanzas (2,387 bytes each with their headers). The cap is
+  checked before any HPKE or provider work.
 - Stanzas must be sorted by `(kind, body)`, and duplicates are
   rejected. Writers produce exactly one encoding for a given recipient
   set, so a reordered or duplicated set is a different, unsigned
@@ -282,27 +283,41 @@ recipients and selective-disclosure parties alike.
 
 | kind | Name | Body |
 |---|---|---|
-| `0x01` | HPKE X25519 recipient | `recipient_pk[32] ‖ enc[32] ‖ wrapped_dek[48]` |
+| `0x01` | HPKE X25519 recipient | `recipient_pk[32] ‖ enc[32] ‖ wrapped_dek[48]`. `body_len` must be exactly 112. |
 | `0x02` | External wrapper | `provider_id_len u8 ‖ provider_id ‖ key_ref_len u16 ‖ key_ref ‖ blob_len u16 ‖ blob`. The inner lengths plus their 5 length bytes must sum exactly to `body_len`; trailing or missing bytes reject. |
-| `0x03`–`0xFF` | Reserved | Readers skip unknown kinds. A reader that holds no identity matching any stanza fails with `NotARecipient`. |
+| `0x03` | HPKE X-Wing recipient | `recipient_pk[1216] ‖ enc[1120] ‖ wrapped_dek[48]`. `body_len` must be exactly 2,384. |
+| `0x04`–`0xFF` | Reserved | Readers skip unknown kinds. A reader that holds no identity matching any stanza fails with `NotARecipient`. |
 
 **Stanza ordering and identity.**
 
 - Stanzas are sorted by bytewise-lexicographic comparison of
   `kind ‖ body`.
+- The parser checks every known kind's exact body length or inner
+  length sum before any KEM, HPKE, or provider work. A wrong length
+  rejects the whole envelope.
 - A section with two stanzas for the same **recipient identity** is
-  rejected. The identity is `recipient_pk` for kind `0x01`, and
-  `(provider_id, key_ref)` for kind `0x02`. Different `enc` or blob
-  bytes do not make them different recipients.
+  rejected. The identity is `(kind, recipient_pk)` for kinds `0x01`
+  and `0x03`, `(0x02, provider_id, key_ref)` for kind `0x02`, and
+  `(kind, body)` for an unknown kind. Different `enc` or blob bytes do
+  not make them different recipients. Identities of different kinds
+  never collide: the X25519 half inside an X-Wing public key is
+  derived from the X-Wing seed and is not a usable X25519 identity on
+  its own.
 - Sorting is deterministic even though HPKE `enc` is random per seal.
-  For kind `0x01` the identity is the body prefix, and kind `0x02`
-  bodies are length-prefixed. So a re-wrap to the same recipient set
+  For kinds `0x01` and `0x03` the identity is the body prefix, and
+  kind `0x02` bodies are length-prefixed. So a re-wrap to the same recipient set
   always yields the same order.
 
-**HPKE (kind `0x01`).**
+**HPKE (kinds `0x01` and `0x03`).**
 
-- **Mode:** RFC 9180 base mode, with DHKEM(X25519, HKDF-SHA256),
-  HKDF-SHA256, and ChaCha20-Poly1305.
+- **Mode:** RFC 9180 base mode, with HKDF-SHA256 and
+  ChaCha20-Poly1305. The KEM depends on the kind:
+  - `0x01`: DHKEM(X25519, HKDF-SHA256), KEM ID `0x0020`.
+  - `0x03`: X-Wing (ML-KEM-768 + X25519), KEM ID `0x647a`, as defined
+    by draft-ietf-hpke-pq-03 over X-Wing draft-06 and implemented by
+    `hpke` 0.14.1 (`x-wing` 0.1.1). The hybrid stays confidential while
+    either ML-KEM-768 or X25519 holds, which defends files kept for
+    years against harvest-now-decrypt-later.
 - **Inputs:** `info = b"AION_V3_DEK_WRAP_V1\0" ‖ ctx`, where
   `ctx = file_id ‖ author_id ‖ version`, and `aad = dek_commitment`.
 - **Why these inputs:**
@@ -311,8 +326,15 @@ recipients and selective-disclosure parties alike.
   - Binding `aad` stops it being paired with a different DEK
     commitment.
   - `recipient_pk` and the suite are deliberately left out of `info`.
-    DHKEM already includes the recipient public key in its KEM
-    context, and HPKE's key schedule includes the suite ID.
+    HPKE's key schedule binds the suite ID (`kem_id ‖ kdf_id ‖
+    aead_id`), so kinds `0x01` and `0x03` derive disjoint secrets.
+    The recipient key is bound per KEM:
+    - DHKEM(X25519) puts the recipient public key in its KEM context.
+    - X-Wing has no KEM context. Its combiner binds the X25519
+      ciphertext and public key and both shared secrets, and ML-KEM's
+      Fujisaki-Okamoto transform binds the ML-KEM ciphertext to the
+      ML-KEM key. A stanza presented to the wrong recipient fails to
+      open.
 - **No sender authentication:** base mode does not authenticate the
   sender. Authorship comes from the version signature, and `author_id`
   in `ctx` is what ties the two together.
@@ -320,6 +342,36 @@ recipients and selective-disclosure parties alike.
   then re-wrap the next version for the same recipient set without
   out-of-band key distribution. The cost is that recipient keys are
   visible; see the Unresolved Questions.
+- **Encryption identities.** An identity record is `(kind, seed,
+  recipient_pk)`:
+  - `seed` is 32 bytes drawn from the OS RNG for that identity alone,
+    held in `Zeroizing`, never logged, and never serialized outside
+    the keystore's encrypted blob.
+  - Kind `0x01`: the seed is the X25519 secret key, loaded with
+    `hpke`'s `PrivateKey::from_bytes`.
+  - Kind `0x03`: the seed is the X-Wing decapsulation-key seed, loaded
+    raw with `hpke`'s `PrivateKey::from_bytes`, which expands it to
+    ML-KEM-768 and X25519 keys. `derive_keypair` is not used; it
+    applies an extra labeled derivation and would yield a different
+    key.
+  - **One seed, one kind.** A seed is never used for a second kind,
+    for signing, or as input to any other derivation. Using the same
+    32 bytes as both an X25519 key and an X-Wing seed would be
+    cross-protocol key reuse.
+  - `recipient_pk` is cached next to the seed, so listing or matching
+    identities never repeats an ML-KEM key generation.
+- **Draft pinning.** X-Wing and its HPKE binding are IETF drafts. The
+  crate pins `hpke = "=0.14.1"`. `x-wing` 0.1.x and `ml-kem` 0.3.x are
+  held by the committed `Cargo.lock`. A known-answer test fixes the
+  exact stanza bytes produced from a fixed seed and fixed
+  encapsulation randomness: `hpke`'s seal takes the caller's
+  `CryptoRng`, and the test passes a deterministic test-only RNG. A dependency update that changes those
+  bytes fails the test. A later, incompatible X-Wing or HPKE-PQ
+  revision gets a **new stanza kind**; kind `0x03` keeps meaning
+  exactly this encoding forever, so existing files stay openable.
+  A RUSTSEC fix in any of these crates is taken as a patch bump that
+  must still pass the known-answer test. A fix that changes the wire
+  encoding is a new kind, not an in-place change.
 
 **External wrapper (kind `0x02`).** This mirrors RFC-0038. A provider
 implements:
@@ -593,13 +645,16 @@ confidential section returns `RecipientKeyRequired`.
 `protection: RulesProtection<'a>` field:
 
 ```rust
-pub enum RulesProtection<'a> {
+#[non_exhaustive]
+pub enum RulesProtection {
     Public,
-    Confidential { recipients: &'a [Recipient<'a>] },   // non-empty
+    Confidential { recipients: Vec<Recipient> },   // non-empty
 }
-pub enum Recipient<'a> {
+#[non_exhaustive]
+pub enum Recipient {
     X25519([u8; 32]),
-    External(&'a dyn DekWrapper),
+    XWing(Box<[u8; 1216]>),
+    External(Arc<dyn DekWrapper>),   // Phase C
 }
 ```
 
@@ -646,8 +701,14 @@ should have been removed from carrying over by default.
     re-wrapped from the file alone).
 - `--no-encryption` becomes an alias for `--public` with a deprecation
   note.
-- `aion key generate --encryption` creates an X25519 identity in the
-  keystore. This is a separate key kind from Ed25519 signing keys.
+- `aion key generate --encryption [--kem xwing|x25519]` creates an
+  encryption identity in the keystore. **X-Wing is the default.** This
+  is a separate key kind from Ed25519 signing keys. The exported
+  public-key file names its KEM, so `--recipient <file>` needs no
+  separate kind flag.
+- Committing with any X25519 recipient or any external wrapper next
+  to an X-Wing recipient prints a note: the version is only as
+  post-quantum-safe as its weakest stanza.
 - `aion show <FILE> rules --identity <key-id>` decrypts. Without an
   identity, a confidential file reports `RecipientKeyRequired` and
   exits 1. With an identity that isn't listed, it reports
@@ -659,7 +720,9 @@ should have been removed from carrying over by default.
 
 In confidential mode an observer still sees:
 
-- the recipient public keys and the count of external wrappers;
+- the recipient public keys, each stanza's kind (so whether a
+  recipient uses X25519 or X-Wing), and the count of external
+  wrappers;
 - payload length to within the Padmé bucket;
 - commit messages, audit entries, author IDs, timestamps, and the
   version count;
@@ -687,17 +750,20 @@ converted in place.
 ### Examples
 
 ```rust
-let recipients = [Recipient::X25519(auditor_pk), Recipient::External(&kms)];
+let recipients = vec![
+    Recipient::XWing(auditor.public_key()),
+    Recipient::External(kms.clone()),
+];
 init_file(path, rules, &InitOptions {
     author_id, signing_key: &key, message: "v1", timestamp: None,
-    protection: RulesProtection::Confidential { recipients: &recipients },
+    protection: RulesProtection::Confidential { recipients },
 })?;
 
 let report = verify_file(path, &registry)?;          // no key needed
 assert!(report.is_valid);
 
 let chain = accept_file(path, &registry, &policy, &store)?;   // or verify_file_chain
-let rules = open_current_rules(&chain, &RecipientKeys::x25519(&auditor_sk))?;
+let rules = open_current_rules(&chain, &RecipientKeys::from(&auditor))?;   // kind comes from the identity
 ```
 
 ### Edge Cases
@@ -805,7 +871,10 @@ Adversaries:
 - **Against (a):** confidentiality of the framed plaintext under
   ChaCha20-Poly1305 with a 256-bit per-version key. There is no
   offline guess confirmation, because the commitments are keyed or
-  computed over ciphertext.
+  computed over ciphertext. Against a future quantum adversary
+  holding today's ciphertext, the DEK stays secret only if **every**
+  stanza is X-Wing (kind `0x03`): one X25519 stanza wraps the same DEK
+  under a classical-only KEM.
 - **Against (b):** any change to the rules section, a stanza, or the
   envelope changes `rules_commitment` and fails key-free
   verification. So does moving a signed entry into another file or
@@ -832,6 +901,15 @@ Adversaries:
 
 - Metadata confidentiality (see [What remains visible](#what-remains-visible)).
 - Forward secrecy, or revocation of past access.
+- Post-quantum confidentiality for a version that has any X25519
+  (`0x01`) stanza, or any external (`0x02`) stanza whose provider is
+  classical.
+- Post-quantum integrity. Signatures stay Ed25519 unless RFC-0027
+  hybrid signatures are used.
+- An independent audit of the KEM code. `ml-kem` and `x-wing` state
+  that they have not been independently audited. The hybrid limits
+  the damage: a flaw in one half still leaves the other, but it does
+  not remove the risk.
 - Protection of plaintext once a recipient has decrypted it.
 
 ### Attack Vectors to Test
@@ -853,7 +931,7 @@ Adversaries:
   must surface as the same `RulesUnopenable`. `NotARecipient` is
   distinct by design, because recipient identities are public.
 
-### SHA-256 usage (crypto-rule exception)
+### SHA-256 and SHA-3 usage (crypto-rule exception)
 
 `.claude/rules/crypto.md` allows non-BLAKE3 hashes only at named
 boundaries. Phase A adds an exception entry, because the existing
@@ -863,13 +941,18 @@ boundaries. Phase A adds an exception entry, because the existing
   HKDF-SHA256 (v3 `K_enc`, and the existing v2 rules-key derivation in
   `operations::{encrypt_rules, decrypt_rules}`) and
   inside HPKE's DHKEM(X25519, HKDF-SHA256) and HKDF-SHA256 KDF.
+- **SHA-3 (Phase B):** SHA3-256, SHAKE-128/256 and TurboSHAKE appear
+  only inside ML-KEM-768 and the X-Wing KEM (`ml-kem`, `x-wing`, and
+  `hpke`'s X-Wing binding), where the standards mandate them. The same
+  rules apply: they derive keys and shared secrets only, and no SHA-3
+  output is stored, signed, or compared by aion-context.
 - **Key derivation only:** it derives keys and nothing else. No
   SHA-256 output is ever stored, signed, or compared. Every
   commitment and every hash compared in an accept/reject decision is
   BLAKE3: `rules_commitment`, `dek_commitment`, the version chain, and
   the integrity hash.
-- **How it can fail:** a SHA-256 weakness could weaken the secrecy of
-  derived keys, which affects confidentiality. It could also cause a
+- **How it can fail:** a SHA-256 or SHA-3 weakness could weaken the
+  secrecy of derived keys, which affects confidentiality. It could also cause a
   derived key to be wrong, which shows up as a failed AEAD or HPKE
   open, an opaque `RulesUnopenable`. It cannot turn a forgery
   into an accept, because acceptance is decided by Ed25519 signatures
@@ -882,21 +965,23 @@ transport and key-derivation boundary only, gating no comparison.
 
 - **Verify:** one BLAKE3 pass over the rules section. Cheaper than
   the 1.0.1 decrypt-and-hash.
-- **Commit:** one DEK, one AEAD pass, and one HPKE seal per X25519
-  recipient (dominated by one X25519 scalar multiplication each; to
-  be benchmarked in `benches/crypto_benchmarks.rs`), plus one
-  provider call per external wrapper.
+- **Commit:** one DEK, one AEAD pass, and one HPKE seal per recipient:
+  an X25519 scalar multiplication for kind `0x01`, and an ML-KEM-768
+  encapsulation plus an X25519 multiplication for kind `0x03` (to be
+  benchmarked in `benches/crypto_benchmarks.rs`). Plus one provider
+  call per external wrapper.
 - **Space:** 79 bytes of envelope overhead (magic, suite, DEK
   commitment, stanza count, nonce, length, tag), plus 8 bytes of
-  framing, plus 115 bytes per X25519 stanza, plus Padmé padding
-  (≤ about 12%).
+  framing, plus 115 bytes per X25519 stanza or 2,387 bytes per
+  X-Wing stanza, plus Padmé padding (≤ about 12%).
 
 ## Testing Strategy
 
 ### Property-Based Tests (Hegel, Tier-2 rows to add)
 
 - Public and confidential seal → `verify_file` (key-free) → `open`
-  round-trip, for any rules and 1–8 recipients.
+  round-trip, for any rules and 1–8 recipients of either KEM kind,
+  mixed.
 - Any single-byte change anywhere in the rules section ⇒ `verify_file`
   rejects.
 - Every recipient decrypts identical bytes. Forcing a different DEK
@@ -938,7 +1023,12 @@ transport and key-derivation boundary only, gating no comparison.
 - The same version re-signed with a different `rules_mode` ⇒ a
   different v3 version hash ⇒ `Equivocation`.
 - An identity not listed ⇒ `NotARecipient`. A listed identity with a
-  corrupted stanza ⇒ `RulesUnopenable`.
+  corrupted stanza ⇒ `RulesUnopenable`. That includes a corrupted
+  X-Wing `enc` (ML-KEM's implicit rejection yields a pseudorandom
+  secret, so the failure surfaces at the AEAD) and a corrupted X25519
+  `enc`: both must give the same `RulesUnopenable`.
+- A `0x01` or `0x03` stanza of the wrong body length ⇒ the envelope
+  parser rejects before any KEM call.
 - An archived section opened with `open_rules_section` against the
   wrong entry, or with another version's DEK ⇒ rejected.
 - Store: after accepting a multi-author chain at v5, presenting its v3
@@ -950,8 +1040,11 @@ transport and key-derivation boundary only, gating no comparison.
 
 ### Unit and Known-Answer Tests
 
-- HPKE RFC 9180 vectors for the chosen suite, via the crate's own
-  vectors.
+- HPKE RFC 9180 vectors for both KEMs, via the crate's own vectors.
+- A golden stanza per kind: fixed recipient seed, fixed DEK, fixed
+  `ctx`, and fixed encapsulation randomness (test-only RNG) produce
+  exact bytes. This pins the X-Wing draft encoding (see Draft
+  pinning).
 - Golden v3 files, public and confidential, checked into
   `tests/fixtures/`.
 
@@ -992,25 +1085,46 @@ transport and key-derivation boundary only, gating no comparison.
   in `fuzz/seeds/fuzz_verify_chain/`. Passing that directory to
   `fuzz_file_parser` as an extra corpus covers v3 headers there too.
 
-### Phase B: Confidential mode with X25519 recipients
+### Phase B: Confidential mode with X25519 and X-Wing recipients
 
-- The envelope, HPKE stanzas, keystore X25519 key kind, and CLI
-  `--recipient` / `--identity`.
-- **New dependency `hpke` 0.14.x** (MIT/Apache-2.0), with only the
-  `x25519`, `chacha`, and `hkdfsha2` features enabled.
-  - Those features pull in `x25519-dalek` 3.0 (BSD-3-Clause), `hkdf`
-    0.13, and `sha2` 0.11. All are on the allowlist.
-  - The crate itself is on `hkdf` 0.12 and `sha2` 0.10. Phase B either
+Four PRs, each reviewed by `crypto-auditor` and `api-reviewer`:
+
+- **B1, envelope codec.** Parse and serialize the envelope and
+  stanzas with every bound, canonical order, and identity
+  de-duplication above. No new dependency. A `fuzz_confidential_envelope`
+  target and Tier-1 parser properties.
+- **B2, key schedule and stanzas.** DEK, `K_enc`, `dek_commitment`, the
+  content AEAD, and HPKE seal/open for kinds `0x01` and `0x03`, with
+  the known-answer tests above.
+- **B3, library read and write.** `RulesProtection::Confidential`,
+  `Recipient`, `RecipientKeys`, the `NotARecipient` /
+  `RulesUnopenable` split, `open_current_rules` /
+  `open_rules_section` for confidential sections, and
+  `disclose_version_key`.
+- **B4, keystore and CLI.** The encryption-identity key kind (X-Wing
+  default), `aion key generate --encryption`, `--recipient`,
+  `--keep-recipients`, and `--identity`.
+
+Dependencies (B2):
+
+- **`hpke = "=0.14.1"`** (MIT/Apache-2.0), with default features off
+  and only `alloc`, `x25519`, `mlkem`, `chacha`, and `hkdfsha2`
+  enabled. Randomness comes from the crate's existing OS RNG path, not
+  `hpke`'s `getrandom` feature.
+  - These pull in `x25519-dalek` 3.0 (BSD-3-Clause), `ml-kem` 0.3,
+    `x-wing` 0.1, `sha3` 0.12, `shake` 0.1, `turboshake` 0.7, `hkdf`
+    0.13 and `sha2` 0.11. All are RustCrypto or dalek crates on the
+    license allowlist; the exact closure is in the B2 SBOM diff.
+  - The crate itself is on `hkdf` 0.12 and `sha2` 0.10. B2 either
     accepts duplicate versions or bumps ours, and a crypto-dependency
     major bump goes through the full fuzz suite.
   - Before merge: `cargo deny`, `cargo audit`, the SBOM diff, and the
     fuzz suite, per `supply-chain.md`.
-- `hpke`'s own HKDF and DHKEM use falls under the SHA-256 exception
-  that Phase A adds.
-- `hpke` requires Rust 1.85. That is already the effective minimum
-  through `ed25519-dalek` 3.0, `rand` 0.10, and `chacha20poly1305`
-  0.11, but `Cargo.toml` still declares `rust-version = "1.70"`.
-  Correct the declaration in this phase or earlier.
+- `hpke`'s HKDF and DHKEM use falls under the SHA-256 exception that
+  Phase A added. B2 extends the `crypto.md` entry to the SHA-3 family
+  inside ML-KEM and X-Wing.
+- `hpke`, `ml-kem` and `x-wing` require Rust 1.85. The crate already
+  declares 1.87 (#206).
 
 ### Phase C: External wrappers and migration
 
@@ -1023,11 +1137,13 @@ transport and key-derivation boundary only, gating no comparison.
 
 ## Unresolved Questions
 
-1. **age instead of a native envelope?** age would remove our
-   envelope parser and give mature plugin and KMS recipients. We
-   would lose the documented per-version key for selective
-   disclosure, and gain a second format in the trust base. Decide
-   before Phase B.
+1. **age instead of a native envelope?** *Resolved 2026-10-23: native
+   HPKE envelope.* age 0.12.1 is built on an older crypto stack
+   (`chacha20poly1305` 0.10, `x25519-dalek` 2, `rand` 0.8, `hkdf` 0.12)
+   that we would ship alongside our own, adds i18n dependencies, has
+   no built-in post-quantum recipient, and does not bind its file key
+   to our signed `ctx`. The native envelope keeps one crypto stack and
+   the documented per-version key.
 2. **Recipient-key privacy.** Storing `recipient_pk` in full lets
    committers re-wrap without a side channel, but reveals who can
    read. An anonymous mode would store only `enc` and make readers
@@ -1046,10 +1162,16 @@ transport and key-derivation boundary only, gating no comparison.
 7. **Do enforcement receipts (RFC-0036) need a confidential-mode
    policy identity** that avoids the public commitment, so a receipt
    doesn't make two versions linkable?
-8. **Post-quantum confidentiality.** X25519 stanzas are open to
-   harvest-now-decrypt-later. `hpke` 0.14 also offers X-Wing (ML-KEM
-   plus X25519). Should suite `0x02` use it from the start, consistent
-   with RFC-0027's hybrid signatures?
+8. **Post-quantum confidentiality.** *Resolved 2026-10-23: both, X-Wing
+   by default.* Phase B ships X25519 (kind `0x01`) and X-Wing (kind
+   `0x03`) stanzas together, and new encryption identities are X-Wing
+   unless the user asks for X25519. X-Wing is a stanza kind rather
+   than an envelope suite, because the envelope `suite` byte selects
+   the content key schedule, which is the same for both KEMs. This
+   gives post-quantum **confidentiality** only, in the spirit of
+   RFC-0027: version signatures stay Ed25519 unless RFC-0027 hybrid
+   signatures are used. Draft risk is handled by pinning and
+   known-answer tests (see Draft pinning).
 
 ## References
 
@@ -1074,6 +1196,8 @@ transport and key-derivation boundary only, gating no comparison.
   rules section, signed via `VersionEntry.rules_hash`.
 - **Key commitment:** `dek_commitment`, which binds every recipient
   to one DEK.
+- **X-Wing:** the hybrid KEM ML-KEM-768 + X25519 (IETF draft), used
+  by stanza kind `0x03`.
 - **ctx:** `file_id ‖ author_id ‖ version`, little-endian. The binding
   context used in the HKDF salt, the AEAD aad, the HPKE `info`, and
   the external-wrapper context.
@@ -1171,3 +1295,25 @@ transport and key-derivation boundary only, gating no comparison.
     as equivocation.
   - Squatting is stated to be a denial of service, not a forgery.
   - `show_current_rules` reads and verifies once, from one buffer.
+- **2026-10-23, owner decisions before Phase B.** Unresolved Question 1:
+  native HPKE envelope, not age. Question 8: X25519 and X-Wing stanzas
+  both ship in Phase B, X-Wing by default. Amendment: X-Wing is stanza
+  kind `0x03`; the stanza-total cap is 160 KiB; `hpke` is pinned with
+  known-answer tests; the SHA-3 exception is added; Phase B is split
+  into B1–B4.
+- **2026-10-23, `crypto-auditor`, Phase B amendment: PASS, conditional**
+  on four must-fix items, all addressed in this revision:
+  - M1: identity is `(kind, recipient_pk)`, and exact body lengths
+    for `0x01` (112) and `0x03` (2,384) are checked before any KEM
+    work.
+  - M2: identity records are `(kind, seed, recipient_pk)`, with one
+    seed per kind, X-Wing seeds loaded raw (not `derive_keypair`), and
+    the seed held in `Zeroizing`.
+  - M3: the recipient-key binding is justified per KEM; X-Wing has no
+    KEM context.
+  - M4: the SHA-3 entry is in `.claude/rules/crypto.md` now.
+  - Should-fix: owned `Recipient` types and an X-Wing example; ml-kem
+    and x-wing are disclosed as unaudited, and the pin and RUSTSEC
+    policy are stated; the CLI warning covers external wrappers;
+    implicit-rejection and wrong-length tests; post-quantum applies to
+    confidentiality only.

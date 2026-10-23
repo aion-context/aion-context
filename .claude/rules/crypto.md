@@ -86,6 +86,18 @@ below with its scope.
     cannot turn a forgery into an accept, because acceptance is decided
     by Ed25519 signatures over BLAKE3 commitments.
 
+- **SHA-3 family inside ML-KEM and X-Wing (RFC-0039 Phase B)**:
+  - **Where:** SHA3-256, SHAKE-128/256 and TurboSHAKE appear only
+    inside ML-KEM-768 and the X-Wing KEM (`ml-kem`, `x-wing`, and
+    `hpke`'s X-Wing binding), where FIPS 203 and the X-Wing draft
+    mandate them.
+  - **What it does:** it derives keys and shared secrets only. ML-KEM
+    compares SHA-3-derived values internally during decapsulation,
+    but no SHA-3 output is stored, signed, or compared by
+    aion-context, and none gates an accept/reject decision.
+  - **How it can fail:** a SHA-3 weakness could weaken an X-Wing
+    stanza's confidentiality or make it fail to open
+    (`RulesUnopenable`). It cannot turn a forgery into an accept.
 - **Fuzz-only keys (`fuzz/`)**: `fuzz/fuzz_targets/fuzz_verify_chain.rs`
   derives a fixed Ed25519 key pair from constant seeds, with the
   distinctive author id `0xF022_F022_F022_F022`. The seed files in
