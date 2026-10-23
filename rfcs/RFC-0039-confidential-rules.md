@@ -420,39 +420,61 @@ can't be forgotten by omission:
 
 `AcceptedVersionStore` semantics:
 
-- **Key:** `(file_id, head author_id)`. `file_id` is in the key
-  because one author's version numbers are independent across files.
-- **Value:** `(head version, head version hash)`.
+- **Key:** `file_id`. Version numbers are file-global: one chain, many
+  authors, one monotonic sequence. Keying by author would let an older
+  prefix whose head has a different author slip past the record.
+- **Value:** `(genesis_hash, head_version, head_hash)`. All are
+  version-entry hashes (`compute_version_hash`) taken from the
+  verified chain.
 - **Decision**, applied only **after** every integrity, signature and
   policy check has passed, so an attacker cannot burn version numbers
-  with invalid files:
+  with invalid files. Let `P` be the presented verified chain, and
+  `P[v]` its entry at version `v`.
 
   | Stored vs presented | Result |
   |---|---|
   | no record | accept and record |
-  | presented version > stored | accept and record |
-  | same version, same hash | accept (idempotent re-verification) |
-  | same version, different hash | reject as **equivocation** (`reason = "version_equivocation"`) |
-  | presented version < stored | reject as **rollback** (`reason = "version_replay"`) |
+  | `hash(P[1]) ≠ stored.genesis_hash` | reject as a **foreign chain** under the same `file_id` (`reason = "file_id_conflict"`) |
+  | `P.head_version < stored.head_version` | reject as **rollback** (`reason = "version_replay"`) |
+  | `hash(P[stored.head_version]) ≠ stored.head_hash` | reject as a **fork or equivocation**: the presented chain does not extend what was accepted (`reason = "version_equivocation"`). This covers both a different chain at the same version and a higher-versioned fork. |
+  | `P.head_version == stored.head_version` (and the hash matches) | accept, idempotent; no write |
+  | `P.head_version > stored.head_version` (and the ancestor matches) | accept and advance to `(genesis_hash, P.head_version, hash(P.head))` |
 
+  The ancestry check is O(1), because `P` is already a verified hash
+  chain. Matching one entry's hash at the stored version proves that
+  the whole accepted prefix is contained in `P`.
+- **`file_id` squatting:** `file_id` is author-chosen. A store that
+  first accepts an attacker's chain under a victim's `file_id` will
+  then reject the victim's chain as `file_id_conflict`. Acceptance
+  still requires a signature valid under the caller's pinned registry,
+  so the attacker must be a registered author. Deployments that
+  consume specific policies should pin the expected `(file_id,
+  genesis_hash)` up front with `store.pin(...)`, rather than learning
+  it on first use.
 - **Atomicity:** one trait method,
-  `fn check_and_advance(&self, key, version, hash) -> Result<StoreDecision>`,
-  which must be atomic as a compare-and-swap. It takes `&self`;
-  implementations provide their own synchronization, as
-  `AttestationStore` does in RFC-0036. Concurrent acceptances of the
-  same key cannot both win.
+  `fn check_and_advance(&self, file_id, &ChainSummary) -> Result<StoreDecision>`,
+  where `ChainSummary` carries the genesis hash, the head version and
+  hash, and the presented chain's hash at the stored version, looked
+  up through a callback on the verified chain. It must be atomic as a
+  compare-and-swap. It takes `&self`; implementations provide their
+  own synchronization, as `AttestationStore` does in RFC-0036.
+  Concurrent acceptances of the same `file_id` cannot both win.
 - **Failure:** any store error fails the acceptance closed, as a
   `StoreUnavailable` error. The store is never skipped.
 
 The CLI gets `aion accept <FILE> --registry … --state <path>`, backed
-by a file store using write-then-rename. `aion verify` remains the
-stateless check.
+by a file store. The store writes a temp file, fsyncs it, renames it
+over the old one, and fsyncs the directory, so a crash cannot lose an
+advance or tear a record. `aion verify` remains the stateless check.
 
 #### Reading
 
-| Function | Behavior |
-|---|---|
-Reading never trusts an unverified entry. Every opening function
+Reading never trusts an unverified entry, and never re-reads the
+file. A `VerifiedChain` **owns** the exact bytes it verified, as an
+owned buffer or a held mmap that it does not re-open. Every opening
+function reads the section from those bytes, never from the path, so
+swapping the file between verification and opening has no effect.
+Every opening function
 takes a `VerifiedEntry<'_>`, a typestate value that can only be
 obtained from a `VerifiedChain`. A `VerifiedChain` is returned by
 `accept_file`, or by `verify_file_chain(path, &registry)`, which is the
@@ -511,7 +533,9 @@ change, and the next release is already 2.0.0.
 
 The CLI never carries recipients over silently. `aion commit` takes
 either explicit `--recipient …` arguments or `--keep-recipients`.
-`--keep-recipients` prints the inherited X25519 set before committing,
+`--keep-recipients` takes the inherited stanzas from the `VerifiedChain`
+of the file being extended, never from an unverified re-read. It
+prints the inherited X25519 set before committing,
 and fails if the previous version had any external (`0x02`) stanza.
 External wrappers need live provider handles, which the file cannot
 supply, so those must be re-specified. This keeps a recipient who
@@ -579,7 +603,8 @@ init_file(path, rules, &InitOptions {
 let report = verify_file(path, &registry)?;          // no key needed
 assert!(report.is_valid);
 
-let rules = open_current_rules(path, &RecipientKeys::x25519(&auditor_sk))?;
+let chain = accept_file(path, &registry, &policy, &store)?;   // or verify_file_chain
+let rules = open_current_rules(&chain, &RecipientKeys::x25519(&auditor_sk))?;
 ```
 
 ### Edge Cases
@@ -603,7 +628,7 @@ let rules = open_current_rules(path, &RecipientKeys::x25519(&auditor_sk))?;
 - **Mixed modes across versions.** These are allowed. Each entry's
   signed `rules_mode` records its own mode. A public v1 followed by a
   confidential v2 is valid, but v1's plaintext stays public in any
-  copy of the file made before v2. `VerifyPolicy` with
+  copy of the file made before v2. `AcceptPolicy` with
   `AllVersions` exists for deployments that must forbid this.
 
 ## Rationale and Alternatives
@@ -730,8 +755,10 @@ Adversaries:
   open for every recipient).
 - Reordered or duplicated stanzas, and total stanza bytes over the
   cap.
-- Timing or error-shape differences between "no openable stanza",
-  "AEAD failure", and "bad padding" (all must look identical).
+- Timing or error-shape differences among a commitment mismatch, an
+  AEAD failure, and bad padding behind a matching stanza. All three
+  must surface as the same `RulesUnopenable`. `NotARecipient` is
+  distinct by design, because recipient identities are public.
 
 ### SHA-256 usage (crypto-rule exception)
 
@@ -751,7 +778,7 @@ boundaries. Phase A adds an exception entry, because the existing
 - **How it can fail:** a SHA-256 weakness could weaken the secrecy of
   derived keys, which affects confidentiality. It could also cause a
   derived key to be wrong, which shows up as a failed AEAD or HPKE
-  open, an opaque `RecipientKeyRequired`. It cannot turn a forgery
+  open, an opaque `RulesUnopenable`. It cannot turn a forgery
   into an accept, because acceptance is decided by Ed25519 signatures
   over BLAKE3 commitments.
 
@@ -793,7 +820,7 @@ transport and key-derivation boundary only, gating no comparison.
   recipient's open fails.
 - Writers emit stanzas in canonical order. A permuted or duplicated
   stanza list ⇒ the parser rejects.
-- `VerifyPolicy { require_confidential: Head }` rejects a public head,
+- `AcceptPolicy { require_confidential: Head }` rejects a public head,
   and `AllVersions` rejects a chain with any public entry.
   `min_format_version = 3` rejects v2.
 - Flipping any entry's stored `rules_mode`, historical or head ⇒ that
@@ -814,8 +841,12 @@ transport and key-derivation boundary only, gating no comparison.
   corrupted stanza ⇒ `RulesUnopenable`.
 - An archived section opened with `open_rules_section` against the
   wrong entry, or with another version's DEK ⇒ rejected.
-- With an `AcceptedVersionStore`: presenting an older
-  `(author, version)` after a newer one ⇒ rejected as a replay.
+- Store: after accepting a multi-author chain at v5, presenting its v3
+  prefix ⇒ `version_replay`, whoever authored v3. A higher-versioned
+  fork that diverges at or below v5 ⇒ `version_equivocation`. A
+  different genesis under the same `file_id` ⇒ `file_id_conflict`.
+- After `accept_file` returns, replacing the file on disk does not
+  change what `open_current_rules(&chain, …)` decrypts.
 
 ### Unit and Known-Answer Tests
 
@@ -1004,3 +1035,19 @@ transport and key-derivation boundary only, gating no comparison.
     - `NotARecipient` and `RulesUnopenable` are now separate;
     - every signing and verification path is enumerated for the v3
       message.
+- **2026-10-23, `crypto-auditor`, round 4: BLOCK.** B1 (round 3), S2,
+  the CLI items, the `0x02` lengths and the error split were judged
+  resolved. Findings and their resolutions:
+  - Blocker: the store key `(file_id, head author)` allowed rollback
+    across authors, and higher-versioned forks. It is now keyed by
+    `file_id` alone, with value `(genesis_hash, head_version,
+    head_hash)`. Advancing requires `hash(P[stored.head_version]) ==
+    stored.head_hash` (ancestry). A different genesis is rejected as
+    `file_id_conflict`. Added guidance on `file_id` squatting and
+    `store.pin`.
+  - TOCTOU: `VerifiedChain` owns its verified bytes, and openers never
+    re-read the path.
+  - The test list contradicted the error split; corrected.
+  - Notes: stale `VerifyPolicy`, example, and key text fixed;
+    `--keep-recipients` reads from the `VerifiedChain`; the file store
+    fsyncs the temp file and the directory.
