@@ -215,7 +215,8 @@ aion init <FILE> --author <ID> --key <KEY_ID> --public [OPTIONS]
 | `-k, --key` | Yes | Signing key ID from keystore |
 | `-r, --rules` | No | Rules file (stdin if omitted) |
 | `-m, --message` | No | Commit message (default: "Genesis version") |
-| `--public` | Yes | Store the rules in the clear (format v3). Anyone holding the file can read them; the signature makes them tamper-evident. The rules protection has no default. |
+| `--public` | One of | Store the rules in the clear (format v3). Anyone holding the file can read them; the signature makes them tamper-evident. The rules protection has no default. |
+| `--recipient` | One of | Encrypt the rules to this recipient (a file from `aion key recipient`, or an `aion-recipient:…` string). Repeatable. Verification stays key-free. |
 | `--force` | No | Overwrite existing file |
 | `--no-encryption` | No | Deprecated alias for `--public`; removed in 3.0 |
 
@@ -247,7 +248,9 @@ aion commit <FILE> --author <ID> --key <KEY_ID> --message <MSG> --registry <REGI
 | `-k, --key` | Yes | Signing key ID |
 | `-m, --message` | Yes | Commit message |
 | `--registry` | Yes | Trusted key registry (JSON) used to pre-verify the chain |
-| `--public` | Yes | Store the new version's rules in the clear. A v2 file keeps its v2 encoding. |
+| `--public` | One of | Store the new version's rules in the clear. A v2 file keeps its v2 encoding. |
+| `--recipient` | One of | Encrypt the new version's rules to this recipient. Repeatable. Format v3 only. |
+| `--keep-recipients` | One of | Encrypt to the current version's recipients, read from the verified file. |
 | `-r, --rules` | No | New rules file (stdin if omitted) |
 
 **Examples:**
@@ -305,8 +308,11 @@ Show file contents and metadata.
 #### `aion show rules` - Current Rules
 
 ```bash
-aion show <FILE> rules [--format text|json|yaml]
+aion show <FILE> --registry <REGISTRY_FILE> [--identity <IDENTITY_ID>]... rules [--format text|json|yaml]
 ```
+
+Verifies the file first. Confidential rules need `--identity` for an
+encryption identity the latest version lists as a recipient.
 
 #### `aion show history` - Version History
 
@@ -334,6 +340,8 @@ Manage cryptographic signing keys.
 
 ```bash
 aion key generate <KEY_ID> [--description <DESC>]
+aion key generate --id <IDENTITY_ID> --encryption [--kem xwing|x25519]   # read confidential rules
+aion key recipient <IDENTITY_ID> [-o <FILE>]                             # its public recipient string
 ```
 
 #### `aion key list` - List All Keys

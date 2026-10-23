@@ -2405,3 +2405,213 @@ fn test_cli_accept_pin_mismatch_persists_nothing() {
     );
     cleanup_key(&key_id);
 }
+
+// ============================================================================
+// RFC-0039 Phase B4: confidential rules from the CLI
+// ============================================================================
+
+/// Generate an encryption identity; returns its ID and recipient file.
+fn encryption_identity(dir: &std::path::Path, kem: &str) -> (String, std::path::PathBuf) {
+    let id = format!("{}", rand::random::<u32>() % 900_000 + 100_000);
+    let generated = run_cli(&["key", "generate", "--id", &id, "--encryption", "--kem", kem]);
+    assert!(
+        generated.status.success(),
+        "{}",
+        String::from_utf8_lossy(&generated.stderr)
+    );
+    assert!(String::from_utf8_lossy(&generated.stdout).contains(&format!("aion-recipient:{kem}:")));
+    let recipient = dir.join(format!("{id}.recipient"));
+    let written = run_cli(&["key", "recipient", &id, "-o", recipient.to_str().unwrap()]);
+    assert!(written.status.success());
+    (id, recipient)
+}
+
+fn cleanup_identity(id: &str) {
+    let _ = run_cli(&["key", "delete", id, "--force", "--encryption"]);
+}
+
+#[test]
+fn test_cli_confidential_rules_round_trip() {
+    let (temp_dir, key_id) = setup_test_env();
+    let file_path = temp_dir.path().join("confidential.aion");
+    let registry_path = temp_dir.path().join("registry.json");
+    pin_author(&registry_path, "7101", &key_id);
+    let (reader, reader_file) = encryption_identity(temp_dir.path(), "xwing");
+    let (stranger, _) = encryption_identity(temp_dir.path(), "xwing");
+
+    let init = run_cli_with_stdin(
+        &[
+            "init",
+            file_path.to_str().unwrap(),
+            "--author",
+            "7101",
+            "--key",
+            &key_id,
+            "--recipient",
+            reader_file.to_str().unwrap(),
+        ],
+        b"refund_limit: 5000",
+    );
+    assert!(
+        init.status.success(),
+        "{}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+    let raw = fs::read(&file_path).expect("read file");
+    assert!(
+        !raw.windows(17).any(|w| w == b"refund_limit: 500"),
+        "plaintext on disk"
+    );
+
+    let verify = run_cli(&[
+        "verify",
+        file_path.to_str().unwrap(),
+        "--registry",
+        registry_path.to_str().unwrap(),
+    ]);
+    assert!(
+        verify.status.success(),
+        "key-free verify: {}",
+        String::from_utf8_lossy(&verify.stdout)
+    );
+
+    let show = |extra: &[&str]| {
+        let mut args = vec![
+            "show",
+            file_path.to_str().unwrap(),
+            "--registry",
+            registry_path.to_str().unwrap(),
+        ];
+        args.extend_from_slice(extra);
+        args.push("rules");
+        run_cli(&args)
+    };
+    let no_key = show(&[]);
+    assert!(!no_key.status.success());
+    assert!(String::from_utf8_lossy(&no_key.stderr).contains("--identity"));
+    let wrong = show(&["--identity", &stranger]);
+    assert!(!wrong.status.success());
+    assert!(String::from_utf8_lossy(&wrong.stderr).contains("recipient"));
+    let opened = show(&["--identity", &reader]);
+    assert!(
+        opened.status.success(),
+        "{}",
+        String::from_utf8_lossy(&opened.stderr)
+    );
+    assert!(String::from_utf8_lossy(&opened.stdout).contains("refund_limit: 5000"));
+
+    let accept = run_cli(&[
+        "accept",
+        file_path.to_str().unwrap(),
+        "--registry",
+        registry_path.to_str().unwrap(),
+        "--state",
+        temp_dir.path().join("state.json").to_str().unwrap(),
+        "--init-state",
+        "--require-confidential",
+        "head",
+    ]);
+    assert!(
+        accept.status.success(),
+        "{}",
+        String::from_utf8_lossy(&accept.stderr)
+    );
+
+    cleanup_identity(&reader);
+    cleanup_identity(&stranger);
+    cleanup_key(&key_id);
+}
+
+#[test]
+fn test_cli_keep_recipients_and_protection_flags() {
+    let (temp_dir, key_id) = setup_test_env();
+    let file_path = temp_dir.path().join("keep.aion");
+    let registry_path = temp_dir.path().join("registry.json");
+    pin_author(&registry_path, "7102", &key_id);
+    let (pq, pq_file) = encryption_identity(temp_dir.path(), "xwing");
+    let (classic, classic_file) = encryption_identity(temp_dir.path(), "x25519");
+
+    let both = run_cli_with_stdin(
+        &[
+            "init",
+            file_path.to_str().unwrap(),
+            "--author",
+            "7102",
+            "--key",
+            &key_id,
+            "--public",
+            "--recipient",
+            pq_file.to_str().unwrap(),
+        ],
+        b"v1",
+    );
+    assert!(
+        !both.status.success(),
+        "--public and --recipient are exclusive"
+    );
+
+    let init = run_cli_with_stdin(
+        &[
+            "init",
+            file_path.to_str().unwrap(),
+            "--author",
+            "7102",
+            "--key",
+            &key_id,
+            "--recipient",
+            pq_file.to_str().unwrap(),
+            "--recipient",
+            classic_file.to_str().unwrap(),
+        ],
+        b"v1",
+    );
+    assert!(
+        init.status.success(),
+        "{}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+    assert!(String::from_utf8_lossy(&init.stderr).contains("post-quantum"));
+
+    let commit = |flags: &[&str], rules: &[u8]| {
+        let mut args = vec![
+            "commit",
+            file_path.to_str().unwrap(),
+            "--author",
+            "7102",
+            "--key",
+            &key_id,
+            "--message",
+            "next",
+            "--registry",
+            registry_path.to_str().unwrap(),
+        ];
+        args.extend_from_slice(flags);
+        run_cli_with_stdin(&args, rules)
+    };
+    let kept = commit(&["--keep-recipients"], b"v2 secret");
+    assert!(
+        kept.status.success(),
+        "{}",
+        String::from_utf8_lossy(&kept.stderr)
+    );
+    assert!(String::from_utf8_lossy(&kept.stdout).contains("Keeping recipient"));
+    let show = run_cli(&[
+        "show",
+        file_path.to_str().unwrap(),
+        "--registry",
+        registry_path.to_str().unwrap(),
+        "--identity",
+        &classic,
+        "rules",
+    ]);
+    assert!(String::from_utf8_lossy(&show.stdout).contains("v2 secret"));
+
+    assert!(commit(&["--public"], b"v3").status.success());
+    let nothing_to_keep = commit(&["--keep-recipients"], b"v4");
+    assert!(!nothing_to_keep.status.success());
+    assert!(String::from_utf8_lossy(&nothing_to_keep.stderr).contains("public"));
+
+    cleanup_identity(&pq);
+    cleanup_identity(&classic);
+    cleanup_key(&key_id);
+}

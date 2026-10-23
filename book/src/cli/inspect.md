@@ -9,17 +9,25 @@ None of them mutate the file.
 Pretty-print one of four views into a file.
 
 ```bash
-aion show <FILE> --registry <REGISTRY_FILE> <SUBCOMMAND>
+aion show <FILE> --registry <REGISTRY_FILE> [--identity <IDENTITY_ID>]... <SUBCOMMAND>
 
 Subcommands:
-  rules        Show the current rules content (decrypted if needed)
+  rules        Show the current rules, after verifying the file
   history      Show every version's metadata
   signatures   Show every signature with its verified status
   info         Show file ID + version count + signature summary
 ```
 
-`--registry` is required by `signatures` and `info` (both run
-the verify path internally). `rules` and `history` ignore it.
+`--registry` is required. `rules`, `signatures` and `info` verify the
+file first; `rules` refuses to print anything from a file that does
+not verify.
+
+Confidential rules (RFC-0039) need `--identity` naming an encryption
+identity in the keystore that the latest version lists as a recipient.
+Without one, `show rules` exits 1 and says so. With identities that
+are not listed it reports that none is a recipient; with a listed one
+that cannot open the rules it reports that they could not be opened.
+Public rules ignore `--identity`.
 
 Format flag is `--format text|json|yaml`, default `text`.
 

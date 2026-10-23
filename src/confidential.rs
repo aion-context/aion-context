@@ -187,6 +187,24 @@ impl EncryptionKem {
         }
     }
 
+    /// The KEM whose stanza kind byte is `kind`, if any.
+    pub(crate) const fn from_stanza_kind(kind: u8) -> Option<Self> {
+        match kind {
+            STANZA_X25519 => Some(Self::X25519),
+            STANZA_XWING => Some(Self::XWing),
+            _ => None,
+        }
+    }
+
+    /// The stable lowercase name: `"x25519"` or `"xwing"`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::X25519 => "x25519",
+            Self::XWing => "xwing",
+        }
+    }
+
     /// Length in bytes of this KEM's public key: 32 for X25519, 1216 for
     /// X-Wing.
     #[must_use]
@@ -202,6 +220,26 @@ impl EncryptionKem {
         match self {
             Self::X25519 => 32,
             Self::XWing => 64,
+        }
+    }
+}
+
+impl std::fmt::Display for EncryptionKem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for EncryptionKem {
+    type Err = AionError;
+
+    fn from_str(name: &str) -> Result<Self> {
+        match name {
+            "x25519" => Ok(Self::X25519),
+            "xwing" => Ok(Self::XWing),
+            _ => Err(AionError::InvalidFormat {
+                reason: "unknown KEM name (expected x25519 or xwing)".to_string(),
+            }),
         }
     }
 }
@@ -281,6 +319,11 @@ impl EncryptionIdentity {
     #[must_use]
     pub fn recipient(&self) -> Recipient {
         self.recipient.clone()
+    }
+
+    /// The seed, for the keystore to persist next to the kind.
+    pub(crate) const fn seed(&self) -> &Zeroizing<[u8; 32]> {
+        &self.seed
     }
 
     /// Whether `stanza` is addressed to this identity: same KEM and the

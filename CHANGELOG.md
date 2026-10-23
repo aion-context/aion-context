@@ -69,6 +69,22 @@ and the project follows [Semantic Versioning].
     re-sealing the next version.
   - `verify_file` now also checks a confidential head's envelope
     structure and size, still without any key.
+- **RFC-0039 Phase B4: confidential rules from the CLI and keystore.**
+  - `aion key generate --id N --encryption [--kem xwing|x25519]`
+    creates an encryption identity (X-Wing by default), stored as its
+    KEM kind plus a 32-byte seed in a namespace separate from signing
+    keys. `aion key recipient N [-o FILE]` prints its recipient string;
+    `aion key delete N --encryption` removes it.
+  - `aion init` and `aion commit` take `--recipient` (repeatable; a
+    recipient file or an `aion-recipient:<kem>:<hex>` string) as the
+    alternative to `--public`. `aion commit --keep-recipients`
+    re-seals to the current version's recipients, read from the
+    verified file and printed first. Mixing X-Wing with non-post-quantum
+    recipients prints a note.
+  - `aion show … --identity N rules` opens confidential rules.
+  - Library: `KeyStore::{store,load,has,delete}_encryption_identity`;
+    `Recipient` gains `Display` / `FromStr` for the text form;
+    `EncryptionKem` gains `as_str`, `Display`, `FromStr`.
 
 ### Changed
 

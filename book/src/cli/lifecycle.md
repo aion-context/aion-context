@@ -11,19 +11,20 @@ Create a new `.aion` file with a v1 genesis version.
 aion init <FILE> \
     --author <AUTHOR_ID> \
     --key <KEY_ID> \
-    --public \                           # required: name the rules protection
+    (--public | --recipient <RECIPIENT>...)  # required: name the rules protection
     [--rules <RULES_FILE> | --rules -]   # stdin if `-`
     [--message <MESSAGE>]                # defaults to "Genesis version"
     [--force]                            # overwrite if FILE exists
 ```
 
 `init` writes a format-v3 file (RFC-0039). The rules protection has no
-default, so `--public` is required: it stores the rules in the clear,
-framed and padded, where anyone holding the file can read them. The
-signature makes them tamper-evident, not secret. The library already
-seals confidential rules to named recipients
-(`RulesProtection::Confidential`); the CLI's `--recipient` arrives with
-RFC-0039 Phase B4.
+default, so exactly one of these is required:
+
+- `--public` stores the rules in the clear, framed and padded, where
+  anyone holding the file can read them. The signature makes them
+  tamper-evident, not secret.
+- `--recipient <RECIPIENT>` (repeatable) encrypts them so only the
+  named recipients can read them; see [Confidential rules](#confidential-rules).
 `--no-encryption` is a deprecated alias for `--public` and will be
 removed in 3.0.
 
@@ -42,13 +43,16 @@ aion commit <FILE> \
     --key <KEY_ID> \
     --message <MESSAGE> \
     --registry <REGISTRY_FILE> \
-    --public \                           # required: name the rules protection
+    (--public | --recipient <RECIPIENT>... | --keep-recipients)
     [--rules <RULES_FILE> | --rules -]
     [--force-unregistered]
 ```
 
-A commit keeps the file's format. A v3 file gains a v3 public version;
-a v2 file stays v2 and keeps its legacy encoding.
+A commit keeps the file's format. A v3 file gains a v3 version with the
+named protection; a v2 file stays v2 and keeps its legacy encoding (it
+cannot be confidential). `--keep-recipients` re-seals to the current
+version's recipients, read from the verified file and printed before
+committing; it fails if the current version is public.
 
 `commit` runs four pre-write gates in order before any byte is
 written:
@@ -205,3 +209,34 @@ aion commit --public policy.aion --author 50001 --key 50001 \
 # 5. Anyone holding the same registry can verify.
 aion verify policy.aion --registry registry.json
 ```
+
+## Confidential rules
+
+Recipients are encryption identities, separate from signing keys
+(RFC-0039). A reader creates one and hands writers the public half:
+
+```bash
+aion key generate --id 501 --encryption            # X-Wing (post-quantum hybrid), the default
+aion key generate --id 502 --encryption --kem x25519
+aion key recipient 501 -o auditor.recipient        # aion-recipient:xwing:<hex>
+```
+
+A writer seals to them, and anyone can still verify without a key:
+
+```bash
+aion init policy.aion --author 1001 --key 1001 \
+    --recipient auditor.recipient --recipient ops.recipient --rules rules.yaml
+aion verify policy.aion --registry registry.json   # key-free
+aion commit policy.aion ... --keep-recipients      # same readers next time
+```
+
+A recipient reads with their identity:
+
+```bash
+aion show policy.aion --registry registry.json --identity 501 rules
+```
+
+Mixing X-Wing with X25519 recipients prints a note: a version is only as
+post-quantum-safe as its weakest recipient. Commit messages, authors,
+timestamps, the recipient list, and the padded rules length stay
+visible to anyone holding the file.

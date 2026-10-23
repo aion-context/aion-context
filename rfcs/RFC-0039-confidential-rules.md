@@ -1140,6 +1140,18 @@ Four PRs, each reviewed by `crypto-auditor` and `api-reviewer`:
 - **B4, keystore and CLI.** The encryption-identity key kind (X-Wing
   default), `aion key generate --encryption`, `--recipient`,
   `--keep-recipients`, and `--identity`.
+  - *Implementation note:* recipients travel as one line of text,
+    `aion-recipient:<kem>:<lowercase hex public key>` with `<kem>` one of
+    `x25519` or `xwing` (`Recipient`'s `Display` / `FromStr`). This
+    text form is a stability commitment, like the binary format.
+  - The keystore stores an identity as `kind ‖ seed`, where `kind` is
+    the stanza kind byte, in its own namespace (`encryption-<id>`). File
+    storage binds it to a distinct AAD prefix, so a signing-key file
+    never decrypts as an identity or the other way round.
+  - `aion key recipient` exports the recipient line; `aion key delete
+    --encryption` removes an identity. The CLI does not yet take KMS
+    recipients (`kms:…`); those arrive with external wrappers in
+    Phase C.
 
 Dependencies (B2):
 

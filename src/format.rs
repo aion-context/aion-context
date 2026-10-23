@@ -270,6 +270,55 @@ impl Recipient {
     }
 }
 
+/// Prefix of a recipient's text form.
+const RECIPIENT_TEXT_PREFIX: &str = "aion-recipient:";
+
+/// The recipient's text form, `aion-recipient:<kem>:<lowercase hex key>`,
+/// as written to a recipient file and read by [`Recipient::from_str`].
+///
+/// # Example
+///
+/// ```
+/// use aion_context::confidential::{EncryptionIdentity, EncryptionKem};
+/// use aion_context::format::Recipient;
+///
+/// let auditor = EncryptionIdentity::generate(EncryptionKem::X25519)?;
+/// let text = auditor.recipient().to_string();
+/// assert!(text.starts_with("aion-recipient:x25519:"));
+/// assert_eq!(text.parse::<Recipient>()?, auditor.recipient());
+/// # Ok::<(), aion_context::AionError>(())
+/// ```
+impl std::fmt::Display for Recipient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{RECIPIENT_TEXT_PREFIX}{}:{}",
+            self.kem(),
+            hex::encode(self.public_key())
+        )
+    }
+}
+
+impl std::str::FromStr for Recipient {
+    type Err = AionError;
+
+    /// Parse the text form. Surrounding whitespace is ignored; anything
+    /// else that deviates is rejected.
+    fn from_str(text: &str) -> Result<Self> {
+        let malformed = || AionError::InvalidPublicKey {
+            reason: "recipient is not in the form aion-recipient:<kem>:<hex>".to_string(),
+        };
+        let rest = text
+            .trim()
+            .strip_prefix(RECIPIENT_TEXT_PREFIX)
+            .ok_or_else(malformed)?;
+        let (kem, key_hex) = rest.split_once(':').ok_or_else(malformed)?;
+        let kem: crate::confidential::EncryptionKem = kem.parse()?;
+        let key = hex::decode(key_hex).map_err(|_| malformed())?;
+        Self::from_public_key(kem, &key)
+    }
+}
+
 /// Commit to a stored rules section (RFC-0039).
 ///
 /// `BLAKE3(RULES_COMMIT_DOMAIN ‖ mode ‖ section)`. The mode byte keeps the
