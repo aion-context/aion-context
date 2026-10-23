@@ -2273,7 +2273,7 @@ fn test_verify_rejects_malformed_registry() {
 }
 
 #[test]
-fn test_cli_accept_defends_against_replay_and_conflicting_pins() {
+fn test_cli_accept_defends_against_replay() {
     let (temp_dir, key_id) = setup_test_env();
     let file_path = temp_dir.path().join("accepted.aion");
     let v1_copy = temp_dir.path().join("accepted-v1.aion");
@@ -2308,7 +2308,15 @@ fn test_cli_accept_defends_against_replay_and_conflicting_pins() {
         run_cli(&args)
     };
 
-    let first = accept(&file_path, &[]);
+    let missing = accept(&file_path, &[]);
+    assert_eq!(
+        missing.status.code(),
+        Some(2),
+        "missing state is not a verdict"
+    );
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("store_missing"));
+
+    let first = accept(&file_path, &["--init-state"]);
     assert!(
         first.status.success(),
         "{}",
@@ -2349,19 +2357,51 @@ fn test_cli_accept_defends_against_replay_and_conflicting_pins() {
     assert!(!replay.status.success(), "older version must be refused");
     assert!(String::from_utf8_lossy(&replay.stderr).contains("version_replay"));
 
+    cleanup_key(&key_id);
+}
+
+#[test]
+fn test_cli_accept_pin_mismatch_persists_nothing() {
+    let (temp_dir, key_id) = setup_test_env();
+    let file_path = temp_dir.path().join("pinned.aion");
+    let registry_path = temp_dir.path().join("registry.json");
+    pin_author(&registry_path, "6002", &key_id);
+    let init = run_cli_with_stdin(
+        &[
+            "init",
+            "--public",
+            file_path.to_str().unwrap(),
+            "--author",
+            "6002",
+            "--key",
+            &key_id,
+        ],
+        b"rules",
+    );
+    assert!(init.status.success());
+
     let fresh_state = temp_dir.path().join("fresh-state.json");
-    let conflict = run_cli(&[
-        "accept",
-        file_path.to_str().unwrap(),
-        "--registry",
-        registry_path.to_str().unwrap(),
-        "--state",
-        fresh_state.to_str().unwrap(),
-        "--pin",
-        &"ab".repeat(32),
-    ]);
-    assert!(!conflict.status.success());
+    let fresh = |extra: &[&str]| {
+        let mut args = vec![
+            "accept",
+            file_path.to_str().unwrap(),
+            "--registry",
+            registry_path.to_str().unwrap(),
+            "--state",
+            fresh_state.to_str().unwrap(),
+            "--init-state",
+        ];
+        args.extend_from_slice(extra);
+        run_cli(&args)
+    };
+    let wrong_pin = "ab".repeat(32);
+    let conflict = fresh(&["--pin", &wrong_pin]);
+    assert_eq!(conflict.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&conflict.stderr);
     assert!(stderr.contains("file_id_conflict"), "{stderr}");
+    assert!(
+        fresh(&[]).status.success(),
+        "a mismatched --pin must not have persisted anything"
+    );
     cleanup_key(&key_id);
 }

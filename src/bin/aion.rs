@@ -75,13 +75,17 @@ struct AcceptArgs {
     #[arg(long, value_name = "REGISTRY_FILE")]
     registry: PathBuf,
 
-    /// Accepted-version state file, created if missing. One process at a
-    /// time per state file.
+    /// Accepted-version state file. Must already exist unless
+    /// `--init-state` is given; writers take an exclusive lock on it.
     #[arg(long, value_name = "STATE_FILE")]
     state: PathBuf,
 
-    /// Pin this file's expected genesis version hash (64 hex characters)
-    /// before accepting
+    /// Create the state file if it does not exist yet (first run only)
+    #[arg(long)]
+    init_state: bool,
+
+    /// Require this file's genesis version hash (64 hex characters). A
+    /// check only: nothing is persisted on a mismatch
     #[arg(long, value_name = "GENESIS_HASH")]
     pin: Option<String>,
 
@@ -903,16 +907,19 @@ fn cmd_verify(args: &VerifyArgs) -> Result<ExitCode> {
 }
 
 fn cmd_accept(args: &AcceptArgs) -> Result<ExitCode> {
-    use aion_context::acceptance::{accept_file, AcceptedVersionStore, FileStore};
+    use aion_context::acceptance::accept_file;
     use aion_context::AionError;
     println!("📥 Accepting AION file: {}", args.path.display());
     let registry = load_registry_from_path(&args.registry)?;
-    let store = FileStore::new(&args.state);
     let policy = accept_policy(args)?;
+    let store = match open_state(args) {
+        Ok(store) => store,
+        Err(e) => return Ok(store_failure(&e)),
+    };
     if let Some(pin) = &args.pin {
-        let chain = aion_context::chain::verify_file_chain(&args.path, &registry)
-            .with_context(|| format!("Cannot pin: {}", args.path.display()))?;
-        store.pin(chain.context().file_id(), parse_hash32(pin)?)?;
+        if let Some(code) = check_pin(args, &registry, &parse_hash32(pin)?) {
+            return Ok(code);
+        }
     }
     match accept_file(&args.path, &registry, &policy, &store) {
         Ok(chain) => {
@@ -930,8 +937,48 @@ fn cmd_accept(args: &AcceptArgs) -> Result<ExitCode> {
             eprintln!("❌ Not accepted: {e}");
             Ok(ExitCode::FAILURE)
         }
-        Err(e) => Err(e).with_context(|| format!("Failed to accept: {}", args.path.display())),
+        Err(e) => Ok(store_failure(&e)),
     }
+}
+
+/// `--state` must already exist unless `--init-state` is given, so a
+/// typo or a deleted state file never silently restarts replay defense.
+fn open_state(
+    args: &AcceptArgs,
+) -> std::result::Result<aion_context::acceptance::FileStore, aion_context::AionError> {
+    use aion_context::acceptance::FileStore;
+    if args.init_state && !args.state.exists() {
+        return FileStore::create(&args.state);
+    }
+    if !args.state.exists() {
+        return Err(aion_context::AionError::StoreUnavailable {
+            reason: "store_missing",
+        });
+    }
+    Ok(FileStore::open(&args.state))
+}
+
+/// `--pin` is a check, not a write: the presented chain's genesis must
+/// equal it. A mismatch is reported as `file_id_conflict` and nothing is
+/// persisted, so a mistyped pin can never lock the state.
+fn check_pin(
+    args: &AcceptArgs,
+    registry: &aion_context::key_registry::KeyRegistry,
+    expected: &[u8; 32],
+) -> Option<ExitCode> {
+    let chain = aion_context::chain::verify_file_chain(&args.path, registry).ok()?;
+    let genesis = chain.entry(aion_context::types::VersionNumber::GENESIS)?;
+    if genesis.version_hash() == *expected {
+        return None;
+    }
+    eprintln!("❌ Not accepted: Version rejected: file_id_conflict (genesis does not match --pin)");
+    Some(ExitCode::FAILURE)
+}
+
+/// Exit 2: the store could not be used, so no verdict was reached.
+fn store_failure(error: &aion_context::AionError) -> ExitCode {
+    eprintln!("⚠️  Acceptance state unavailable: {error}");
+    ExitCode::from(2)
 }
 
 fn accept_policy(args: &AcceptArgs) -> Result<aion_context::acceptance::AcceptPolicy> {

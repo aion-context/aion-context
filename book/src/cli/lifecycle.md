@@ -135,8 +135,9 @@ what this receiver accepted before (RFC-0039 replay defense).
 ```bash
 aion accept <FILE> \
     --registry <REGISTRY_FILE> \
-    --state <STATE_FILE> \                # created if missing; one process at a time
-    [--pin <GENESIS_HASH>]               # expected genesis, 64 hex chars
+    --state <STATE_FILE> \                # must exist, unless --init-state
+    [--init-state]                       # first run: create the state file
+    [--pin <GENESIS_HASH>]               # required genesis, 64 hex chars (check only)
     [--min-format 3]                     # refuse format-v2 files
     [--require-confidential head|all]    # refuse public rules
 ```
@@ -154,9 +155,21 @@ accepted, and refuses:
 
 Re-accepting the same head succeeds without changing the state. The
 state only advances after full verification and the policy checks pass.
-On first acceptance it prints the genesis hash. Pin that hash on other
-receivers with `--pin`, so a different chain can never be learned first.
-Exit code 0 means accepted, and 1 means not accepted.
+
+- **Pinning.** On acceptance the command prints the genesis hash. Pass
+  that hash to `--pin` on other receivers, so a different chain can never
+  be learned first. `--pin` is a check: a mismatch is refused and nothing
+  is written.
+- **The state file is never silently re-created.** `--state` must
+  already exist unless you pass `--init-state` (first run only), so a
+  typo or a deleted file cannot turn replay defense off.
+- **One writer at a time.** Writers take an exclusive
+  `<STATE_FILE>.lock`. A concurrent writer fails rather than racing. A
+  lock left behind by a crashed run must be removed by an operator.
+
+Exit codes: 0 means accepted, 1 means not accepted, and 2 means the
+state file is missing, locked, or unreadable, so no verdict was
+reached.
 
 ## How the lifecycle interacts with the registry
 

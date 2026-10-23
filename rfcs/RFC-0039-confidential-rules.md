@@ -520,6 +520,13 @@ can't be forgotten by omission:
 - **Stores:** `MemoryStore` and the single-process `FileStore` ship
   with the crate.
 - **CLI:** it adds `--min-format` and `--require-confidential`.
+  - `--state` must exist unless `--init-state` is given.
+  - `--pin` is a check against the presented genesis, not a persisted
+    pin, so a mistyped pin cannot lock the state. Library callers still
+    persist pins with `AcceptedVersionStore::pin`.
+  - Exit 2 means the store was unusable and no verdict was reached.
+- **`FileStore` writes:** they take an exclusive `<state>.lock`, so a
+  concurrent writer fails closed instead of racing.
 
 The CLI gets `aion accept <FILE> --registry … --state <path>`, backed
 by a file store. The store writes a temp file, fsyncs it, renames it

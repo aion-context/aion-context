@@ -32,7 +32,7 @@
 //! use std::path::Path;
 //!
 //! # fn example(registry: &KeyRegistry) -> aion_context::Result<()> {
-//! let store = FileStore::new("accepted.json");
+//! let store = FileStore::open("accepted.json");
 //! let policy = AcceptPolicy::new().min_format(FormatVersion::V3);
 //! let chain = accept_file(Path::new("policy.aion"), registry, &policy, &store)?;
 //! println!("accepted version {}", chain.head().version().as_u64());
@@ -51,6 +51,9 @@ use crate::types::{FileId, VersionNumber};
 use crate::{AionError, Result};
 
 /// Which versions an [`AcceptPolicy`] requires to be confidential.
+///
+/// Not `#[non_exhaustive]`: "the head" and "every version" are the only
+/// scopes a linear chain has.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfidentialScope {
     /// The latest version must be confidential.
@@ -123,6 +126,10 @@ const fn policy_rejected(reason: &'static str) -> AionError {
 }
 
 /// Why an [`AcceptedVersionStore`] refused a verified chain.
+///
+/// Not `#[non_exhaustive]`: these are the three rejection rows of the
+/// RFC-0039 decision table, and callers branch on them. A new rejection
+/// row would be an RFC change and a major version.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VersionRejectReason {
     /// The chain's head is older than the version already accepted.
@@ -178,6 +185,11 @@ impl AcceptedRecord {
 
     /// Rebuild a record a store persisted. `head_version` 0 with no
     /// `head_hash` is a pin.
+    ///
+    /// For store implementations only. A record is the store's own claim
+    /// about its state, and [`decide`] still checks every presented chain
+    /// against it. A forged record can make that store more lenient, but
+    /// the store is already trusted by whoever reads it.
     #[must_use]
     pub const fn from_parts(
         genesis_hash: [u8; 32],
@@ -210,7 +222,8 @@ impl AcceptedRecord {
     }
 }
 
-/// The parts of a verified chain a store decision needs.
+/// The parts of a verified chain a store decision needs. Built only from a
+/// [`VerifiedChain`], so every hash it reports was verified.
 #[derive(Debug, Clone, Copy)]
 pub struct ChainSummary<'a> {
     chain: &'a VerifiedChain,
@@ -273,8 +286,10 @@ pub enum StoreDecision {
     AcceptedIdempotent,
 }
 
-/// A decision plus the record to persist, if any.
+/// A decision plus the record to persist, if any. Only [`decide`] builds
+/// these; `#[non_exhaustive]` leaves room for more fields.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Transition {
     /// What to report to the caller.
     pub decision: StoreDecision,
@@ -319,6 +334,11 @@ pub fn decide(record: Option<&AcceptedRecord>, chain: ChainSummary<'_>) -> Resul
         return Err(version_rejected(VersionRejectReason::FileIdConflict));
     }
     if stored.head_version == 0 {
+        if stored.head_hash.is_some() {
+            return Err(AionError::StoreUnavailable {
+                reason: "record_corrupt",
+            });
+        }
         return Ok(advance);
     }
     if head.head_version < stored.head_version {
@@ -345,8 +365,9 @@ pub fn decide(record: Option<&AcceptedRecord>, chain: ChainSummary<'_>) -> Resul
 /// atomic, as a compare-and-swap: read the record, call [`decide`], and
 /// write the returned record, so that concurrent acceptances of the same
 /// `file_id` cannot both win. Any storage error must fail closed with
-/// [`AionError::StoreUnavailable`].
-pub trait AcceptedVersionStore {
+/// [`AionError::StoreUnavailable`]. `Send + Sync` so one store can serve
+/// a multi-threaded receiver.
+pub trait AcceptedVersionStore: Send + Sync {
     /// Pin the expected genesis for `file_id` before anything is
     /// accepted. Pinning the same genesis again is a no-op.
     ///
@@ -437,14 +458,24 @@ impl AcceptedVersionStore for MemoryStore {
     }
 }
 
-/// A JSON-file [`AcceptedVersionStore`] for a **single process**.
+/// A JSON-file [`AcceptedVersionStore`].
 ///
-/// Every change is written to a temporary file in the same directory,
-/// fsynced, renamed over the old file, and the directory is fsynced, so a
-/// crash cannot lose an advance or tear a record. A mutex serialises
-/// callers within the process. Separate processes must not share one
-/// state file; deployments that need that should implement
-/// [`AcceptedVersionStore`] over a database with compare-and-swap.
+/// - **No silent restart.** [`FileStore::open`] requires the file to
+///   exist, so a typo or a deleted state file cannot quietly turn replay
+///   defense off. [`FileStore::create`] makes a new, empty one, and
+///   refuses to overwrite.
+/// - **One writer at a time.** Every change takes an exclusive
+///   `<state>.lock` file, created atomically. A concurrent writer, in this
+///   process or another, fails closed with `store_locked` instead of
+///   racing. A lock left by a crashed process makes later writes fail
+///   closed until an operator removes it.
+/// - **Crash-safe writes.** Changes go to a new temporary file (created
+///   exclusively, mode 0600 on Unix, so a planted symlink is refused).
+///   The file is fsynced, renamed over the old one, and the directory is
+///   fsynced.
+///
+/// For many concurrent receivers, implement [`AcceptedVersionStore`] over
+/// a database with compare-and-swap instead.
 #[derive(Debug)]
 pub struct FileStore {
     path: PathBuf,
@@ -459,22 +490,40 @@ struct StoredRecord {
 }
 
 impl FileStore {
-    /// A store backed by the JSON file at `path`. A missing file is an
-    /// empty store.
+    /// Use the existing state file at `path`. A missing file is reported
+    /// as `store_missing` on first use, never treated as empty.
     #[must_use]
-    pub fn new(path: impl Into<PathBuf>) -> Self {
+    pub fn open(path: impl Into<PathBuf>) -> Self {
         Self {
             path: path.into(),
             guard: Mutex::new(()),
         }
     }
 
+    /// Create a new, empty state file at `path`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AionError::StoreUnavailable`] (`store_exists`) if the file
+    /// already exists, or `store_write_failed` if it cannot be written.
+    pub fn create(path: impl Into<PathBuf>) -> Result<Self> {
+        let store = Self::open(path);
+        create_exclusive(&store.path, b"{}").map_err(|e| {
+            if e.kind() == std::io::ErrorKind::AlreadyExists {
+                store_error("store_exists")
+            } else {
+                store_error("store_write_failed")
+            }
+        })?;
+        Ok(store)
+    }
+
     /// The record for `file_id`, if any.
     ///
     /// # Errors
     ///
-    /// Returns [`AionError::StoreUnavailable`] if the file cannot be read
-    /// or parsed.
+    /// Returns [`AionError::StoreUnavailable`] if the file is missing or
+    /// cannot be read or parsed.
     pub fn record(&self, file_id: FileId) -> Result<Option<AcceptedRecord>> {
         let _guard = self.guard.lock().map_err(|_| lock_poisoned())?;
         Ok(self.load()?.get(&file_id).copied())
@@ -483,7 +532,9 @@ impl FileStore {
     fn load(&self) -> Result<HashMap<FileId, AcceptedRecord>> {
         let text = match std::fs::read_to_string(&self.path) {
             Ok(text) => text,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(HashMap::new()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(store_error("store_missing"))
+            }
             Err(_) => return Err(store_error("store_read_failed")),
         };
         let stored: HashMap<String, StoredRecord> =
@@ -503,26 +554,63 @@ impl FileStore {
             serde_json::to_string_pretty(&stored).map_err(|_| store_error("store_write_failed"))?;
         write_durably(&self.path, text.as_bytes())
     }
+
+    /// Run `change` with the in-process guard and the cross-process lock
+    /// file both held, saving only if it reports a change.
+    fn locked_update<T>(
+        &self,
+        change: impl FnOnce(&mut HashMap<FileId, AcceptedRecord>) -> Result<(T, bool)>,
+    ) -> Result<T> {
+        let _guard = self.guard.lock().map_err(|_| lock_poisoned())?;
+        let _lock = StateLock::acquire(&self.path)?;
+        let mut records = self.load()?;
+        let (value, changed) = change(&mut records)?;
+        if changed {
+            self.save(&records)?;
+        }
+        Ok(value)
+    }
 }
 
 impl AcceptedVersionStore for FileStore {
     fn pin(&self, file_id: FileId, genesis_hash: [u8; 32]) -> Result<()> {
-        let _guard = self.guard.lock().map_err(|_| lock_poisoned())?;
-        let mut records = self.load()?;
-        if pin_record(&mut records, file_id, genesis_hash)? {
-            self.save(&records)?;
-        }
-        Ok(())
+        self.locked_update(|records| {
+            pin_record(records, file_id, genesis_hash).map(|changed| ((), changed))
+        })
     }
 
     fn check_and_advance(&self, chain: ChainSummary<'_>) -> Result<StoreDecision> {
-        let _guard = self.guard.lock().map_err(|_| lock_poisoned())?;
-        let mut records = self.load()?;
-        let (decision, changed) = advance_records(&mut records, chain)?;
-        if changed {
-            self.save(&records)?;
-        }
-        Ok(decision)
+        self.locked_update(|records| advance_records(records, chain))
+    }
+}
+
+/// An exclusive lock on a state file, held while it exists.
+struct StateLock {
+    path: PathBuf,
+}
+
+impl StateLock {
+    fn acquire(state: &Path) -> Result<Self> {
+        let mut name = state.as_os_str().to_owned();
+        name.push(".lock");
+        let path = PathBuf::from(name);
+        let pid = std::process::id().to_string();
+        create_exclusive(&path, pid.as_bytes()).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::AlreadyExists {
+                store_error("store_locked")
+            } else {
+                store_error("store_lock_failed")
+            }
+        })?;
+        Ok(Self { path })
+    }
+}
+
+impl Drop for StateLock {
+    fn drop(&mut self) {
+        // Nothing useful can be done if removal fails here; the next writer
+        // then fails closed with `store_locked`, which is the safe outcome.
+        let _ = std::fs::remove_file(&self.path);
     }
 }
 
@@ -558,19 +646,36 @@ fn encode_record(record: &AcceptedRecord) -> StoredRecord {
     }
 }
 
-/// Write `bytes` to `path` so that a crash leaves either the old or the
-/// new contents: temp file, fsync, rename, fsync the directory.
-fn write_durably(path: &Path, bytes: &[u8]) -> Result<()> {
+/// Create `path` exclusively (never following or replacing an existing
+/// entry, including a symlink), owner-only on Unix, write `bytes`, and
+/// fsync it.
+fn create_exclusive(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()
+}
+
+/// Write `bytes` to `path` so that a crash leaves either the old or the
+/// new contents: exclusive temp file, fsync, rename, fsync the directory.
+fn write_durably(path: &Path, bytes: &[u8]) -> Result<()> {
     let directory = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
-    let temp = directory.join(format!(".aion-accepted-{}.tmp", std::process::id()));
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.subsec_nanos());
+    let temp = directory.join(format!(".aion-accepted-{}-{nanos}.tmp", std::process::id()));
     let write = || -> std::io::Result<()> {
-        let mut file = std::fs::File::create(&temp)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
+        create_exclusive(&temp, bytes)?;
         std::fs::rename(&temp, path)?;
         std::fs::File::open(directory)?.sync_all()
     };
@@ -599,7 +704,9 @@ pub fn accept_file(
     policy: &AcceptPolicy,
     store: &dyn AcceptedVersionStore,
 ) -> Result<VerifiedChain> {
-    let chain = verify_file_chain(path, registry)?;
+    let chain = verify_file_chain(path, registry).inspect_err(|e| {
+        tracing::warn!(event = "file_not_accepted", reason = rejection_reason(e));
+    })?;
     let file_id = crate::obs::short_hex(&chain.context().file_id().as_u64().to_le_bytes());
     let outcome = policy
         .check(&chain)
@@ -628,7 +735,9 @@ pub fn accept_file(
 
 const fn rejection_reason(error: &AionError) -> &'static str {
     match error {
-        AionError::PolicyRejected { reason } | AionError::StoreUnavailable { reason } => reason,
+        AionError::PolicyRejected { reason }
+        | AionError::StoreUnavailable { reason }
+        | AionError::ChainRejected { reason } => reason,
         AionError::VersionRejected { reason } => reason.as_str(),
         _ => "unknown",
     }
@@ -840,20 +949,65 @@ mod tests {
         ok(accept_file(&fx.main[0], &fx.registry, &v3, &store));
     }
 
+    fn store_failure(result: &Result<VerifiedChain>) -> Option<&'static str> {
+        match result {
+            Err(AionError::StoreUnavailable { reason }) => Some(reason),
+            _ => None,
+        }
+    }
+
     #[test]
     fn file_store_survives_reopening_and_fails_closed_when_corrupt() {
         let fx = fixture();
         let state = fx.main[0].with_file_name("accepted.json");
-        ok(accept(&fx, &fx.main[2], &FileStore::new(&state)));
+        ok(accept(&fx, &fx.main[2], &ok(FileStore::create(&state))));
         assert_eq!(
-            rejected(&accept(&fx, &fx.main[1], &FileStore::new(&state))),
+            rejected(&accept(&fx, &fx.main[1], &FileStore::open(&state))),
             Some(VersionRejectReason::Replay)
         );
         ok(std::fs::write(&state, b"{ not json"));
+        assert_eq!(
+            store_failure(&accept(&fx, &fx.main[3], &FileStore::open(&state))),
+            Some("store_corrupt")
+        );
+    }
+
+    #[test]
+    fn file_store_never_treats_a_missing_or_locked_state_as_empty() {
+        let fx = fixture();
+        let state = fx.main[0].with_file_name("missing.json");
+        assert_eq!(
+            store_failure(&accept(&fx, &fx.main[0], &FileStore::open(&state))),
+            Some("store_missing")
+        );
+        let store = ok(FileStore::create(&state));
         assert!(matches!(
-            accept(&fx, &fx.main[3], &FileStore::new(&state)),
+            FileStore::create(&state),
             Err(AionError::StoreUnavailable {
-                reason: "store_corrupt"
+                reason: "store_exists"
+            })
+        ));
+        let lock = fx.main[0].with_file_name("missing.json.lock");
+        ok(std::fs::write(&lock, b"held"));
+        assert_eq!(
+            store_failure(&accept(&fx, &fx.main[0], &store)),
+            Some("store_locked")
+        );
+        ok(std::fs::remove_file(&lock));
+        ok(accept(&fx, &fx.main[0], &store));
+        assert!(!lock.exists(), "lock released after the update");
+    }
+
+    #[test]
+    fn a_pin_record_with_a_head_hash_is_treated_as_corrupt() {
+        let fx = fixture();
+        let chain = ok(verify_file_chain(&fx.main[0], &fx.registry));
+        let summary = ChainSummary::new(&chain);
+        let corrupt = AcceptedRecord::from_parts(ok(summary.genesis_hash()), 0, Some([1; 32]));
+        assert!(matches!(
+            decide(Some(&corrupt), summary),
+            Err(AionError::StoreUnavailable {
+                reason: "record_corrupt"
             })
         ));
     }
@@ -890,38 +1044,36 @@ mod tests {
         #[hegel::test(test_cases = 20)]
         fn prop_store_matches_the_reference_model(tc: hegel::TestCase) {
             let fx = fixture();
-            let files: Vec<(bool, u64, &PathBuf)> = fx
-                .main
-                .iter()
-                .enumerate()
-                .map(|(i, p)| (false, (i as u64).saturating_add(1), p))
-                .chain(
-                    fx.fork
-                        .iter()
-                        .enumerate()
-                        .map(|(i, p)| (true, (i as u64).saturating_add(3), p)),
-                )
-                .collect();
+            let mut files: Vec<((bool, u64), VerifiedChain)> = Vec::new();
+            for (i, path) in fx.main.iter().enumerate() {
+                let version = (i as u64).saturating_add(1);
+                files.push(((false, version), ok(verify_file_chain(path, &fx.registry))));
+            }
+            for (i, path) in fx.fork.iter().enumerate() {
+                let version = (i as u64).saturating_add(3);
+                files.push(((true, version), ok(verify_file_chain(path, &fx.registry))));
+            }
             let store = MemoryStore::new();
             let mut state: Option<(bool, u64)> = None;
             let steps = tc.draw(gs::integers::<usize>().min_value(1).max_value(12));
             for _ in 0..steps {
                 let pick =
                     tc.draw(gs::integers::<usize>().max_value(files.len().saturating_sub(1)));
-                let (fork, version, path) = files[pick];
-                let mut presented = (fork, version);
-                if version <= 2 {
-                    presented.0 = false;
-                }
-                let expected = model(state, presented);
-                let actual = accept(&fx, path, &store);
-                match expected {
-                    Ok((_, next)) => {
-                        assert!(actual.is_ok(), "model accepts {presented:?} from {state:?}");
+                let (presented, chain) = &files[pick];
+                let file_id = chain.context().file_id();
+                let actual = store.check_and_advance(ChainSummary::new(chain));
+                match model(state, *presented) {
+                    Ok((decision, next)) => {
+                        assert_eq!(ok(actual), decision, "{presented:?} after {state:?}");
                         state = next;
                     }
-                    Err(reason) => assert_eq!(rejected(&actual), Some(reason)),
+                    Err(reason) => assert!(matches!(
+                        actual,
+                        Err(AionError::VersionRejected { reason: r }) if r == reason
+                    )),
                 }
+                let recorded = ok(store.record(file_id)).map(|r| r.head_version());
+                assert_eq!(recorded, state.map(|(_, version)| version));
             }
         }
     }
