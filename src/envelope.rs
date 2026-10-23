@@ -13,6 +13,11 @@
 //! This module only parses and encodes bytes. It holds no keys and does
 //! no cryptography: opening an envelope is a later layer.
 //!
+//! **A parsed envelope is structurally valid, not authenticated.** Its
+//! bytes are trusted only after the version signature and the rules
+//! commitment over the whole section have verified, which
+//! [`crate::chain::VerifiedChain`] does. Nothing here checks either.
+//!
 //! [`Envelope::parse`] accepts exactly one encoding for a given envelope:
 //! stanzas strictly ascending by `kind ‖ body`, no two stanzas for the
 //! same recipient identity, every known kind at its exact length, and no
@@ -23,44 +28,62 @@
 //! # Example
 //!
 //! ```
-//! use aion_context::envelope::Envelope;
+//! use aion_context::envelope::{Envelope, StanzaRecipient};
+//!
+//! let mut bytes = b"AIONENV1".to_vec();
+//! bytes.push(0x01); // content suite
+//! bytes.extend_from_slice(&[0xC0; 32]); // DEK commitment
+//! bytes.extend_from_slice(&1u16.to_le_bytes()); // one stanza:
+//! bytes.extend_from_slice(&[0x80, 1, 0, 0x09]); // reserved kind, 1-byte body
+//! bytes.extend_from_slice(&[0x0E; 12]); // nonce
+//! bytes.extend_from_slice(&24u64.to_le_bytes());
+//! bytes.extend_from_slice(&[0xCC; 24]); // ciphertext
+//!
+//! let envelope = Envelope::parse(&bytes)?;
+//! assert_eq!(envelope.dek_commitment(), &[0xC0; 32]);
+//! assert!(matches!(
+//!     envelope.stanzas()[0].recipient(),
+//!     StanzaRecipient::Unknown { kind: 0x80 }
+//! ));
+//! assert_eq!(envelope.to_bytes(), bytes);
 //!
 //! assert!(Envelope::parse(b"not an envelope").is_err());
+//! # Ok::<(), aion_context::AionError>(())
 //! ```
 
 use crate::format::FRAME_HEADER_LEN;
 use crate::{AionError, Result};
 
 /// The 8-byte magic that opens every envelope.
-pub const ENVELOPE_MAGIC: [u8; 8] = *b"AIONENV1";
+pub(crate) const ENVELOPE_MAGIC: [u8; 8] = *b"AIONENV1";
 
 /// The content key schedule this crate writes and reads (RFC-0039 suite
 /// `0x01`: HKDF-SHA256 content key, ChaCha20-Poly1305).
-pub const CONTENT_SUITE_V1: u8 = 0x01;
+pub(crate) const CONTENT_SUITE_V1: u8 = 0x01;
 
 /// Most stanzas one envelope may carry.
 pub const MAX_STANZAS: usize = 64;
 
 /// Largest single stanza body, in bytes.
-pub const MAX_STANZA_BODY: usize = 4096;
+pub(crate) const MAX_STANZA_BODY: usize = 4096;
 
 /// Largest total size of all stanzas, headers included, in bytes.
-pub const MAX_STANZA_TOTAL: usize = 160 * 1024;
+pub(crate) const MAX_STANZA_TOTAL: usize = 160 * 1024;
 
 /// Stanza kind: HPKE recipient with DHKEM(X25519).
-pub const STANZA_X25519: u8 = 0x01;
+pub(crate) const STANZA_X25519: u8 = 0x01;
 
 /// Stanza kind: external DEK wrapper (RFC-0039 Phase C).
-pub const STANZA_EXTERNAL: u8 = 0x02;
+pub(crate) const STANZA_EXTERNAL: u8 = 0x02;
 
 /// Stanza kind: HPKE recipient with the X-Wing KEM (ML-KEM-768 + X25519).
-pub const STANZA_XWING: u8 = 0x03;
+pub(crate) const STANZA_XWING: u8 = 0x03;
 
 /// Exact body length of an X25519 stanza: `pk[32] ‖ enc[32] ‖ wrapped[48]`.
-pub const X25519_BODY_LEN: usize = 112;
+pub(crate) const X25519_BODY_LEN: usize = 112;
 
 /// Exact body length of an X-Wing stanza: `pk[1216] ‖ enc[1120] ‖ wrapped[48]`.
-pub const XWING_BODY_LEN: usize = 2384;
+pub(crate) const XWING_BODY_LEN: usize = 2384;
 
 const NONCE_LEN: usize = 12;
 const TAG_LEN: usize = 16;
@@ -72,13 +95,15 @@ const MAX_KEY_REF: usize = 1024;
 const FIXED_LEN: usize = 8 + 1 + 32 + 2 + NONCE_LEN + 8;
 
 /// Shortest valid ciphertext: an empty frame header plus the AEAD tag.
-pub const MIN_CIPHERTEXT_LEN: usize = FRAME_HEADER_LEN + TAG_LEN;
+pub(crate) const MIN_CIPHERTEXT_LEN: usize = FRAME_HEADER_LEN + TAG_LEN;
 
 /// One recipient's wrapping of the DEK, as typed fields.
 ///
-/// `#[non_exhaustive]` because RFC-0039 reserves kinds `0x04`–`0xFF` for
-/// future recipient types; until a kind is defined it parses as
-/// [`StanzaRecipient::Unknown`].
+/// `#[non_exhaustive]` because RFC-0039 reserves kinds `0x00` and
+/// `0x04`–`0xFF` for future recipient types. Until a kind is defined it
+/// parses as [`StanzaRecipient::Unknown`]; once an RFC defines it, the
+/// same bytes parse as a new typed variant instead, so code matching
+/// `Unknown` for that kind changes behavior with the crate version.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum StanzaRecipient<'a> {
@@ -190,6 +215,13 @@ pub struct Envelope<'a> {
 impl<'a> Envelope<'a> {
     /// Parse an envelope, accepting only its canonical encoding.
     ///
+    /// The result is structural only: see the module docs on
+    /// authentication. `ct_len` is bounded here only by the input length
+    /// and the 24-byte minimum; the reader's rules-size limit is applied
+    /// by the opening layer before any AEAD work. An unknown content
+    /// suite is rejected rather than skipped, because no stanza of an
+    /// unknown suite can be opened.
+    ///
     /// # Errors
     ///
     /// Returns [`AionError::InvalidFormat`] for a wrong magic or suite, a
@@ -241,7 +273,7 @@ impl<'a> Envelope<'a> {
         &self.stanzas
     }
 
-    /// The content AEAD nonce.
+    /// The 12-byte content AEAD nonce.
     #[must_use]
     pub const fn nonce(&self) -> &'a [u8; NONCE_LEN] {
         self.nonce
@@ -604,6 +636,47 @@ mod tests {
     }
 
     #[test]
+    fn external_field_limits_are_inclusive() {
+        let provider = "p".repeat(64);
+        let key_ref = "k".repeat(1024);
+        assert!(encode(vec![external(&provider, &key_ref, b"blob")]).is_ok());
+        assert!(encode(vec![external("kms", &"k".repeat(1025), b"blob")]).is_err());
+        let long_ref = external("kms", &"k".repeat(256), b"a");
+        let short_ref = external("kms", "k", b"a");
+        assert!(encode(vec![long_ref, short_ref]).is_ok());
+    }
+
+    #[test]
+    fn duplicate_external_identity_is_rejected_among_other_stanzas() {
+        let stanzas = vec![
+            external("kms", "key", b"a"),
+            external("kms", "key-2", b"x"),
+            x25519(1),
+            external("kms", "key", b"b"),
+            xwing(1),
+        ];
+        assert!(encode(stanzas).is_err());
+    }
+
+    #[test]
+    fn mixed_stanzas_over_the_total_cap_are_rejected() {
+        let mut stanzas: Vec<_> = (0..50u8).map(xwing).collect();
+        stanzas.extend((0..14u8).map(|n| (0x80u8, hpke_body(MAX_STANZA_BODY, n, 0))));
+        assert!(encode(stanzas).is_err());
+    }
+
+    #[test]
+    fn oversized_ct_len_is_rejected_without_allocating() {
+        let bytes = ok(encode(vec![x25519(1)]));
+        let ct_len_at = bytes.len() - MIN_CIPHERTEXT_LEN - 8;
+        for claimed in [u64::MAX, 1u64 << 40, 25] {
+            let mut tampered = bytes.clone();
+            tampered[ct_len_at..ct_len_at + 8].copy_from_slice(&claimed.to_le_bytes());
+            assert!(Envelope::parse(&tampered).is_err());
+        }
+    }
+
+    #[test]
     fn short_ciphertext_and_trailing_bytes_are_rejected() {
         let short = encode_envelope(&COMMITMENT, vec![x25519(1)], &NONCE, &[0; 23]);
         assert!(short.is_err());
@@ -703,8 +776,9 @@ mod tests {
 
         #[hegel::test]
         fn prop_a_mutated_envelope_is_rejected_or_still_canonical(tc: hegel::TestCase) {
-            let bytes = encode(vec![x25519(1), x25519(2), external("kms", "key", b"blob")])
-                .unwrap_or_else(|_| std::process::abort());
+            let n = tc.draw(gs::integers::<u8>().min_value(1).max_value(4));
+            let stanzas: Vec<_> = (0..n).map(|id| draw_stanza(&tc, id)).collect();
+            let bytes = encode(stanzas).unwrap_or_else(|_| std::process::abort());
             let index = tc.draw(gs::integers::<usize>().max_value(bytes.len().saturating_sub(1)));
             let flip = tc.draw(gs::integers::<u8>().min_value(1));
             let mut mutated = bytes;
