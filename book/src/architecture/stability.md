@@ -38,8 +38,13 @@ layout requires:
 4. a major-version bump of the crate.
 
 Older readers reject newer-format files with a deterministic
-`Error::UnsupportedFormat(version)`. We will **never** silently
+`AionError::UnsupportedVersion`. We will **never** silently
 misparse an older format.
+
+| Crate | Writes | Reads and verifies |
+|---|---|---|
+| 1.0.x | format 2 | format 2 |
+| 2.x | format 3 (`init`); `commit` keeps the file's format | formats 2 and 3 |
 
 ### 3. Cryptographic primitives
 

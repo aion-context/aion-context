@@ -10,6 +10,31 @@ and the project follows [Semantic Versioning].
 
 ## [Unreleased]
 
+## [2.0.0] — 2026-10-23
+
+Major release. New files are format v3 (RFC-0039 Phase A). Every
+version's signature covers the exact stored rules bytes, the file ID,
+and the rules mode, and anyone can check that without a key. Readers
+can now reject replayed and forked versions with `accept_file` and
+`aion accept`.
+
+**Upgrading from 1.x:**
+
+- **Upgrade readers before writers.** 2.0.0 reads, verifies, and
+  commits format-v2 files. 1.0.x rejects format-v3 files with
+  `UnsupportedVersion`.
+- 2.0.0 includes the fixes for GHSA-7625-44v8-v62f (1.0.1) and
+  GHSA-9c6x-g6hv-mpvr (1.0.2).
+- Add `protection: RulesProtection::Public` to `InitOptions`,
+  `CommitOptions`, and `ExternalCommitOptions`, and `--public` to
+  `aion init` and `aion commit`.
+- `SigningKey::generate`, `crypto::generate_nonce`,
+  `HybridSigningKey::generate`, and four `dsse` payload builders return
+  `Result`. Add `?`.
+- The minimum supported Rust version is 1.87.
+- Rules are not confidential in either format. Format-v3 public rules
+  are stored in the clear. Confidential rules are RFC-0039 Phase B.
+
 ### Added
 
 - **RFC-0039 Phase A4: receiver-side acceptance with replay defense**
@@ -264,6 +289,44 @@ and the project follows [Semantic Versioning].
 - `unsafe-libyaml` (RUSTSEC-2024-0449, via the deprecated `serde_yaml`)
   is ignored with a written reason pending migration to a safe-Rust
   YAML crate.
+
+## [1.0.2] — 2026-10-23
+
+Security patch release. No API, format, or CLI changes.
+
+### Security
+
+- **GHSA-9c6x-g6hv-mpvr: unbounded header entry counts let a crafted
+  `.aion` file abort the verifying process.** `AionParser::new` did not
+  check `version_chain_count`, `signatures_count`, or
+  `audit_trail_count` against the file length, and readers sized
+  buffers from them. A file of a few hundred bytes, with no key, made
+  `verify_file`, `aion verify`, `aion archive verify`, and the history
+  readers abort on a huge allocation or panic with `capacity overflow`.
+  `AionParser::new` now rejects such headers with `InvalidFormat` and a
+  `parser_rejected` / `section_out_of_bounds` trace event. The bug
+  does not affect signature or hash-chain verification: it crashes the
+  reader rather than making it accept a forged file.
+
+## [1.0.1] — 2026-10-23
+
+Security patch release. No API, format, or CLI changes.
+
+### Security
+
+- **GHSA-7625-44v8-v62f: `verify_file` did not bind the rules payload to
+  the signed `rules_hash`.** The rules-section key is derived from public
+  header fields and the whole-file integrity hash is unkeyed. So a
+  substituted payload, with the integrity hash recomputed, passed
+  `verify_file`, `aion verify`, and `aion archive verify`.
+  `verify_file` now decrypts the latest payload and compares it with the
+  latest signed `rules_hash`. A mismatch fails `hash_chain_valid` and
+  `is_valid`. Reads through `show_current_rules` were already
+  fail-closed.
+
+  Note: the rules section is not confidential. Anyone holding an
+  `.aion` file can read its rules. This is documented behavior, not
+  part of this advisory.
 
 ## [1.0.0] — 2026-04-25
 
