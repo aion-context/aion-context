@@ -720,7 +720,7 @@ fn get_last_version_entry(parser: &AionParser<'_>) -> Result<VersionEntry> {
 
 /// Encrypt rules content using file-specific key derivation
 #[allow(clippy::arithmetic_side_effects)] // Capacity calculation is safe
-fn encrypt_rules(
+pub(crate) fn encrypt_rules(
     rules: &[u8],
     file_id: FileId,
     version: VersionNumber,
@@ -1160,11 +1160,17 @@ pub fn verify_file(
     path: &Path,
     registry: &crate::key_registry::KeyRegistry,
 ) -> Result<VerificationReport> {
-    let file_bytes = std::fs::read(path).map_err(|e| AionError::FileReadError {
-        path: path.to_path_buf(),
-        source: e,
-    })?;
-    let parser = AionParser::new(&file_bytes)?;
+    verify_bytes(&read_file_bytes(path)?, registry)
+}
+
+/// The checks behind [`verify_file`], over bytes already in memory.
+/// Shared with [`crate::chain::verify_file_chain`], so both entry points
+/// apply exactly the same verification to exactly the bytes they hold.
+pub(crate) fn verify_bytes(
+    file_bytes: &[u8],
+    registry: &crate::key_registry::KeyRegistry,
+) -> Result<VerificationReport> {
+    let parser = AionParser::new(file_bytes)?;
     let header = parser.header();
 
     let mut report = VerificationReport::new(FileId(header.file_id), header.version_chain_count);
@@ -1346,7 +1352,7 @@ fn verify_audit_chain_into_report(parser: &AionParser<'_>, report: &mut Verifica
 }
 
 /// Bounded `reason` codes for `event="file_rejected"` (RFC-0007 / observability rule).
-const fn classify_verify_failure(report: &VerificationReport) -> &'static str {
+pub(crate) const fn classify_verify_failure(report: &VerificationReport) -> &'static str {
     if !report.structure_valid {
         "structure_invalid"
     } else if !report.integrity_hash_valid {
@@ -1475,8 +1481,14 @@ pub struct FileInfo {
 
 /// Get the current (latest) rules content from an AION file
 ///
-/// This function loads the file, finds the latest version entry,
-/// and decrypts the rules using the file-specific encryption key.
+/// This function loads the file once, finds the latest version entry,
+/// checks that the stored section matches that entry's signed
+/// `rules_hash`, and returns the rules.
+///
+/// It takes no registry, so it does **not** verify signatures. To read
+/// rules only from a fully verified file, use
+/// [`crate::chain::verify_file_chain`] and
+/// [`crate::chain::open_current_rules`].
 ///
 /// # Arguments
 ///

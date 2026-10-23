@@ -531,7 +531,7 @@ state before it is verified.
 
 | Function | Behavior |
 |---|---|
-| `show_current_rules(path)` | Kept for compatibility. It reads the file **once** into a buffer, verifies it as `verify_file_chain` does, and reads the section from that same buffer, never re-opening the path. Public mode: returns the plaintext. Confidential mode: `Err(AionError::RecipientKeyRequired)`. New code should use `open_current_rules(&VerifiedChain, …)`. |
+| `show_current_rules(path)` | Kept for compatibility. It reads the file **once** into a buffer and reads the section from that same buffer, never re-opening the path. It takes no registry, so it checks the head's commitment (key-free) but cannot verify signatures. Public mode: returns the plaintext. Confidential mode: `Err(AionError::RecipientKeyRequired)`. New code should use `open_current_rules(&VerifiedChain, …)`. |
 | `open_current_rules(&VerifiedChain, &RecipientKeys)` | **New.** Opens the head section. |
 | `open_rules_section(section, VerifiedEntry<'_>, &RecipientKeys \| &Dek)` | **New.** Opens an **archived** section, such as a historical version's section stored outside the file under its `rules_commitment`. It first recomputes the commitment over `section` and compares it with the verified entry's. A disclosed DEK opens that one section and no other, because each DEK is independent random. |
 | `disclose_version_key(VerifiedEntry<'_>, section, &RecipientKeys)` | **New.** Returns that version's DEK, for selective disclosure. |
@@ -553,6 +553,17 @@ state before it is verified.
 The file holds only the latest section, as in v2. Historical versions
 can be opened only if someone archived their sections. Archival is
 the operator's job, and the commitment is the archive key.
+
+*Implementation note (Phase A3):* these live in the `chain` module.
+`VerifiedChain::from_bytes` verifies bytes already in memory, and
+`verify_file_chain` reads a path. Failures return
+`AionError::ChainRejected { reason }`, with the same bounded reason as
+the `file_rejected` trace event. `RecipientKeys` ships as a
+`#[non_exhaustive]` placeholder, where `RecipientKeys::none()` opens
+public and v2 rules. `disclose_version_key` and the
+`NotARecipient` / `RulesUnopenable` split arrive with Phase B, the
+first phase that has confidential sections to open. Until then a
+confidential section returns `RecipientKeyRequired`.
 
 #### Writing
 

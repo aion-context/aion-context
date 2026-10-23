@@ -12,6 +12,25 @@ and the project follows [Semantic Versioning].
 
 ### Added
 
+- **RFC-0039 Phase A3: verified chains** (`chain` module).
+  - `verify_file_chain(path, &registry)` and
+    `VerifiedChain::from_bytes` run exactly `verify_file`'s checks.
+    They return a `VerifiedChain` that owns the bytes it verified, or
+    `AionError::ChainRejected { reason }` with the bounded
+    `file_rejected` reason.
+  - `VerifiedEntry` exposes the signed version, author, timestamp,
+    rules commitment, and mode. It can only be obtained from a
+    `VerifiedChain`; a `compile_fail` doctest pins this.
+  - `open_current_rules(&chain, &RecipientKeys)` reads the head's rules
+    from the verified bytes, never from the path.
+  - `open_rules_section(section, entry, &keys)` opens an archived
+    historical section after binding it to that entry's signed
+    commitment.
+  - `RecipientKeys::none()` is a placeholder until Phase B adds
+    identities.
+  - `aion show <FILE> rules` now verifies the whole chain against
+    `--registry` first and refuses to print rules from a file that
+    fails.
 - **RFC-0039 Phase A2a: reading and verifying format-v3 files.** The
   parser accepts format 2 and 3 (`FileHeader::format`,
   `FileHeader::context`). For v3 it reads a per-entry rules mode from
