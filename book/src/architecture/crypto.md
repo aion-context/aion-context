@@ -121,6 +121,11 @@ confused with hashes used for another. The separators in use:
 | `AION_V3_VERSION_HASH_V1\0` | Format-v3 version hash, the value `parent_hash` links to (RFC-0039) |
 | `AION_V3_ATTESTATION_V1\0` | Format-v3 multi-party attestation message (RFC-0039) |
 | `AION_V3_RULES_COMMIT_V1\0` | Format-v3 commitment to the stored rules section (RFC-0039) |
+| `AION_V4_VERSION_SIGNATURE_V1\0` | Format-v4 version signature canonical message; adds the metadata commitment (RFC-0040) |
+| `AION_V4_VERSION_HASH_V1\0` | Format-v4 version hash (RFC-0040) |
+| `AION_V4_ATTESTATION_V1\0` | Format-v4 multi-party attestation message (RFC-0040) |
+| `AION_V4_AUDIT_ENTRY_V1\0` | Format-v4 audit-entry hash: the stored 80 bytes and the details text (RFC-0040) |
+| `AION_V4_METADATA_COMMIT_V1\0` | Format-v4 commitment to a version's message and audit entry (RFC-0040) |
 | `aion-context v3 2026-10 dek commitment` | BLAKE3 `derive_key` context for the DEK commitment (RFC-0039) |
 
 Key-derivation and HPKE labels (not BLAKE3 domains):

@@ -753,8 +753,8 @@ impl<'a> AionParser<'a> {
                     });
                 }
             }
-            crate::format::FormatVersion::V3 => {
-                crate::format::RulesMode::from_reserved(&reserved)?;
+            format @ (crate::format::FormatVersion::V3 | crate::format::FormatVersion::V4) => {
+                crate::format::RulesMode::from_reserved(&reserved, format)?;
             }
         }
         Ok(reserved)

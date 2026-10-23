@@ -144,7 +144,7 @@ aion accept <FILE> \
     --state <STATE_FILE> \                # must exist, unless --init-state
     [--init-state]                       # first run: create the state file
     [--pin <GENESIS_HASH>]               # required genesis, 64 hex chars (check only)
-    [--min-format 3]                     # refuse format-v2 files
+    [--min-format 4]                     # refuse v2/v3 (unsigned metadata)
     [--require-confidential head|all]    # refuse public rules
 ```
 
@@ -176,6 +176,39 @@ state only advances after full verification and the policy checks pass.
 Exit codes: 0 means accepted, 1 means not accepted, and 2 means the
 state file is missing, locked, or unreadable, so no verdict was
 reached.
+
+## `aion migrate`
+
+Write a new format-v4 file that continues a verified file (RFC-0040).
+Format v2 and v3 do not sign commit messages or the audit trail; v4
+does.
+
+```bash
+aion migrate <SOURCE> <DEST> \
+    --registry <REGISTRY_FILE> \
+    --author <AUTHOR_ID> --key <KEY_ID> \
+    (--public | --recipient <RECIPIENT>… | --keep-recipients) \
+    [--identity <IDENTITY_ID>]…          # to open a confidential source
+    [--message "Migrated to format v4"]
+```
+
+1. `SOURCE` is verified against the registry; a file that fails is
+   refused.
+2. Its head rules are opened (pass `--identity` for confidential rules).
+3. `DEST` is written as a new v4 file with a new `file_id`. Its genesis
+   carries the rules and a signed link to `SOURCE`'s format, `file_id`,
+   head version and head version hash.
+4. `SOURCE` is not modified. Archive it: the new file imports no
+   history.
+
+The registry must pin `--author` with `--key`, or nothing is written.
+The link is the migrating author's signed claim that the new file
+continues the old one; it does not prove the rules are the same.
+Receivers check it in the library with
+`migration::verify_migration(&new, &old, &MigrationPolicy::SameAuthor)`
+(or `Author(id)` / `AnyOf(…)`). `acceptance::accept_migration` also records
+it, so the first verified destination for a source wins and any other is
+refused as `migration_conflict`.
 
 ## How the lifecycle interacts with the registry
 

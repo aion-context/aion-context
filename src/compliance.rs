@@ -9,7 +9,7 @@
 //! Reports are generated in structured formats (JSON, Markdown, plain text)
 //! suitable for regulatory submission or conversion to PDF.
 
-use crate::operations::{show_file_info, verify_file, FileInfo, VerificationReport};
+use crate::operations::{file_info_of, verify_bytes, FileInfo, VerificationReport};
 use crate::{AionError, Result};
 use std::path::Path;
 
@@ -71,6 +71,7 @@ pub struct ComplianceReport {
 
 /// Verification summary for reports
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct VerificationSummary {
     /// Overall validity
     pub is_valid: bool,
@@ -84,6 +85,10 @@ pub struct VerificationSummary {
     pub signatures_valid: bool,
     /// Number of temporal warnings
     pub temporal_warning_count: usize,
+    /// Whether commit messages and the audit trail are signed (RFC-0040).
+    /// False for format v2/v3: their version messages are unauthenticated.
+    #[serde(default)]
+    pub metadata_signed: bool,
 }
 
 /// Version summary for reports
@@ -129,9 +134,12 @@ pub fn generate_compliance_report(
     format: ReportFormat,
     registry: &crate::key_registry::KeyRegistry,
 ) -> Result<String> {
-    // Gather file information
-    let file_info = show_file_info(path, registry)?;
-    let verification = verify_file(path, registry)?;
+    let file_bytes = std::fs::read(path).map_err(|e| AionError::FileReadError {
+        path: path.to_path_buf(),
+        source: e,
+    })?;
+    let file_info = file_info_of(&file_bytes, registry)?;
+    let verification = verify_bytes(&file_bytes, registry)?;
 
     // Build report structure
     let report = build_report(path, framework, &file_info, &verification)?;
@@ -160,6 +168,7 @@ fn build_report(
         hash_chain_valid: verification.hash_chain_valid,
         signatures_valid: verification.signatures_valid,
         temporal_warning_count: verification.temporal_warnings.len(),
+        metadata_signed: verification.metadata_signed,
     };
 
     let version_history: Vec<VersionSummary> = file_info
@@ -494,6 +503,10 @@ fn format_as_text(report: &ComplianceReport) -> String {
     let mut output = String::new();
     text_push_header(&mut output, report);
     text_push_verification_summary(&mut output, &report.verification);
+    if !report.verification.metadata_signed {
+        output.push_str(UNSIGNED_METADATA_WARNING);
+        output.push_str("\n\n");
+    }
     text_push_version_history(&mut output, &report.version_history);
     text_push_framework_sections(&mut output, &report.framework_sections);
     output.push_str(&format!("{}\n", "=".repeat(70)));
@@ -557,12 +570,34 @@ fn text_push_verification_summary(output: &mut String, verification: &Verificati
     output.push_str(&format!("\n{}\n\n", "-".repeat(70)));
 }
 
+/// Shown when a report's version messages are not covered by signatures.
+const UNSIGNED_METADATA_WARNING: &str = "This file's format (v2 or v3) does not sign commit \
+messages or the audit trail; the messages below are unauthenticated (GHSA-69cp-fwrw-82vh). \
+Migrate it to format v4 to sign them.";
+
+/// Escape control characters so signer-authored text cannot drive a
+/// terminal or break the report layout.
+fn escape_controls(text: &str) -> String {
+    text.chars()
+        .flat_map(|c| {
+            let escaped: Vec<char> = if c.is_control() {
+                c.escape_default().collect()
+            } else {
+                vec![c]
+            };
+            escaped
+        })
+        .collect()
+}
+
 fn text_push_version_history(output: &mut String, history: &[VersionSummary]) {
     output.push_str("VERSION HISTORY\n\n");
     for v in history {
         output.push_str(&format!(
             "  Version {}: {} (Author {})\n",
-            v.version, v.message, v.author_id
+            v.version,
+            escape_controls(&v.message),
+            v.author_id
         ));
         output.push_str(&format!("    Timestamp: {}\n\n", v.timestamp));
     }
@@ -581,6 +616,9 @@ fn format_as_markdown(report: &ComplianceReport) -> String {
     let mut output = String::new();
     md_push_header(&mut output, report);
     md_push_verification_summary(&mut output, &report.verification);
+    if !report.verification.metadata_signed {
+        output.push_str(&format!("> **Warning:** {UNSIGNED_METADATA_WARNING}\n\n"));
+    }
     md_push_version_history(&mut output, &report.version_history);
     md_push_framework_sections(&mut output, &report.framework_sections);
     output.push_str("---\n\n");
@@ -650,7 +688,10 @@ fn md_push_version_history(output: &mut String, history: &[VersionSummary]) {
     for v in history {
         output.push_str(&format!(
             "| {} | {} | {} | {} |\n",
-            v.version, v.author_id, v.timestamp, v.message
+            v.version,
+            v.author_id,
+            v.timestamp,
+            escape_controls(&v.message).replace('|', "\\|")
         ));
     }
     output.push_str("\n---\n\n");

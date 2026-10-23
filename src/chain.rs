@@ -70,16 +70,18 @@ pub struct VerifiedChain {
     entries: Vec<CheckedEntry>,
     head: CheckedEntry,
     head_section: Vec<u8>,
+    migration_details: Option<String>,
 }
 
 /// A version entry together with its rules mode and version hash, both
 /// computed once during verification so no accessor ever has to drop a
 /// decoding error.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct CheckedEntry {
     entry: VersionEntry,
     mode: Option<RulesMode>,
     version_hash: [u8; 32],
+    message: String,
 }
 
 /// Read and fully verify a file, returning a [`VerifiedChain`] over the
@@ -162,27 +164,36 @@ impl VerifiedChain {
         let header = parser.header();
         let context = header.context()?;
         let count = usize::try_from(header.version_chain_count).map_err(|_| empty_chain())?;
-        let entries = (0..count)
-            .map(|index| {
-                let entry = parser.get_version_entry(index)?;
+        let raw = (0..count)
+            .map(|index| parser.get_version_entry(index))
+            .collect::<Result<Vec<_>>>()?;
+        let (messages, migration_details) = messages_of(&parser, context.format(), &raw)?;
+        let entries = raw
+            .into_iter()
+            .zip(messages)
+            .map(|(entry, message)| {
                 let mode = match context.format() {
                     FormatVersion::V2 => None,
-                    FormatVersion::V3 => Some(RulesMode::of(&entry)?),
+                    format @ (FormatVersion::V3 | FormatVersion::V4) => {
+                        Some(RulesMode::of(&entry, format)?)
+                    }
                 };
                 let version_hash = context.version_hash(&entry)?;
                 Ok(CheckedEntry {
                     entry,
                     mode,
                     version_hash,
+                    message,
                 })
             })
             .collect::<Result<Vec<_>>>()?;
-        let head = *entries.last().ok_or_else(empty_chain)?;
+        let head = entries.last().cloned().ok_or_else(empty_chain)?;
         Ok(Self {
             context,
             entries,
             head,
             head_section: parser.encrypted_rules_bytes()?.to_vec(),
+            migration_details,
         })
     }
 
@@ -225,6 +236,23 @@ impl VerifiedChain {
         })
     }
 
+    /// Whether this file's commit messages and audit trail are covered by
+    /// its signatures (RFC-0040): true for format v4. For v2 and v3 the
+    /// messages [`VerifiedEntry::message`] returns are unauthenticated
+    /// (GHSA-69cp-fwrw-82vh).
+    #[must_use]
+    pub const fn metadata_signed(&self) -> bool {
+        self.context.format().signs_metadata()
+    }
+
+    /// The signed details text of a format-v4 genesis whose audit action is
+    /// `MigratedFrom`, unparsed. [`crate::migration::verify_migration`]
+    /// parses and checks it.
+    #[must_use]
+    pub(crate) fn migration_details(&self) -> Option<&str> {
+        self.migration_details.as_deref()
+    }
+
     /// The head version's recipients, so the next version can be sealed to
     /// the same set. Read from the verified head section, never re-read.
     ///
@@ -257,6 +285,55 @@ impl VerifiedChain {
     }
 }
 
+/// Each version's commit message, and the genesis migration details if
+/// any. For v4, from the full metadata check, so every message is the
+/// signed one. For v2 and v3, read leniently and unauthenticated; they
+/// carry no migration details.
+fn messages_of(
+    parser: &AionParser<'_>,
+    format: FormatVersion,
+    entries: &[VersionEntry],
+) -> Result<(Vec<String>, Option<String>)> {
+    if format.signs_metadata() {
+        let metadata = crate::metadata::verify_v4_metadata(parser, entries)?;
+        let details = metadata
+            .first()
+            .filter(|genesis| {
+                genesis.audit.action_code_raw() == crate::audit::ActionCode::MigratedFrom as u16
+            })
+            .map(|genesis| genesis.details.clone());
+        let messages = metadata.into_iter().map(|m| m.message).collect();
+        return Ok((messages, details));
+    }
+    let table = parser.string_table_bytes()?;
+    let messages = entries
+        .iter()
+        .map(|entry| crate::operations::lossy_message(table, entry))
+        .collect();
+    Ok((messages, None))
+}
+
+/// The verified history of a chain, oldest first, for display.
+///
+/// For format v4 every message is covered by its version's signature. For
+/// v2 and v3, check [`VerifiedChain::metadata_signed`]: their messages are
+/// unauthenticated.
+#[must_use]
+pub fn verified_history(chain: &VerifiedChain) -> Vec<crate::operations::VersionInfo> {
+    chain
+        .entries
+        .iter()
+        .map(|checked| crate::operations::VersionInfo {
+            version_number: checked.entry.version_number,
+            author_id: checked.entry.author_id,
+            timestamp: checked.entry.timestamp,
+            message: checked.message.clone(),
+            rules_hash: checked.entry.rules_hash,
+            parent_hash: (checked.entry.version_number != 1).then_some(checked.entry.parent_hash),
+        })
+        .collect()
+}
+
 fn empty_chain() -> AionError {
     AionError::InvalidFormat {
         reason: "Version chain is empty".to_string(),
@@ -278,6 +355,14 @@ impl VerifiedEntry<'_> {
     #[must_use]
     pub const fn version(&self) -> VersionNumber {
         VersionNumber(self.checked.entry.version_number)
+    }
+
+    /// The version's commit message: signed in format v4, unauthenticated
+    /// in v2 and v3 (see [`VerifiedChain::metadata_signed`]): anyone holding
+    /// a v2 or v3 file can rewrite it without breaking verification.
+    #[must_use]
+    pub fn message(&self) -> &str {
+        &self.checked.message
     }
 
     /// The author who signed this version.
@@ -489,7 +574,7 @@ pub fn open_rules_section(
             entry.rules_commitment(),
         )
         .map(Zeroizing::new),
-        FormatVersion::V3 => open_v3_section(section, entry, keys),
+        FormatVersion::V3 | FormatVersion::V4 => open_v3_section(section, entry, keys),
     }
 }
 
@@ -522,7 +607,7 @@ fn bound_mode(section: &[u8], entry: VerifiedEntry<'_>) -> Result<RulesMode> {
 
 /// A confidential section bound to `entry`, parsed and size-checked.
 fn bound_confidential<'s>(section: &'s [u8], entry: VerifiedEntry<'_>) -> Result<Envelope<'s>> {
-    if entry.context().format() != FormatVersion::V3
+    if !entry.context().format().has_rules_modes()
         || bound_mode(section, entry)? != RulesMode::Confidential
     {
         return Err(AionError::InvalidFormat {
@@ -700,7 +785,7 @@ mod tests {
     }
 
     #[test]
-    fn verified_v3_chain_opens_its_head_rules() {
+    fn verified_v4_chain_opens_its_head_rules() {
         let dir = ok(TempDir::new());
         let path = dir.path().join("chain.aion");
         let key = ok(SigningKey::generate());
@@ -711,7 +796,7 @@ mod tests {
         assert_eq!(chain.version_count(), 3);
         assert_eq!(chain.head().version(), VersionNumber(3));
         assert_eq!(chain.head().author(), author);
-        assert_eq!(chain.context().format(), FormatVersion::V3);
+        assert_eq!(chain.context().format(), FormatVersion::V4);
         assert!(chain
             .entries()
             .all(|entry| entry.rules_mode() == Some(RulesMode::Public)));

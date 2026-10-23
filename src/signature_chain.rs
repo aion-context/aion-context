@@ -80,6 +80,15 @@ pub const VERSION_HASH_DOMAIN_V3: &[u8] = b"AION_V3_VERSION_HASH_V1\0";
 /// Domain separator for format-v3 attestations (RFC-0021, RFC-0039).
 pub const ATTESTATION_DOMAIN_V3: &[u8] = b"AION_V3_ATTESTATION_V1\0";
 
+/// Domain separator for format-v4 version signatures (RFC-0040).
+pub const SIGNATURE_DOMAIN_V4: &[u8] = b"AION_V4_VERSION_SIGNATURE_V1\0";
+
+/// Domain separator for format-v4 version hashes (RFC-0040).
+pub const VERSION_HASH_DOMAIN_V4: &[u8] = b"AION_V4_VERSION_HASH_V1\0";
+
+/// Domain separator for format-v4 attestations (RFC-0021, RFC-0040).
+pub const ATTESTATION_DOMAIN_V4: &[u8] = b"AION_V4_ATTESTATION_V1\0";
+
 /// Length of the fields a v3 message binds, after its domain:
 /// format version (2), `file_id` (8), mode (1), and the 100 bytes of
 /// version fields that v2 also signs.
@@ -374,11 +383,20 @@ pub fn canonical_attestation_message(version: &VersionEntry, signer: AuthorId) -
 /// parent_hash[32] ‖ rules_commitment[32] ‖ author u64 ‖ timestamp u64 ‖
 /// message_offset u64 ‖ message_length u32`, all little-endian.
 fn v3_bound_fields(version: &VersionEntry, file_id: FileId) -> Result<Vec<u8>> {
-    let mode = RulesMode::of(version)?;
-    let mut fields = Vec::with_capacity(V3_BOUND_FIELDS_LEN);
-    fields.extend_from_slice(&FormatVersion::V3.as_u16().to_le_bytes());
+    bound_fields(version, file_id, FormatVersion::V3)
+}
+
+/// The fields a v3 or v4 message binds. v4 inserts the entry's
+/// `metadata_commitment[32]` after the mode (RFC-0040).
+fn bound_fields(version: &VersionEntry, file_id: FileId, format: FormatVersion) -> Result<Vec<u8>> {
+    let mode = RulesMode::of(version, format)?;
+    let mut fields = Vec::with_capacity(V3_BOUND_FIELDS_LEN.saturating_add(32));
+    fields.extend_from_slice(&format.as_u16().to_le_bytes());
     fields.extend_from_slice(&file_id.as_u64().to_le_bytes());
     fields.push(mode.as_u8());
+    if format == FormatVersion::V4 {
+        fields.extend_from_slice(&crate::format::stored_metadata_commitment(version));
+    }
     fields.extend_from_slice(&version.version_number.to_le_bytes());
     fields.extend_from_slice(&version.parent_hash);
     fields.extend_from_slice(&version.rules_hash);
@@ -453,6 +471,63 @@ pub(crate) fn canonical_attestation_message_v3(
         .saturating_add(8);
     let mut message = Vec::with_capacity(capacity);
     message.extend_from_slice(ATTESTATION_DOMAIN_V3);
+    message.extend_from_slice(&fields);
+    message.extend_from_slice(&signer.as_u64().to_le_bytes());
+    Ok(message)
+}
+
+/// Canonical message a format-v4 version signature covers (RFC-0040):
+/// `SIGNATURE_DOMAIN_V4 ‖ format_version ‖ file_id ‖ rules_mode ‖
+/// metadata_commitment ‖` the v2 version fields.
+///
+/// # Errors
+///
+/// Returns [`crate::AionError::InvalidFormat`] if the entry's rules mode
+/// byte is unknown or a reserved byte that must be zero is not.
+pub(crate) fn canonical_version_message_v4(
+    version: &VersionEntry,
+    file_id: FileId,
+) -> Result<Vec<u8>> {
+    let fields = bound_fields(version, file_id, FormatVersion::V4)?;
+    let mut message = Vec::with_capacity(SIGNATURE_DOMAIN_V4.len().saturating_add(fields.len()));
+    message.extend_from_slice(SIGNATURE_DOMAIN_V4);
+    message.extend_from_slice(&fields);
+    Ok(message)
+}
+
+/// Hash of a format-v4 version entry, the value the next version's
+/// `parent_hash` links to (RFC-0040). Covers the metadata commitment, so a
+/// version's metadata is part of its identity.
+///
+/// # Errors
+///
+/// As [`canonical_version_message_v4`].
+pub(crate) fn compute_version_hash_v4(version: &VersionEntry, file_id: FileId) -> Result<[u8; 32]> {
+    let fields = bound_fields(version, file_id, FormatVersion::V4)?;
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(VERSION_HASH_DOMAIN_V4);
+    hasher.update(&fields);
+    Ok(*hasher.finalize().as_bytes())
+}
+
+/// Canonical message a format-v4 attestation covers (RFC-0021, RFC-0040):
+/// `ATTESTATION_DOMAIN_V4 ‖` the v4 bound fields `‖ signer u64`.
+///
+/// # Errors
+///
+/// As [`canonical_version_message_v4`].
+pub(crate) fn canonical_attestation_message_v4(
+    version: &VersionEntry,
+    file_id: FileId,
+    signer: AuthorId,
+) -> Result<Vec<u8>> {
+    let fields = bound_fields(version, file_id, FormatVersion::V4)?;
+    let capacity = ATTESTATION_DOMAIN_V4
+        .len()
+        .saturating_add(fields.len())
+        .saturating_add(8);
+    let mut message = Vec::with_capacity(capacity);
+    message.extend_from_slice(ATTESTATION_DOMAIN_V4);
     message.extend_from_slice(&fields);
     message.extend_from_slice(&signer.as_u64().to_le_bytes());
     Ok(message)
@@ -958,6 +1033,89 @@ mod tests {
             )
             .unwrap_or_else(|_| std::process::abort());
             assert_eq!(actual, expected);
+        }
+
+        /// RFC-0040: the v4 fields are the v3 fields with the metadata
+        /// commitment inserted after the mode byte.
+        fn golden_v4_fields() -> Vec<u8> {
+            let v3 = golden_v3_fields();
+            let (head, tail) = v3.split_at(11);
+            let mut fields = vec![0x04, 0x00];
+            fields.extend_from_slice(head.get(2..).unwrap_or_default());
+            fields.extend_from_slice(&[0x5C; 32]);
+            fields.extend_from_slice(tail);
+            fields
+        }
+
+        fn golden_v4_entry() -> VersionEntry {
+            golden_v3_entry().with_metadata_commitment([0x5C; 32])
+        }
+
+        #[test]
+        fn v4_version_message_matches_golden_layout() {
+            let mut expected = b"AION_V4_VERSION_SIGNATURE_V1\0".to_vec();
+            expected.extend_from_slice(&golden_v4_fields());
+            assert_eq!(expected.len(), 29 + 111 + 32);
+            let actual =
+                canonical_version_message_v4(&golden_v4_entry(), FileId::new(GOLDEN_FILE_ID))
+                    .unwrap_or_else(|_| std::process::abort());
+            assert_eq!(actual, expected);
+        }
+
+        #[test]
+        fn v4_version_hash_and_attestation_match_golden_layout() {
+            let mut input = b"AION_V4_VERSION_HASH_V1\0".to_vec();
+            input.extend_from_slice(&golden_v4_fields());
+            let actual = compute_version_hash_v4(&golden_v4_entry(), FileId::new(GOLDEN_FILE_ID))
+                .unwrap_or_else(|_| std::process::abort());
+            assert_eq!(actual, *blake3::hash(&input).as_bytes());
+
+            let mut expected = b"AION_V4_ATTESTATION_V1\0".to_vec();
+            expected.extend_from_slice(&golden_v4_fields());
+            expected.extend_from_slice(&[0xEF, 0xCD, 0xAB, 0x89, 0x67, 0x45, 0x23, 0x01]);
+            let attestation = canonical_attestation_message_v4(
+                &golden_v4_entry(),
+                FileId::new(GOLDEN_FILE_ID),
+                AuthorId::new(0x0123_4567_89AB_CDEF),
+            )
+            .unwrap_or_else(|_| std::process::abort());
+            assert_eq!(attestation, expected);
+        }
+
+        #[test]
+        fn v4_entries_are_not_valid_v3_entries_and_domains_do_not_prefix() {
+            let entry = golden_v4_entry();
+            assert!(canonical_version_message_v3(&entry, FileId::new(GOLDEN_FILE_ID)).is_err());
+            let domains: [&[u8]; 9] = [
+                SIGNATURE_DOMAIN,
+                ATTESTATION_DOMAIN,
+                SIGNATURE_DOMAIN_V3,
+                VERSION_HASH_DOMAIN_V3,
+                ATTESTATION_DOMAIN_V3,
+                SIGNATURE_DOMAIN_V4,
+                VERSION_HASH_DOMAIN_V4,
+                ATTESTATION_DOMAIN_V4,
+                crate::audit::AUDIT_ENTRY_DOMAIN_V4,
+            ];
+            for (i, a) in domains.iter().enumerate() {
+                for (j, b) in domains.iter().enumerate() {
+                    if i != j {
+                        assert!(!b.starts_with(a), "{i} prefixes {j}");
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn metadata_commitment_matches_golden_layout() {
+            let mut input = b"AION_V4_METADATA_COMMIT_V1\0".to_vec();
+            input.extend_from_slice(&7u64.to_le_bytes());
+            input.extend_from_slice(&5u32.to_le_bytes());
+            input.extend_from_slice(b"hello");
+            input.extend_from_slice(&[0xA5; 32]);
+            let actual = crate::format::metadata_commitment(7, b"hello", &[0xA5; 32])
+                .unwrap_or_else(|_| std::process::abort());
+            assert_eq!(actual, *blake3::hash(&input).as_bytes());
         }
 
         #[test]

@@ -38,6 +38,7 @@ pub struct ExportData {
 
 /// Exported file information
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct ExportFileInfo {
     /// File ID (hex string)
     pub file_id: String,
@@ -45,6 +46,10 @@ pub struct ExportFileInfo {
     pub version_count: u64,
     /// Current (latest) version number
     pub current_version: u64,
+    /// Whether commit messages and the audit trail are signed (RFC-0040):
+    /// true for format v4; for v2/v3 the messages below are unauthenticated.
+    #[serde(default)]
+    pub metadata_signed: bool,
 }
 
 /// Exported version entry
@@ -122,7 +127,7 @@ fn export_csv(file_info: &FileInfo) -> Result<String> {
     let mut output = String::new();
 
     // Header row
-    output.push_str("version,author_id,timestamp,message,rules_hash,parent_hash\n");
+    output.push_str("version,author_id,timestamp,message,rules_hash,parent_hash,metadata_signed\n");
 
     // Data rows
     for version in &file_info.versions {
@@ -134,13 +139,14 @@ fn export_csv(file_info: &FileInfo) -> Result<String> {
         let escaped_message = escape_csv_field(&version.message);
 
         output.push_str(&format!(
-            "{},{},{},{},{},{}\n",
+            "{},{},{},{},{},{},{}\n",
             version.version_number,
             version.author_id,
             timestamp,
             escaped_message,
             rules_hash,
-            parent_hash
+            parent_hash,
+            file_info.metadata_signed
         ));
     }
 
@@ -156,6 +162,7 @@ fn build_export_data(path: &Path, file_info: &FileInfo) -> ExportData {
             file_id: format!("0x{:016x}", file_info.file_id),
             version_count: file_info.version_count,
             current_version: file_info.current_version,
+            metadata_signed: file_info.metadata_signed,
         },
         versions: file_info
             .versions

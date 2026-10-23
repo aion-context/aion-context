@@ -2710,3 +2710,175 @@ fn test_cli_deleting_an_identity_asks_first() {
         "unknown --kem is an argument error"
     );
 }
+
+// ============================================================================
+// Migration (RFC-0040)
+// ============================================================================
+
+fn path_str(path: &std::path::Path) -> &str {
+    path.to_str().expect("path utf8")
+}
+
+/// A two-version public file by author 2101, and a registry pinning it.
+fn migration_source(temp_dir: &TempDir, key_id: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+    let source = temp_dir.path().join("source.aion");
+    let registry = temp_dir.path().join("registry.json");
+    pin_author(&registry, "2101", key_id);
+    let init = [
+        "init",
+        "--public",
+        path_str(&source),
+        "--author",
+        "2101",
+        "--key",
+        key_id,
+    ];
+    assert!(run_cli_with_stdin(&init, b"v1 rules").status.success());
+    let commit = [
+        "commit",
+        "--public",
+        path_str(&source),
+        "--author",
+        "2101",
+        "--key",
+        key_id,
+        "--message",
+        "raise",
+        "--registry",
+        path_str(&registry),
+    ];
+    assert!(run_cli_with_stdin(&commit, b"v2 rules").status.success());
+    (source, registry)
+}
+
+#[test]
+fn test_cli_migrate_writes_a_verifying_v4_file_and_leaves_the_source() {
+    let (temp_dir, key_id) = setup_test_env();
+    let (source, registry) = migration_source(&temp_dir, &key_id);
+    let before = std::fs::read(&source).expect("read source");
+    let dest = temp_dir.path().join("dest.aion");
+    let output = run_cli(&[
+        "migrate",
+        path_str(&source),
+        path_str(&dest),
+        "--registry",
+        path_str(&registry),
+        "--author",
+        "2101",
+        "--key",
+        &key_id,
+        "--public",
+    ]);
+    assert!(
+        output.status.success(),
+        "migrate failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(std::fs::read(&source).expect("read source"), before);
+    assert_eq!(std::fs::read(&dest).expect("read dest")[4], 4);
+
+    let verify = run_cli(&["verify", path_str(&dest), "--registry", path_str(&registry)]);
+    assert!(verify.status.success());
+    let rules = run_cli(&[
+        "show",
+        path_str(&dest),
+        "--registry",
+        path_str(&registry),
+        "rules",
+    ]);
+    assert!(String::from_utf8_lossy(&rules.stdout).contains("v2 rules"));
+    let history = run_cli(&[
+        "show",
+        path_str(&dest),
+        "--registry",
+        path_str(&registry),
+        "history",
+    ]);
+    let shown = String::from_utf8_lossy(&history.stdout);
+    assert!(shown.contains("Migrated to format v4"), "{shown}");
+    let unsigned_note = String::from_utf8_lossy(&history.stderr);
+    assert!(!unsigned_note.contains("unsigned"), "{unsigned_note}");
+    cleanup_key(&key_id);
+}
+
+#[test]
+fn test_cli_migrate_refuses_an_existing_dest_and_an_unpinned_author() {
+    let (temp_dir, key_id) = setup_test_env();
+    let (source, registry) = migration_source(&temp_dir, &key_id);
+    let existing = temp_dir.path().join("existing.aion");
+    std::fs::write(&existing, b"keep me").expect("write");
+    let refused = run_cli(&[
+        "migrate",
+        path_str(&source),
+        path_str(&existing),
+        "--registry",
+        path_str(&registry),
+        "--author",
+        "2101",
+        "--key",
+        &key_id,
+        "--public",
+    ]);
+    assert!(!refused.status.success());
+    assert_eq!(std::fs::read(&existing).expect("read"), b"keep me");
+
+    let dest = temp_dir.path().join("dest.aion");
+    let unpinned = run_cli(&[
+        "migrate",
+        path_str(&source),
+        path_str(&dest),
+        "--registry",
+        path_str(&registry),
+        "--author",
+        "2102",
+        "--key",
+        &key_id,
+        "--public",
+    ]);
+    assert!(!unpinned.status.success());
+    assert!(!dest.exists());
+
+    let unnamed = run_cli(&[
+        "migrate",
+        path_str(&source),
+        path_str(&dest),
+        "--registry",
+        path_str(&registry),
+        "--author",
+        "2101",
+        "--key",
+        &key_id,
+    ]);
+    assert!(!unnamed.status.success());
+    assert!(!dest.exists());
+    cleanup_key(&key_id);
+}
+
+#[test]
+fn test_cli_verify_notes_unsigned_metadata_only_for_legacy_formats() {
+    let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/legacy");
+    let legacy = run_cli(&[
+        "verify",
+        path_str(&fixtures.join("v3.aion")),
+        "--registry",
+        path_str(&fixtures.join("v3-registry.json")),
+    ]);
+    assert!(legacy.status.success());
+    let stderr = String::from_utf8_lossy(&legacy.stderr);
+    assert!(
+        stderr.contains("does not sign its commit messages"),
+        "{stderr}"
+    );
+
+    let (temp_dir, key_id) = setup_test_env();
+    let (current, registry) = migration_source(&temp_dir, &key_id);
+    let output = run_cli(&[
+        "verify",
+        path_str(&current),
+        "--registry",
+        path_str(&registry),
+    ]);
+    cleanup_key(&key_id);
+    assert!(output.status.success());
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("does not sign"));
+}

@@ -2,8 +2,9 @@
 //! Verified-chain totality fuzz target (RFC-0039).
 //!
 //! `VerifiedChain::from_bytes` runs every `verify_file` check: the
-//! format-v2 and format-v3 signed messages, version hashes, the v3
-//! rules commitment, and the v3 rules framing. It must return `Ok` or
+//! format-v2, v3 and v4 signed messages, version hashes, the v3/v4
+//! rules commitment and framing, and the v4 metadata checks (audit
+//! entries, string-table walk, metadata commitment, header copies). It must return `Ok` or
 //! `Err` on adversary bytes, never panic.
 //!
 //! The registry pins one fixed fuzz-only key, so the seeds in
@@ -67,6 +68,7 @@ fuzz_target!(|data: &[u8]| {
 
     let _ = chain.context();
     let _ = chain.version_count();
+    let _ = chain.metadata_signed();
     for entry in chain.entries() {
         let _ = entry.version();
         let _ = entry.author();
@@ -74,6 +76,7 @@ fuzz_target!(|data: &[u8]| {
         let _ = entry.rules_commitment();
         let _ = entry.rules_mode();
         let _ = entry.version_hash();
+        let _ = entry.message();
     }
     let _ = open_current_rules(&chain, &RecipientKeys::none());
 });

@@ -50,13 +50,27 @@ allocating. Internal entry types (`VersionEntry`,
 | 80 | 8 | `timestamp: u64` (nanoseconds since epoch) |
 | 88 | 8 | `message_offset: u64` (into string table) |
 | 96 | 4 | `message_length: u32` |
-| 100 | 52 | `reserved`: v3 stores `rules_mode` in byte 100 (0 public, 1 confidential), and the rest must be zero. v2: all must be zero. |
+| 100 | 52 | `reserved`: v3 and v4 store `rules_mode` in byte 100 (0 public, 1 confidential). v4 stores the 32-byte metadata commitment in bytes 101–132. The rest must be zero; in v2, all of it. |
 
 ## Format versions
 
-The header's `version` field selects the format. Readers accept both;
-writers produce v3.
+The header's `version` field selects the format. Readers accept v2, v3
+and v4; `init` and `migrate` write v4, and `commit` keeps a file's format.
 
+- **v4 (RFC-0040).** v3, plus signed metadata.
+  - Each version's signature covers a commitment to its commit message
+    and its own audit entry, under `AION_V4_METADATA_COMMIT_V1\0`.
+  - There is exactly one audit entry per version, chained by a hash over
+    the stored 80 bytes and any details text. Through the version-hash
+    chain, each signature covers the whole history before it.
+  - The string table holds each message (and genesis migration details)
+    once, in order, with nothing else. Sections are contiguous, and the
+    header's copies must equal the signed values.
+  - Messages are UTF-8 without NUL. Tools display them only from a
+    verified chain (`chain::verified_history`).
+  - A migrated file's genesis audit action is `MigratedFrom`, and its
+    details are the signed link
+    `aion-migrated-from:v<format>:<file_id>:<head version>:<head hash>`.
 - **v3 (RFC-0039).**
   - Every version records its own rules mode, and the signature
     covers it.
@@ -69,10 +83,15 @@ writers produce v3.
     without any key.
   - A public section is `u64_le(len) ‖ plaintext ‖ zero padding`,
     padded to the Padmé size of `8 + len`.
+  - Commit messages and the audit trail are **not** signed
+    (GHSA-69cp-fwrw-82vh): anyone holding the file can rewrite them and
+    recompute the unkeyed hashes. Treat them as unauthenticated, or
+    migrate the file to v4.
 - **v2.** The original format. The rules section is obfuscated under a
   key derived from public header fields, so it is not confidential.
-  Commits to a v2 file keep it v2; converting arrives with
-  `aion migrate` in RFC-0039 Phase C.
+  Its commit messages and audit trail are unsigned, as in v3. Commits
+  to a v2 file keep it v2; `aion migrate` writes a v4 file that
+  continues it.
 
 The `reserved` region is **strictly validated**
 (post-PR #42). Tampering with reserved bytes would let an
@@ -110,10 +129,10 @@ Reserved-byte validation at the entry level is exercised by
 analogous fuzz harnesses for `from_canonical_bytes` (manifest)
 and `from_trusted_json` (registry).
 
-Format-v3 verification is fuzzed by
+Format-v3 and v4 verification is fuzzed by
 `fuzz/fuzz_targets/fuzz_verify_chain.rs`. It drives
 `VerifiedChain::from_bytes` and `format::unframe_rules` against a
-registry pinning one fixed fuzz-only key. The signed v3 seeds in
+registry pinning one fixed fuzz-only key. The signed v3 and v4 seeds in
 `fuzz/seeds/fuzz_verify_chain/` carry that key, so mutations reach
 the rules-commitment, framing, and mode-byte checks that run after
 signature verification:

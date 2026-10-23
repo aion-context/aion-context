@@ -41,6 +41,12 @@ use crate::{AionError, Result};
 /// Domain separator for the v3 rules commitment.
 pub const RULES_COMMIT_DOMAIN: &[u8] = b"AION_V3_RULES_COMMIT_V1\0";
 
+/// Domain separator for the v4 metadata commitment (RFC-0040).
+pub const METADATA_COMMIT_DOMAIN: &[u8] = b"AION_V4_METADATA_COMMIT_V1\0";
+
+/// Length of the v4 metadata commitment in `VersionEntry.reserved[1..33]`.
+pub const METADATA_COMMITMENT_LEN: usize = 32;
+
 /// Length in bytes of the framing header (plaintext length, `u64` LE).
 pub(crate) const FRAME_HEADER_LEN: usize = 8;
 
@@ -52,7 +58,7 @@ pub const MAX_CONFIDENTIAL_RULES_LEN: usize = 16 * 1024 * 1024;
 ///
 /// Not `#[non_exhaustive]`: a new on-disk format is a major-version event
 /// with its own RFC, so callers may match exhaustively. Ordered by age,
-/// so `V2 < V3`.
+/// so `V2 < V3 < V4`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum FormatVersion {
     /// Format v2: the rules section is obfuscated, not confidential, and
@@ -61,6 +67,9 @@ pub enum FormatVersion {
     /// Format v3 (RFC-0039): per-version rules modes and a signed
     /// commitment to the stored rules section.
     V3,
+    /// Format v4 (RFC-0040): format v3 plus a signed commitment to each
+    /// version's commit message and audit entry.
+    V4,
 }
 
 impl FormatVersion {
@@ -70,7 +79,22 @@ impl FormatVersion {
         match self {
             Self::V2 => 2,
             Self::V3 => 3,
+            Self::V4 => 4,
         }
+    }
+
+    /// Whether this format signs version metadata: commit messages and the
+    /// audit trail (RFC-0040). Derived from the format, never stored.
+    #[must_use]
+    pub const fn signs_metadata(self) -> bool {
+        matches!(self, Self::V4)
+    }
+
+    /// Whether this format has per-version rules modes and commitments
+    /// (RFC-0039): v3 and later.
+    #[must_use]
+    pub const fn has_rules_modes(self) -> bool {
+        matches!(self, Self::V3 | Self::V4)
     }
 
     /// Interpret a header `version` field.
@@ -78,14 +102,15 @@ impl FormatVersion {
     /// # Errors
     ///
     /// Returns [`AionError::UnsupportedVersion`] for any value other than
-    /// 2 or 3.
+    /// 2, 3, or 4.
     pub fn from_u16(version: u16) -> Result<Self> {
         match version {
             2 => Ok(Self::V2),
             3 => Ok(Self::V3),
+            4 => Ok(Self::V4),
             _ => Err(AionError::UnsupportedVersion {
                 version,
-                supported: "2, 3".to_string(),
+                supported: "2, 3, 4".to_string(),
             }),
         }
     }
@@ -134,31 +159,39 @@ impl RulesMode {
         }
     }
 
-    /// Read the mode a v3 version entry records.
+    /// Read the mode a version entry records under `format`.
     ///
-    /// The mode lives in `reserved[0]`. The other 51 reserved bytes must
-    /// stay zero.
+    /// The mode lives in `reserved[0]`. In v3 the other 51 reserved bytes
+    /// must be zero; in v4, bytes `1..33` hold the metadata commitment and
+    /// bytes `33..52` must be zero (RFC-0040).
     ///
     /// # Errors
     ///
-    /// Returns [`AionError::InvalidFormat`] if the mode byte is unknown or
-    /// any other reserved byte is non-zero.
-    pub fn of(entry: &VersionEntry) -> Result<Self> {
-        Self::from_reserved(&entry.reserved)
+    /// Returns [`AionError::InvalidFormat`] if the mode byte is unknown, a
+    /// byte that must be zero is not, or `format` has no rules modes (v2).
+    pub fn of(entry: &VersionEntry, format: FormatVersion) -> Result<Self> {
+        Self::from_reserved(&entry.reserved, format)
     }
 
     /// Read the mode from a version entry's 52 reserved bytes.
-    pub(crate) fn from_reserved(reserved: &[u8; 52]) -> Result<Self> {
-        let (mode, rest) = reserved
-            .split_first()
-            .ok_or_else(|| AionError::InvalidFormat {
-                reason: "version entry has no reserved bytes".to_string(),
-            })?;
-        if rest.iter().any(|b| *b != 0) {
+    pub(crate) fn from_reserved(reserved: &[u8; 52], format: FormatVersion) -> Result<Self> {
+        let must_be_zero = match format {
+            FormatVersion::V3 => reserved.get(1..),
+            FormatVersion::V4 => reserved.get(1 + METADATA_COMMITMENT_LEN..),
+            FormatVersion::V2 => {
+                return Err(AionError::InvalidFormat {
+                    reason: "format v2 has no rules modes".to_string(),
+                })
+            }
+        };
+        if must_be_zero.is_some_and(|rest| rest.iter().any(|b| *b != 0)) {
             return Err(AionError::InvalidFormat {
-                reason: "VersionEntry reserved bytes after rules_mode must be zero".to_string(),
+                reason: "VersionEntry reserved bytes that must be zero are not".to_string(),
             });
         }
+        let mode = reserved.first().ok_or_else(|| AionError::InvalidFormat {
+            reason: "version entry has no reserved bytes".to_string(),
+        })?;
         Self::from_u8(*mode)
     }
 }
@@ -428,6 +461,56 @@ pub fn rules_commitment(mode: RulesMode, section: &[u8]) -> [u8; 32] {
     *hasher.finalize().as_bytes()
 }
 
+/// Commit to one version's metadata (RFC-0040): its commit message and its
+/// own audit entry's v4 hash.
+///
+/// `BLAKE3(METADATA_COMMIT_DOMAIN ‖ u64_le(version) ‖ u32_le(len) ‖ message ‖
+/// audit_hash)`. Stored in the v4 version entry and covered by its
+/// signature, so neither the message nor the audit trail can change without
+/// breaking the signature.
+///
+/// # Errors
+///
+/// Returns [`AionError::InvalidFormat`] if `message` is longer than
+/// `u32::MAX` bytes.
+///
+/// # Example
+///
+/// ```
+/// use aion_context::format::metadata_commitment;
+///
+/// let a = metadata_commitment(1, b"Approved by: Alice", &[7; 32])?;
+/// assert_ne!(a, metadata_commitment(1, b"Approved by: Mally", &[7; 32])?);
+/// assert_ne!(a, metadata_commitment(2, b"Approved by: Alice", &[7; 32])?);
+/// # Ok::<(), aion_context::AionError>(())
+/// ```
+pub fn metadata_commitment(
+    version: u64,
+    message: &[u8],
+    audit_hash: &[u8; 32],
+) -> Result<[u8; 32]> {
+    let message_len = u32::try_from(message.len()).map_err(|_| AionError::InvalidFormat {
+        reason: "commit message longer than u32::MAX bytes".to_string(),
+    })?;
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(METADATA_COMMIT_DOMAIN);
+    hasher.update(&version.to_le_bytes());
+    hasher.update(&message_len.to_le_bytes());
+    hasher.update(message);
+    hasher.update(audit_hash);
+    Ok(*hasher.finalize().as_bytes())
+}
+
+/// The metadata commitment a v4 version entry stores in `reserved[1..33]`.
+#[must_use]
+pub fn stored_metadata_commitment(entry: &VersionEntry) -> [u8; 32] {
+    let mut commitment = [0u8; METADATA_COMMITMENT_LEN];
+    if let Some(stored) = entry.reserved.get(1..=METADATA_COMMITMENT_LEN) {
+        commitment.copy_from_slice(stored);
+    }
+    commitment
+}
+
 /// The Padmé padded length for `len` bytes.
 ///
 /// Padmé (Nikitin et al., PETS 2019) rounds a length up so that only
@@ -592,6 +675,9 @@ impl FileContext {
             FormatVersion::V3 => {
                 crate::signature_chain::canonical_version_message_v3(version, self.file_id)
             }
+            FormatVersion::V4 => {
+                crate::signature_chain::canonical_version_message_v4(version, self.file_id)
+            }
         }
     }
 
@@ -606,6 +692,9 @@ impl FileContext {
             FormatVersion::V2 => Ok(crate::signature_chain::compute_version_hash(version)),
             FormatVersion::V3 => {
                 crate::signature_chain::compute_version_hash_v3(version, self.file_id)
+            }
+            FormatVersion::V4 => {
+                crate::signature_chain::compute_version_hash_v4(version, self.file_id)
             }
         }
     }
@@ -622,6 +711,11 @@ impl FileContext {
                 version, signer,
             )),
             FormatVersion::V3 => crate::signature_chain::canonical_attestation_message_v3(
+                version,
+                self.file_id,
+                signer,
+            ),
+            FormatVersion::V4 => crate::signature_chain::canonical_attestation_message_v4(
                 version,
                 self.file_id,
                 signer,
@@ -875,14 +969,14 @@ mod tests {
 
     #[test]
     fn format_and_mode_round_trip() {
-        for format in [FormatVersion::V2, FormatVersion::V3] {
+        for format in [FormatVersion::V2, FormatVersion::V3, FormatVersion::V4] {
             assert_eq!(
                 FormatVersion::from_u16(format.as_u16()).unwrap_or_else(|_| std::process::abort()),
                 format
             );
         }
         assert!(FormatVersion::from_u16(1).is_err());
-        assert!(FormatVersion::from_u16(4).is_err());
+        assert!(FormatVersion::from_u16(5).is_err());
         for mode in [RulesMode::Public, RulesMode::Confidential] {
             assert_eq!(
                 RulesMode::from_u8(mode.as_u8()).unwrap_or_else(|_| std::process::abort()),

@@ -10,7 +10,90 @@ and the project follows [Semantic Versioning].
 
 ## [Unreleased]
 
+### Breaking
+
+Release 3.0.0. Each item below is deliberate (RFC-0040).
+
+- **New files are format v4.** `init_file` and `aion init` write v4,
+  which 2.x readers reject with `UnsupportedVersion`. 3.x reads and
+  verifies v2, v3 and v4, and `commit_version` keeps a file's format.
+- **Enum additions** (all documented as closed):
+  - `FormatVersion::V4`;
+  - `ActionCode::MigratedFrom` (5), so `ActionCode::from_u16(5)` now
+    succeeds and 6 is the first unknown code;
+  - `VersionRejectReason::MigrationConflict`, with reason code
+    `migration_conflict`;
+  - `AionError::MigrationRejected` (`AionError` is `#[non_exhaustive]`).
+- **`RulesMode::of(&entry)` is now `RulesMode::of(&entry, format)`**, and
+  `RulesMode::from_reserved` takes the format too. A v2 format is an
+  error, since v2 has no rules mode.
+- **Report structs.** `VerificationReport`, `FileInfo`,
+  `ExportFileInfo` and `VerificationSummary` gain
+  `metadata_signed: bool` and are now `#[non_exhaustive]`. Use
+  `VerificationReport::new` or the functions that return them. The
+  field is `#[serde(default)]`, so 2.x JSON still deserializes (as
+  unsigned).
+- **Exports and reports.** CSV exports gain a trailing
+  `metadata_signed` column. Text and Markdown compliance reports escape
+  control characters in messages and warn before the history of a v2
+  or v3 file.
+- **`show_version_history` refuses v4 files.** It cannot verify, and v4
+  messages are shown only from a verified chain: use
+  `chain::verify_file_chain` and `chain::verified_history`.
+  `show_file_info` and report generation verify a v4 file against the
+  registry.
+- **`AcceptedVersionStore`** gains `check_and_advance_migration` and
+  `clear_migration`. Their defaults fail closed with
+  `migration_unsupported`, so a custom store compiles unchanged but
+  must override both to accept migrations.
+- **`FileStore` state file.** It is now saved as
+  `{"records": …, "migrations": …}`. 3.x still reads the flat 2.x
+  layout, but once 3.x writes the file a 2.x reader reports
+  `store_corrupt`, failing closed. Non-canonical `file_id` keys (`042`,
+  `+42`) are now rejected as `store_corrupt`.
+- **`init_file` refuses an existing path even when racing**: it now
+  creates the file exclusively and never follows a symlink.
+
+### Security
+
+- **GHSA-69cp-fwrw-82vh: commit messages and the audit trail were not
+  signed.** In formats v2 and v3 a version's signature covers its message
+  offset and length but not the message bytes, and the audit trail is
+  linked only by unkeyed hashes. Anyone holding a file could rewrite an
+  approval note or an audit entry's author, recompute the hashes, and the
+  file still verified. No in-place fix is possible for existing files.
+  **Format v4 (RFC-0040)** signs both:
+  - each version's signature covers a commitment to its message and its
+    own audit entry, and the audit entries chain under a v4 hash, so
+    each signature covers the whole history before it;
+  - the string table, header copies and section layout are checked to
+    the byte, so no byte of a v4 file is unchecked;
+  - messages are shown only from a verified chain.
+
+  New files are v4. Existing v2/v3 files still verify, but their
+  messages and audit trail are unauthenticated: `VerifiedChain::
+  metadata_signed`, `FileInfo::metadata_signed`, exports and compliance
+  reports say so, and `aion migrate` writes a v4 file that continues
+  them. `aion verify`, `aion show` and `aion commit` print a note on
+  v2/v3 files but still pass them. `AcceptPolicy::min_format(
+  FormatVersion::V4)` (CLI `aion accept --min-format 4`) refuses
+  unsigned metadata; it is opt-in.
+
 ### Added
+
+- **RFC-0040: format v4, signed version metadata.** `FormatVersion::V4`,
+  the v4 signed message, version hash, attestation and audit-entry
+  hash, `format::metadata_commitment`, `VerifiedEntry::message`,
+  `chain::verified_history`, and the DSSE payload type
+  `application/vnd.aion.version-attestation.v4+json`
+  (`dsse::wrap_version_attestation_v4`), which binds `file_id`, the
+  format, the rules mode and the metadata commitment.
+- **RFC-0040 / RFC-0039 Phase C2: migration.** `aion migrate SOURCE
+  DEST`, `operations::migrate_file`, the `migration` module
+  (`MigrationLink`, `MigrationPolicy`, `verify_migration`), and
+  `acceptance::accept_migration` with first-verified-claim-wins
+  migration records and `AcceptedVersionStore::clear_migration`.
+  `audit::ActionCode::MigratedFrom` (5).
 
 - **RFC-0039 Phase B1: confidential envelope codec** (`envelope`
   module). `Envelope::parse` reads the confidential rules envelope
