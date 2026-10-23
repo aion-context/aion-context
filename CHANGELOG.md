@@ -10,7 +10,44 @@ and the project follows [Semantic Versioning].
 
 ## [Unreleased]
 
+### Security
+
+- **GHSA-69cp-fwrw-82vh: commit messages and the audit trail were not
+  signed.** In formats v2 and v3 a version's signature covers its message
+  offset and length but not the message bytes, and the audit trail is
+  linked only by unkeyed hashes. Anyone holding a file could rewrite an
+  approval note or an audit entry's author, recompute the hashes, and the
+  file still verified. No in-place fix is possible for existing files.
+  **Format v4 (RFC-0040)** signs both:
+  - each version's signature covers a commitment to its message and its
+    own audit entry, and the audit entries chain under a v4 hash, so
+    each signature covers the whole history before it;
+  - the string table, header copies and section layout are checked to
+    the byte, so no byte of a v4 file is unchecked;
+  - messages are shown only from a verified chain.
+
+  New files are v4. Existing v2/v3 files still verify, but their
+  messages and audit trail are unauthenticated: `VerifiedChain::
+  metadata_signed`, `FileInfo::metadata_signed`, exports and compliance
+  reports say so, and `aion migrate` writes a v4 file that continues
+  them. `AcceptPolicy::min_format(FormatVersion::V4)` (CLI
+  `--min-format 4`) refuses unsigned metadata.
+
 ### Added
+
+- **RFC-0040: format v4, signed version metadata.** `FormatVersion::V4`,
+  the v4 signed message, version hash, attestation and audit-entry
+  hash, `format::metadata_commitment`, `VerifiedEntry::message`,
+  `chain::verified_history`, and the DSSE payload type
+  `application/vnd.aion.version-attestation.v4+json`
+  (`dsse::wrap_version_attestation_v4`), which binds `file_id`, the
+  format, the rules mode and the metadata commitment.
+- **RFC-0040 / RFC-0039 Phase C2: migration.** `aion migrate SOURCE
+  DEST`, `operations::migrate_file`, the `migration` module
+  (`MigrationLink`, `MigrationPolicy`, `verify_migration`), and
+  `acceptance::accept_migration` with first-verified-claim-wins
+  migration records and `AcceptedVersionStore::clear_migration`.
+  `audit::ActionCode::MigratedFrom` (5).
 
 - **RFC-0039 Phase B1: confidential envelope codec** (`envelope`
   module). `Envelope::parse` reads the confidential rules envelope

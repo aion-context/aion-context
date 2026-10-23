@@ -41,6 +41,10 @@ deliberation history; this page is the table of contents.
 | 0034 | Registry-Aware Verify Rollout | The Phase-A through Phase-E migration that removed raw-key verify_* |
 | 0035 | Chain Architecture Guide | Per-file genesis vs growing-chain |
 | 0036 | Enforcement Receipt | Signed proof a runtime applied a policy |
+| 0037 | Crypto/RNG Stack Upgrade | ed25519-dalek 3.0 and rand 0.10 |
+| 0038 | External Version Signer | Committing with a key held outside the process (HSM, KMS) |
+| 0039 | Confidential Rules (Format v3) | Public or recipient-encrypted rules, key-free verification |
+| 0040 | Signed Version Metadata (Format v4) | Signed commit messages and audit trail; `aion migrate` |
 
 ## Status legend (where present in each RFC)
 

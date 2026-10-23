@@ -153,7 +153,8 @@ struct AcceptArgs {
     #[arg(long, value_name = "GENESIS_HASH")]
     pin: Option<String>,
 
-    /// Reject files whose format is older than this version (2 or 3)
+    /// Reject files whose format is older than this version (2, 3 or 4). Use 4
+    /// to require signed commit messages and audit trails (RFC-0040)
     #[arg(long, value_name = "VERSION")]
     min_format: Option<u16>,
 

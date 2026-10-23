@@ -45,6 +45,7 @@ misparse an older format.
 |---|---|---|
 | 1.0.x | format 2 | format 2 |
 | 2.x | format 3 (`init`); `commit` keeps the file's format | formats 2 and 3 |
+| 3.x | format 4 (`init`, `migrate`); `commit` keeps the file's format | formats 2, 3 and 4 |
 
 ### 3. Cryptographic primitives
 
