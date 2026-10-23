@@ -292,10 +292,15 @@ pub enum AionError {
     #[error("Confidential rules could not be opened")]
     RulesUnopenable,
 
-    /// Confidential protection was requested with no recipients, or for a
-    /// format that has no confidential mode (RFC-0039)
-    #[error("Confidential rules need format v3 and at least one recipient")]
+    /// Confidential rules were requested with no recipients, or a version
+    /// that should carry recipients has none (RFC-0039)
+    #[error("Confidential rules need at least one recipient")]
     NoRecipients,
+
+    /// Confidential rules were requested for a format that has no
+    /// confidential mode; only format v3 does (RFC-0039)
+    #[error("Confidential rules need format v3")]
+    ConfidentialityUnsupported,
 
     /// Invalid private key
     #[error("Invalid private key: {reason}")]

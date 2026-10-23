@@ -50,8 +50,9 @@ and the project follows [Semantic Versioning].
 - **RFC-0039 Phase B3: confidential rules in the library.**
   - Writers: `RulesProtection::Confidential { recipients }` seals a
     format-v3 version to `Recipient::X25519` / `Recipient::XWing` keys.
-    Empty lists and format-v2 files are refused with
-    `AionError::NoRecipients`; repeated recipients are written once;
+    Empty lists are refused with `AionError::NoRecipients` and
+    format-v2 files with `AionError::ConfidentialityUnsupported`;
+    repeated recipients are written once;
     framed rules over `format::MAX_CONFIDENTIAL_RULES_LEN` (16 MiB) are
     refused.
   - Readers: `RecipientKeys::new` / `with` / `From<EncryptionIdentity>`

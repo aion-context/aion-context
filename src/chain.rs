@@ -324,6 +324,10 @@ impl VerifiedEntry<'_> {
 
 /// Identities a reader holds to open confidential rules (RFC-0039).
 ///
+/// These are secret keys, not [`Recipient`]s (the public half a writer
+/// seals to). Every held seed is zeroized on drop; `Clone` duplicates
+/// them into zeroizing storage, and `Debug` never prints them.
+///
 /// `#[non_exhaustive]`: RFC-0039 Phase C adds external unwrappers.
 ///
 /// # Example
@@ -379,6 +383,12 @@ impl From<EncryptionIdentity> for RecipientKeys {
     }
 }
 
+impl From<&EncryptionIdentity> for RecipientKeys {
+    fn from(identity: &EncryptionIdentity) -> Self {
+        Self::new(vec![identity.clone()])
+    }
+}
+
 /// Open the head version's rules from a verified chain.
 ///
 /// Reads the rules section from the bytes the chain verified, never from
@@ -386,9 +396,10 @@ impl From<EncryptionIdentity> for RecipientKeys {
 ///
 /// # Errors
 ///
-/// Returns [`AionError::RecipientKeyRequired`] for a confidential section
-/// the supplied keys cannot open, or a decoding error for a malformed
-/// section.
+/// For a confidential head: [`AionError::RecipientKeyRequired`] if `keys`
+/// holds no identity, [`AionError::NotARecipient`] if none of them is
+/// listed, and [`AionError::RulesUnopenable`] if a listed one cannot open
+/// it. A decoding error for a malformed section.
 ///
 /// # Example
 ///
@@ -422,8 +433,9 @@ pub fn open_current_rules(
 /// # Errors
 ///
 /// Returns [`AionError::HashMismatch`] if the section does not belong to
-/// `entry`, [`AionError::RecipientKeyRequired`] for a confidential section
-/// the keys cannot open, or a decoding error for a malformed section.
+/// `entry`; for a confidential section [`AionError::RecipientKeyRequired`],
+/// [`AionError::NotARecipient`], or [`AionError::RulesUnopenable`] as for
+/// [`open_current_rules`]; or a decoding error for a malformed section.
 ///
 /// # Example
 ///
@@ -562,14 +574,14 @@ fn log_unopened(entry: VerifiedEntry<'_>, error: &AionError) {
 ///
 /// # fn example(registry: &KeyRegistry, keys: &RecipientKeys, section: &[u8]) -> aion_context::Result<()> {
 /// let chain = verify_file_chain(Path::new("policy.aion"), registry)?;
-/// let key = disclose_version_key(chain.head(), section, keys)?;
+/// let key = disclose_version_key(section, chain.head(), keys)?;
 /// let rules = open_rules_section_with_key(section, chain.head(), &key)?;
 /// # Ok(())
 /// # }
 /// ```
 pub fn disclose_version_key(
-    entry: VerifiedEntry<'_>,
     section: &[u8],
+    entry: VerifiedEntry<'_>,
     keys: &RecipientKeys,
 ) -> Result<VersionKey> {
     let envelope = bound_confidential(section, entry)?;
@@ -948,6 +960,144 @@ mod tests {
         ));
     }
 
+    /// A confidential section sealed to `reader` from raw `framed` bytes,
+    /// bound to `(file_id, author, version)`.
+    fn sealed(
+        framed: &[u8],
+        reader: &EncryptionIdentity,
+        file_id: FileId,
+        author: AuthorId,
+        version: VersionNumber,
+    ) -> Vec<u8> {
+        let ctx = crate::confidential::binding_context(file_id, author, version);
+        let recipients = [(reader.kind(), reader.public_key())];
+        ok(crate::confidential::seal_section(framed, &recipients, &ctx))
+    }
+
+    fn open_single(
+        path: &Path,
+        author: AuthorId,
+        key: &SigningKey,
+        reader: &EncryptionIdentity,
+    ) -> Result<Zeroizing<Vec<u8>>> {
+        let chain = ok(verify_file_chain(path, &registry_for(author, key)));
+        open_current_rules(&chain, &RecipientKeys::from(reader))
+    }
+
+    /// A signed section whose AEAD fails, or whose frame is non-canonical
+    /// behind a valid tag, is `RulesUnopenable` like every other failure.
+    #[test]
+    fn a_bad_tag_and_a_bad_frame_are_the_same_unopenable() {
+        let dir = ok(TempDir::new());
+        let key = ok(SigningKey::generate());
+        let author = AuthorId::new(90_018);
+        let file_id = FileId::new(90_018);
+        let reader = identity(EncryptionKem::XWing);
+        let framed = ok(frame_rules(b"rules"));
+
+        let mut bad_tag = sealed(&framed, &reader, file_id, author, VersionNumber::GENESIS);
+        let last = bad_tag.len().saturating_sub(1);
+        bad_tag[last] ^= 0x01;
+        let tag_path = dir.path().join("tag.aion");
+        write_single_confidential(&tag_path, file_id, &bad_tag, author, &key);
+
+        let mut bad_frame = vec![0u8; 24];
+        bad_frame[0] = 200;
+        let bad_frame = sealed(&bad_frame, &reader, file_id, author, VersionNumber::GENESIS);
+        let frame_path = dir.path().join("frame.aion");
+        write_single_confidential(&frame_path, file_id, &bad_frame, author, &key);
+
+        for path in [&tag_path, &frame_path] {
+            assert!(matches!(
+                open_single(path, author, &key, &reader),
+                Err(AionError::RulesUnopenable)
+            ));
+        }
+    }
+
+    /// A section moved to another file or another version of the same
+    /// file, re-signed by its own author, opens for no recipient.
+    #[test]
+    fn sections_moved_across_files_or_versions_open_for_no_one() {
+        let dir = ok(TempDir::new());
+        let key = ok(SigningKey::generate());
+        let author = AuthorId::new(90_019);
+        let reader = identity(EncryptionKem::X25519);
+        let path = dir.path().join("source.aion");
+        let to = || vec![reader.recipient()];
+        let registry = grow_confidential(&path, &key, author, &[(b"v1", to()), (b"v2", to())]);
+        let source = ok(verify_file_chain(&path, &registry));
+        let file_id = source.context().file_id();
+
+        let other_file = dir.path().join("other-file.aion");
+        let moved_file_id = FileId::new(file_id.as_u64().wrapping_add(1));
+        write_single_confidential(
+            &other_file,
+            moved_file_id,
+            &source.head_section,
+            author,
+            &key,
+        );
+        let other_version = dir.path().join("other-version.aion");
+        write_single_confidential(&other_version, file_id, &source.head_section, author, &key);
+
+        for moved in [&other_file, &other_version] {
+            assert!(matches!(
+                open_single(moved, author, &key, &reader),
+                Err(AionError::RulesUnopenable)
+            ));
+        }
+    }
+
+    #[test]
+    fn an_oversized_confidential_head_fails_key_free_verification() {
+        let dir = ok(TempDir::new());
+        let key = ok(SigningKey::generate());
+        let author = AuthorId::new(90_020);
+        let stanza = (crate::envelope::STANZA_X25519, vec![9u8; 112]);
+        let ciphertext = vec![0u8; crate::format::MAX_CONFIDENTIAL_RULES_LEN + 17];
+        let section = ok(crate::envelope::encode_envelope(
+            &[0; 32],
+            vec![stanza],
+            &[0; 12],
+            &ciphertext,
+        ));
+        let path = dir.path().join("huge.aion");
+        write_single_confidential(&path, FileId::new(90_020), &section, author, &key);
+        assert!(verify_file_chain(&path, &registry_for(author, &key)).is_err());
+        let report = crate::operations::verify_file(&path, &registry_for(author, &key));
+        assert!(report.map_or(true, |r| !r.is_valid));
+    }
+
+    /// RFC-0038 external signers seal confidential versions under the
+    /// same author they sign as, so recipients can open them.
+    #[test]
+    fn a_confidential_commit_through_an_external_signer_opens() {
+        let dir = ok(TempDir::new());
+        let path = dir.path().join("external.aion");
+        let key = ok(SigningKey::generate());
+        let author = AuthorId::new(90_021);
+        let reader = identity(EncryptionKem::XWing);
+        let registry = grow_confidential(&path, &key, author, &[(b"v1", vec![reader.recipient()])]);
+        let options = crate::operations::ExternalCommitOptions {
+            author_id: author,
+            signer: &key,
+            message: "v2 via provider",
+            timestamp: None,
+            protection: RulesProtection::Confidential {
+                recipients: vec![reader.recipient()],
+            },
+        };
+        ok(crate::operations::commit_version_with_signer(
+            &path, b"v2", &options, &registry,
+        ));
+        let chain = ok(verify_file_chain(&path, &registry));
+        assert_eq!(
+            ok(open_current_rules(&chain, &RecipientKeys::from(&reader))).as_slice(),
+            b"v2"
+        );
+    }
+
     #[test]
     fn confidential_rules_over_the_size_limit_are_refused() {
         let dir = ok(TempDir::new());
@@ -1094,13 +1244,13 @@ mod tests {
         let v1 = chain
             .entry(VersionNumber(1))
             .unwrap_or_else(|| std::process::abort());
-        let v1_key = ok(disclose_version_key(v1, &v1_section, &keys));
+        let v1_key = ok(disclose_version_key(&v1_section, v1, &keys));
         let opened = ok(open_rules_section_with_key(&v1_section, v1, &v1_key));
         assert_eq!(opened.as_slice(), b"v1 rules");
 
         let v2_key = ok(disclose_version_key(
-            chain.head(),
             &chain.head_section,
+            chain.head(),
             &keys,
         ));
         assert!(matches!(

@@ -616,7 +616,7 @@ fn encode_rules(
             });
         }
         (FormatVersion::V2, RulesProtection::Confidential { .. }) => {
-            return Err(AionError::NoRecipients)
+            return Err(AionError::ConfidentialityUnsupported)
         }
         (FormatVersion::V3, RulesProtection::Public) => {
             (crate::format::frame_rules(rules)?, RulesMode::Public)
@@ -655,11 +655,15 @@ fn seal_confidential(
     if distinct.is_empty() {
         return Err(AionError::NoRecipients);
     }
+    let too_big = || AionError::InvalidFormat {
+        reason: "confidential rules exceed the 16 MiB limit".to_string(),
+    };
+    if rules.len() > crate::format::MAX_CONFIDENTIAL_RULES_LEN {
+        return Err(too_big());
+    }
     let framed = zeroize::Zeroizing::new(crate::format::frame_rules(rules)?);
     if framed.len() > crate::format::MAX_CONFIDENTIAL_RULES_LEN {
-        return Err(AionError::InvalidFormat {
-            reason: "confidential rules exceed the 16 MiB limit".to_string(),
-        });
+        return Err(too_big());
     }
     let keys: Vec<(crate::confidential::EncryptionKem, &[u8])> = distinct
         .iter()
@@ -3866,7 +3870,7 @@ mod tests {
             };
             let v2 = FileContext::new(FormatVersion::V2, FileId::new(V3_FILE_ID));
             let result = encode_rules(&v2, &protection, b"r", VersionNumber(2), AuthorId::new(1));
-            assert!(matches!(result, Err(AionError::NoRecipients)));
+            assert!(matches!(result, Err(AionError::ConfidentialityUnsupported)));
         }
 
         fn v3_context() -> FileContext {

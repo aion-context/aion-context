@@ -244,7 +244,9 @@ impl EncryptionIdentity {
     /// Rebuild an identity from its stored seed.
     ///
     /// The caller must pass the kind the seed was generated for: a seed
-    /// serves exactly one KEM, and nothing in the seed records which.
+    /// serves exactly one KEM, and nothing in the seed records which. A
+    /// wrong kind usually yields a *valid but different* identity, which
+    /// then fails later as `NotARecipient`; store the kind with the seed.
     ///
     /// # Errors
     ///
@@ -567,7 +569,9 @@ impl VersionKey {
     /// The key's 32 bytes, to hand to the party it is disclosed to.
     #[must_use]
     pub fn to_bytes(&self) -> Zeroizing<[u8; 32]> {
-        Zeroizing::new(*self.0.as_bytes())
+        let mut bytes = Zeroizing::new([0u8; 32]);
+        bytes.copy_from_slice(self.0.as_bytes());
+        bytes
     }
 
     pub(crate) const fn from_dek(dek: Dek) -> Self {
