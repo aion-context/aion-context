@@ -157,8 +157,7 @@ pub struct ArtifactManifestBuilder {
 impl ArtifactManifestBuilder {
     /// Construct an empty builder.
     #[must_use]
-    #[allow(clippy::missing_const_for_fn)] // Vec::new() not const in MSRV 1.70
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             entries: Vec::new(),
             name_table: Vec::new(),
@@ -776,7 +775,7 @@ mod tests {
             for (name, bytes) in &pairs {
                 let mut truncated = bytes.clone();
                 let extra = tc.draw(gs::integers::<u8>().min_value(1).max_value(16));
-                truncated.extend(std::iter::repeat(0u8).take(usize::from(extra)));
+                truncated.extend(std::iter::repeat_n(0u8, usize::from(extra)));
                 assert!(manifest.verify_artifact(name, &truncated).is_err());
             }
         }

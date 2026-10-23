@@ -282,7 +282,7 @@ impl AuditEntry {
         // SAFETY: AuditEntry is repr(C) with POD fields, properly aligned
         unsafe {
             std::slice::from_raw_parts(
-                (self as *const Self).cast::<u8>(),
+                std::ptr::from_ref(self).cast::<u8>(),
                 std::mem::size_of::<Self>(),
             )
         }

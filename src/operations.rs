@@ -892,14 +892,14 @@ impl VerificationReport {
         if self.is_valid {
             std::process::ExitCode::SUCCESS
         } else {
-            // NOTE: std::process::ExitCode::from is not const as of 1.70;
-            // construct via the literal path.
+            // `ExitCode::from` is a trait method and cannot be called in a
+            // const fn; use the associated constant instead.
             std::process::ExitCode::FAILURE
         }
     }
 
     /// Mark all checks as passed
-    pub fn mark_valid(&mut self) {
+    pub const fn mark_valid(&mut self) {
         self.structure_valid = true;
         self.integrity_hash_valid = true;
         self.hash_chain_valid = true;

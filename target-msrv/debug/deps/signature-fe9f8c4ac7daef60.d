@@ -1,0 +1,12 @@
+/tmp/claude-1000/-home-ops-Project-aion-context/5e28bb53-857b-4ecf-b55a-1d84187d3028/scratchpad/msrv/target-msrv/debug/deps/libsignature-fe9f8c4ac7daef60.rmeta: /home/ops/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/signature-3.0.0/src/lib.rs /home/ops/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/signature-3.0.0/src/hazmat.rs /home/ops/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/signature-3.0.0/src/encoding.rs /home/ops/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/signature-3.0.0/src/error.rs /home/ops/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/signature-3.0.0/src/keypair.rs /home/ops/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/signature-3.0.0/src/signer.rs /home/ops/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/signature-3.0.0/src/verifier.rs /home/ops/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/signature-3.0.0/src/../README.md
+
+/tmp/claude-1000/-home-ops-Project-aion-context/5e28bb53-857b-4ecf-b55a-1d84187d3028/scratchpad/msrv/target-msrv/debug/deps/signature-fe9f8c4ac7daef60.d: /home/ops/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/signature-3.0.0/src/lib.rs /home/ops/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/signature-3.0.0/src/hazmat.rs /home/ops/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/signature-3.0.0/src/encoding.rs /home/ops/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/signature-3.0.0/src/error.rs /home/ops/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/signature-3.0.0/src/keypair.rs /home/ops/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/signature-3.0.0/src/signer.rs /home/ops/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/signature-3.0.0/src/verifier.rs /home/ops/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/signature-3.0.0/src/../README.md
+
+/home/ops/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/signature-3.0.0/src/lib.rs:
+/home/ops/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/signature-3.0.0/src/hazmat.rs:
+/home/ops/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/signature-3.0.0/src/encoding.rs:
+/home/ops/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/signature-3.0.0/src/error.rs:
+/home/ops/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/signature-3.0.0/src/keypair.rs:
+/home/ops/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/signature-3.0.0/src/signer.rs:
+/home/ops/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/signature-3.0.0/src/verifier.rs:
+/home/ops/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/signature-3.0.0/src/../README.md:

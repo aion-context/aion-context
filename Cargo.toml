@@ -7,7 +7,9 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/aion-context/aion-context"
 homepage = "https://aion-context.dev"
 documentation = "https://docs.rs/aion-context"
-rust-version = "1.70"
+# Floor set by ed25519-dalek 3.0, rand 0.10, chacha20poly1305 0.11, and
+# getrandom 0.4 (edition 2024). Checked in CI by the `msrv` job.
+rust-version = "1.85"
 description = "Tamper-evident policy files with hash-chained signatures — AI agent governance and regulatory compliance auditing in Rust"
 readme = "README.md"
 keywords = ["policy", "tamper-evident", "audit-trail", "compliance", "cryptography"]

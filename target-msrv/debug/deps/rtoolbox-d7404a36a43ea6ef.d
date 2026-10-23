@@ -1,0 +1,10 @@
+/tmp/claude-1000/-home-ops-Project-aion-context/5e28bb53-857b-4ecf-b55a-1d84187d3028/scratchpad/msrv/target-msrv/debug/deps/librtoolbox-d7404a36a43ea6ef.rmeta: /home/ops/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rtoolbox-0.0.5/src/lib.rs /home/ops/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rtoolbox-0.0.5/src/atty.rs /home/ops/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rtoolbox-0.0.5/src/fix_line_issues.rs /home/ops/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rtoolbox-0.0.5/src/print_tty.rs /home/ops/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rtoolbox-0.0.5/src/safe_string.rs /home/ops/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rtoolbox-0.0.5/src/safe_vec.rs
+
+/tmp/claude-1000/-home-ops-Project-aion-context/5e28bb53-857b-4ecf-b55a-1d84187d3028/scratchpad/msrv/target-msrv/debug/deps/rtoolbox-d7404a36a43ea6ef.d: /home/ops/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rtoolbox-0.0.5/src/lib.rs /home/ops/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rtoolbox-0.0.5/src/atty.rs /home/ops/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rtoolbox-0.0.5/src/fix_line_issues.rs /home/ops/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rtoolbox-0.0.5/src/print_tty.rs /home/ops/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rtoolbox-0.0.5/src/safe_string.rs /home/ops/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rtoolbox-0.0.5/src/safe_vec.rs
+
+/home/ops/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rtoolbox-0.0.5/src/lib.rs:
+/home/ops/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rtoolbox-0.0.5/src/atty.rs:
+/home/ops/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rtoolbox-0.0.5/src/fix_line_issues.rs:
+/home/ops/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rtoolbox-0.0.5/src/print_tty.rs:
+/home/ops/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rtoolbox-0.0.5/src/safe_string.rs:
+/home/ops/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rtoolbox-0.0.5/src/safe_vec.rs:
