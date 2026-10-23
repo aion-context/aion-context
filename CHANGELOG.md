@@ -30,6 +30,32 @@ and the project follows [Semantic Versioning].
   cryptography yet: sealing and opening arrive in B2 and B3.
 - Fuzz target `fuzz_confidential_envelope`, with seeds for every
   stanza kind in `fuzz/seeds/fuzz_confidential_envelope/`.
+- **RFC-0039 Phase B2: key schedule and recipient stanzas**
+  (crate-internal; B3 adds the public API).
+  - The content key schedule: a fresh DEK per version and attempt,
+    `K_enc` via HKDF-SHA256 over `ctx = file_id ‖ author_id ‖ version`,
+    ChaCha20-Poly1305 content sealing, and the BLAKE3 DEK commitment.
+  - HPKE base-mode DEK wrapping for X25519 (kind `0x01`) and X-Wing
+    (kind `0x03`) recipients, bound to `ctx` and the DEK commitment.
+    Encryption identities are 32-byte seeds, one per KEM, with the
+    public key cached.
+  - `hpke`'s RNG cannot fail, so encapsulation randomness is drawn
+    first through the fallible OS RNG path. An OS RNG failure is an
+    error, never a panic.
+  - Tests: the RFC 9180 X25519 vector and the HPKE-PQ X-Wing vector
+    shipped with `hpke`; golden stanza and content bytes; moved
+    sections, wrong recipients, mismatched DEKs, and corrupted `enc`
+    all fail to open; Hegel round-trip and tamper properties.
+- RFC 5869 HKDF-SHA256 known-answer test for `crypto::derive_key`.
+
+### Changed
+
+- New dependency `hpke = "=0.14.1"` (`alloc`, `x25519`, `mlkem`,
+  `chacha`, `hkdfsha2`; no `getrandom`). It brings `ml-kem` 0.3,
+  `x-wing` 0.1, `sha3` 0.12, `shake`, `turboshake` and `x25519-dalek`
+  3.0. `hkdf` 0.12 → 0.13 and `sha2` 0.10 → 0.11, so the crate and
+  `hpke` share one HKDF and one SHA-256. Key-derivation output is
+  unchanged (RFC 5869 and the existing vectors pass).
 
 ## [2.0.0] — 2026-10-23
 

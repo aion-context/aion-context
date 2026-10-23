@@ -1107,6 +1107,15 @@ Four PRs, each reviewed by `crypto-auditor` and `api-reviewer`:
 - **B2, key schedule and stanzas.** DEK, `K_enc`, `dek_commitment`, the
   content AEAD, and HPKE seal/open for kinds `0x01` and `0x03`, with
   the known-answer tests above.
+  - *Implementation note:* the crate-private `confidential` module.
+    HPKE randomness is drawn with `crypto::fill_os_entropy` and served
+    from a buffer: 32 bytes per X25519 encapsulation, 64 per X-Wing.
+    If `hpke` asks for more, the seal is discarded with
+    `EntropyUnavailable`.
+  - Opening failures are one `DecryptionFailed` until B3 splits
+    `NotARecipient` from `RulesUnopenable`.
+  - `hkdf` and `sha2` were bumped to `hpke`'s versions, leaving one of
+    each in the build.
 - **B3, library read and write.** `RulesProtection::Confidential`,
   `Recipient`, `RecipientKeys`, the `NotARecipient` /
   `RulesUnopenable` split, `open_current_rules` /
