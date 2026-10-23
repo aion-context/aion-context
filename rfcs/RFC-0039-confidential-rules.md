@@ -1,9 +1,9 @@
 # RFC 0039: Confidential Rules (Format v3)
 
 - **Author:** copyleftdev
-- **Status:** DRAFT
+- **Status:** PROPOSED
 - **Created:** 2026-10-23
-- **Updated:** 2026-10-23 (revised after crypto review, round 1)
+- **Updated:** 2026-10-23 (five crypto-review rounds; see Review history)
 - **Depends on:** RFC-0002 (file format), RFC-0003 (cryptography),
   RFC-0004 (key management), RFC-0005 (signature chain), RFC-0012
   (versioning), RFC-0028 (key rotation and revocation), RFC-0038
@@ -382,6 +382,15 @@ the header's `version`, and `file_id` is the header's `file_id`.
   - the DSSE version-attestation payload, which adds `rules_mode`,
     `file_id`, and `format_version` fields for v3.
 
+**v3 version hash.** In v2, `compute_version_hash`, the value each
+`parent_hash` links to, covers the v2 canonical fields. For v3 it
+covers the **v3 canonical message**: every field listed above,
+including `format_version`, `file_id`, and the entry's `rules_mode`.
+A version's mode is therefore part of its identity. Re-signing the
+same version number with a different mode yields a different version
+hash, which the parent links of later versions, and the acceptance
+store, treat as a different version (equivocation).
+
 Every new v3 domain string ends in `\0`, so no domain is a prefix of
 another. This follows the transparency-log and hybrid-signature
 domains.
@@ -423,9 +432,11 @@ can't be forgotten by omission:
 - **Key:** `file_id`. Version numbers are file-global: one chain, many
   authors, one monotonic sequence. Keying by author would let an older
   prefix whose head has a different author slip past the record.
-- **Value:** `(genesis_hash, head_version, head_hash)`. All are
-  version-entry hashes (`compute_version_hash`) taken from the
-  verified chain.
+- **Value:** `(genesis_hash, head_version, head_hash)`. All are v3
+  version hashes, which cover `rules_mode` (see Signatures), taken from
+  the verified chain. A **pinned** record, created by
+  `pin(file_id, genesis_hash)`, has `head_version = 0` and no
+  `head_hash`.
 - **Decision**, applied only **after** every integrity, signature and
   policy check has passed, so an attacker cannot burn version numbers
   with invalid files. Let `P` be the presented verified chain, and
@@ -434,7 +445,8 @@ can't be forgotten by omission:
   | Stored vs presented | Result |
   |---|---|
   | no record | accept and record |
-  | `hash(P[1]) ≠ stored.genesis_hash` | reject as a **foreign chain** under the same `file_id` (`reason = "file_id_conflict"`) |
+  | pinned record (`head_version = 0`) and `hash(P[1]) = stored.genesis_hash` | accept and advance |
+  | `hash(P[1]) ≠ stored.genesis_hash`, pinned or not | reject as a **foreign chain** under the same `file_id` (`reason = "file_id_conflict"`) |
   | `P.head_version < stored.head_version` | reject as **rollback** (`reason = "version_replay"`) |
   | `hash(P[stored.head_version]) ≠ stored.head_hash` | reject as a **fork or equivocation**: the presented chain does not extend what was accepted (`reason = "version_equivocation"`). This covers both a different chain at the same version and a higher-versioned fork. |
   | `P.head_version == stored.head_version` (and the hash matches) | accept, idempotent; no write |
@@ -442,23 +454,51 @@ can't be forgotten by omission:
 
   The ancestry check is O(1), because `P` is already a verified hash
   chain. Matching one entry's hash at the stored version proves that
-  the whole accepted prefix is contained in `P`.
+  the whole accepted prefix is contained in `P`. The rows are
+  evaluated in order. The rollback row precedes the ancestry row, so
+  `P[stored.head_version]` is always defined when it is looked up.
 - **`file_id` squatting:** `file_id` is author-chosen. A store that
   first accepts an attacker's chain under a victim's `file_id` will
   then reject the victim's chain as `file_id_conflict`. Acceptance
   still requires a signature valid under the caller's pinned registry,
-  so the attacker must be a registered author. Deployments that
-  consume specific policies should pin the expected `(file_id,
-  genesis_hash)` up front with `store.pin(...)`, rather than learning
-  it on first use.
-- **Atomicity:** one trait method,
-  `fn check_and_advance(&self, file_id, &ChainSummary) -> Result<StoreDecision>`,
-  where `ChainSummary` carries the genesis hash, the head version and
-  hash, and the presented chain's hash at the stored version, looked
-  up through a callback on the verified chain. It must be atomic as a
-  compare-and-swap. It takes `&self`; implementations provide their
-  own synchronization, as `AttestationStore` does in RFC-0036.
-  Concurrent acceptances of the same `file_id` cannot both win.
+  so the attacker must be a registered author. Squatting is therefore
+  a **denial of service against acceptance, not a forgery**: the
+  victim's rules are never replaced. Deployments that consume specific
+  policies should pin the expected `(file_id, genesis_hash)` up front
+  with `pin`, rather than learning it on first use.
+- **Trait surface:**
+
+  ```rust
+  pub trait AcceptedVersionStore {
+      fn pin(&self, file_id: FileId, genesis_hash: [u8; 32]) -> Result<()>;
+      fn check_and_advance(&self, file_id: FileId, chain: &ChainSummary<'_>)
+          -> Result<StoreDecision>;
+  }
+  pub enum StoreDecision { Accepted, AcceptedIdempotent }
+  ```
+
+  - **Rejections:** a rejection is
+    `Err(AionError::VersionRejected { reason })`, where the bounded
+    `reason` is `VersionRejectReason::{Replay, Equivocation,
+    FileIdConflict}`. These are logged as `version_replay`,
+    `version_equivocation` and `file_id_conflict`.
+  - **Store errors** are `Err(AionError::StoreUnavailable)`.
+  - **New variants:** both are new `AionError` variants. `AionError`
+    is `#[non_exhaustive]`.
+- **`ChainSummary` contract:** it exposes `genesis_hash()`,
+  `head_version()`, `head_hash()`, and `hash_at(version) -> [u8; 32]`.
+  - **Callback timing:** the implementation calls `hash_at` **inside**
+    its critical section, after reading the stored record and before
+    writing. The whole read, compare and write is one atomic
+    compare-and-swap.
+  - **Concurrency:** the trait takes `&self`, and implementations
+    provide their own synchronization, as `AttestationStore` does in
+    RFC-0036. Concurrent acceptances of the same `file_id` cannot both
+    win.
+  - **Valid input:** `hash_at(v)` is only called for
+    `1 ≤ v ≤ head_version()`. Row order guarantees this, and
+    `ChainSummary` returns an error rather than panicking if the
+    contract is violated.
 - **Failure:** any store error fails the acceptance closed, as a
   `StoreUnavailable` error. The store is never skipped.
 
@@ -487,7 +527,7 @@ state before it is verified.
 
 | Function | Behavior |
 |---|---|
-| `show_current_rules(path)` | Public mode: returns the plaintext (after verification, as in 1.0.1). Confidential mode: `Err(AionError::RecipientKeyRequired)`. |
+| `show_current_rules(path)` | Kept for compatibility. It reads the file **once** into a buffer, verifies it as `verify_file_chain` does, and reads the section from that same buffer, never re-opening the path. Public mode: returns the plaintext. Confidential mode: `Err(AionError::RecipientKeyRequired)`. New code should use `open_current_rules(&VerifiedChain, …)`. |
 | `open_current_rules(&VerifiedChain, &RecipientKeys)` | **New.** Opens the head section. |
 | `open_rules_section(section, VerifiedEntry<'_>, &RecipientKeys \| &Dek)` | **New.** Opens an **archived** section, such as a historical version's section stored outside the file under its `rules_commitment`. It first recomputes the commitment over `section` and compares it with the verified entry's. A disclosed DEK opens that one section and no other, because each DEK is independent random. |
 | `disclose_version_key(VerifiedEntry<'_>, section, &RecipientKeys)` | **New.** Returns that version's DEK, for selective disclosure. |
@@ -832,11 +872,18 @@ transport and key-derivation boundary only, gating no comparison.
 - `open_rules_section` and `disclose_version_key` accept only a
   `VerifiedEntry`. A test that tries to build one from raw fields must
   fail to compile (`trybuild`).
-- `accept_file` store semantics: an identical re-verify accepts; the
-  same version with a different hash ⇒ `version_equivocation`; a lower
-  version ⇒ `version_replay`; an invalid file never advances the store;
-  a store error ⇒ fail closed. A Hegel model test runs against a
-  `HashMap` reference implementation.
+- `accept_file` store semantics, as a Hegel model test against a
+  `HashMap` reference implementation, covering every decision-table
+  row:
+  - an identical re-verify ⇒ `AcceptedIdempotent`;
+  - the same version with a different hash ⇒ `Equivocation`;
+  - a lower version ⇒ `Replay`;
+  - a different genesis, pinned or not ⇒ `FileIdConflict`;
+  - a pinned record ⇒ accepts its genesis;
+  - an invalid file never advances the store;
+  - a store error ⇒ `StoreUnavailable`, fail closed.
+- The same version re-signed with a different `rules_mode` ⇒ a
+  different v3 version hash ⇒ `Equivocation`.
 - An identity not listed ⇒ `NotARecipient`. A listed identity with a
   corrupted stanza ⇒ `RulesUnopenable`.
 - An archived section opened with `open_rules_section` against the
@@ -876,8 +923,12 @@ transport and key-derivation boundary only, gating no comparison.
   `verify_file_chain`.
 - `accept_file` with `AcceptPolicy` (`min_format_version`,
   `require_confidential` `Head` / `AllVersions`), the mandatory
-  `AcceptedVersionStore` trait (atomic `check_and_advance`), a
-  file-backed store, and `aion accept --state`.
+  `AcceptedVersionStore` trait (`pin` and atomic
+  `check_and_advance`), `StoreDecision`, the `VersionRejected` /
+  `StoreUnavailable` variants, a file-backed store, and
+  `aion accept --state` / `--pin`.
+- The v3 version hash over the v3 canonical message, so `rules_mode`
+  is bound into parent links.
 - The SHA-256 exception entry in `.claude/rules/crypto.md`.
 - `RulesProtection::Public` only. `--public` replaces
   `--no-encryption`.
@@ -1051,3 +1102,15 @@ transport and key-derivation boundary only, gating no comparison.
   - Notes: stale `VerifyPolicy`, example, and key text fixed;
     `--keep-recipients` reads from the `VerifiedChain`; the file store
     fsyncs the temp file and the directory.
+- **2026-10-23, `crypto-auditor`, round 5: PASS** (0 blockers) for
+  draft → proposed. The non-blocking items, now addressed:
+  - `pin` is defined, with a decision-table row and a Phase A item.
+  - The rejection surface is named: `StoreDecision`, `VersionRejected`
+    with its bounded reasons, and `StoreUnavailable`.
+  - The `ChainSummary` contract is specified: `hash_at` is called
+    inside the CAS, its domain is guaranteed by row order, and it
+    returns an error instead of panicking.
+  - The v3 version hash covers `rules_mode`, so a mode re-sign counts
+    as equivocation.
+  - Squatting is stated to be a denial of service, not a forgery.
+  - `show_current_rules` reads and verifies once, from one buffer.
