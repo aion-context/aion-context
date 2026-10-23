@@ -238,6 +238,15 @@ pub enum AionError {
         actual: [u8; 32],
     },
 
+    /// A file failed verification, so no verified chain was produced
+    /// (RFC-0039). `reason` is the same bounded code that the
+    /// `file_rejected` trace event carries.
+    #[error("File rejected by verification: {reason}")]
+    ChainRejected {
+        /// Bounded reason code, e.g. `signature_invalid`
+        reason: &'static str,
+    },
+
     /// The rules section is confidential and no recipient key was
     /// supplied to open it (RFC-0039)
     #[error("Rules are confidential: a recipient key is required to read them")]

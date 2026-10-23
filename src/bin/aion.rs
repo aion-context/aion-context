@@ -7,8 +7,8 @@ use aion_context::compliance::{generate_compliance_report, ComplianceFramework, 
 use aion_context::export::{export_file, ExportFormat};
 use aion_context::keystore::KeyStore;
 use aion_context::operations::{
-    commit_version, commit_version_force_unregistered, init_file, show_current_rules,
-    show_file_info, show_signatures, show_version_history, verify_file, CommitOptions, InitOptions,
+    commit_version, commit_version_force_unregistered, init_file, show_file_info, show_signatures,
+    show_version_history, verify_file, CommitOptions, InitOptions,
 };
 use aion_context::types::AuthorId;
 use anyhow::{Context, Result};
@@ -939,7 +939,13 @@ fn cmd_show(args: &ShowArgs) -> Result<ExitCode> {
 }
 
 fn show_rules_subcommand(args: &ShowArgs) -> Result<()> {
-    let rules = show_current_rules(&args.path)?;
+    let registry = load_registry_from_path(&args.registry)?;
+    let chain = aion_context::chain::verify_file_chain(&args.path, &registry)
+        .with_context(|| format!("Refusing to show rules: {}", args.path.display()))?;
+    let rules = aion_context::chain::open_current_rules(
+        &chain,
+        &aion_context::chain::RecipientKeys::none(),
+    )?;
     match args.format {
         OutputFormat::Json | OutputFormat::Yaml => println!("{}", hex::encode(&rules)),
         OutputFormat::Text => {

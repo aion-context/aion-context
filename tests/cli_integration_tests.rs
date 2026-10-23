@@ -794,6 +794,44 @@ fn test_cli_show_rules() {
 }
 
 #[test]
+fn test_cli_show_rules_refuses_a_file_that_fails_verification() {
+    let (temp_dir, key_id) = setup_test_env();
+    let file_path = temp_dir.path().join("show_tampered.aion");
+    let registry_path = temp_dir.path().join("registry.json");
+    pin_author(&registry_path, "5002", &key_id);
+    run_cli_with_stdin(
+        &[
+            "init",
+            "--public",
+            file_path.to_str().unwrap(),
+            "--author",
+            "5002",
+            "--key",
+            &key_id,
+        ],
+        b"threshold: 500",
+    );
+    let mut bytes = fs::read(&file_path).expect("read file");
+    let last = bytes.len() - 1;
+    bytes[last] ^= 0x01;
+    fs::write(&file_path, &bytes).expect("write file");
+
+    let output = run_cli(&[
+        "show",
+        file_path.to_str().unwrap(),
+        "--registry",
+        registry_path.to_str().unwrap(),
+        "rules",
+    ]);
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Refusing to show rules"), "{stderr}");
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("threshold"));
+    cleanup_key(&key_id);
+}
+
+#[test]
 fn test_cli_show_history() {
     let (temp_dir, key_id) = setup_test_env();
     let file_path = temp_dir.path().join("show_history.aion");
