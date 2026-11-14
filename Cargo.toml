@@ -23,7 +23,7 @@ chacha20poly1305 = "0.11"
 # exactly: X-Wing and its HPKE binding are IETF drafts, and golden-stanza
 # tests fix the wire bytes. No `getrandom` feature: randomness comes from
 # `crypto::fill_os_entropy`, so an RNG failure is an error, not a panic.
-hpke = { version = "=0.14.1", default-features = false, features = ["alloc", "x25519", "mlkem", "chacha", "hkdfsha2"] }
+hpke = { version = "=0.15.1", default-features = false, features = ["alloc", "x25519", "mlkem", "chacha", "hkdfsha2"] }
 blake3 = "1.8"
 hkdf = "0.13"
 sha2 = "0.11"
