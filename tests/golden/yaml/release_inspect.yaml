@@ -1,0 +1,134 @@
+signer: 8001
+model_ref:
+  name: cirrus-7b-safety
+  version: 0.3.1
+  hash_algorithm: BLAKE3-256
+  hash: 58080c979d54ee5533b318eb626eec1ecfa63bbc6c0d886de3d93e0ff06f5092
+  size: 4096
+  format: safetensors
+manifest_canonical_hex: 41494f4e5f56325f4d414e49464553545f5631010000000000000000000000000000001100000001000000001000000000000058080c979d54ee5533b318eb626eec1ecfa63bbc6c0d886de3d93e0ff06f50920000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000006d6f64656c2e7361666574656e736f727300
+manifest_signature:
+  author_id: 8001
+  public_key_hex: <MASKED>
+  signature_hex: <MASKED>
+manifest_dsse:
+  payloadType: application/vnd.aion.manifest.v1+json
+  payload: eyJfdHlwZSI6Imh0dHBzOi8vYWlvbi1jb250ZXh0LmRldi9tYW5pZmVzdC92MSIsImVudHJpZXMiOlt7Imhhc2giOiI1ODA4MGM5NzlkNTRlZTU1MzNiMzE4ZWI2MjZlZWMxZWNmYTYzYmJjNmMwZDg4NmRlM2Q5M2UwZmYwNmY1MDkyIiwiaGFzaF9hbGdvcml0aG0iOiJCTEFLRTMtMjU2IiwibmFtZSI6Im1vZGVsLnNhZmV0ZW5zb3JzIiwic2l6ZSI6NDA5Nn1dLCJtYW5pZmVzdF9pZCI6IjJjOGRhZTY3MTliZjVhMjhmMjVlMDQ3OGFkNjVkYmFiYjAyMjJkZGYwMGExZTY1ZTJkMTU3NGZkMjE3MWUwOTUifQ
+  signatures:
+  - keyid: aion:author:8001
+    sig: <MASKED>
+aibom:
+  schema_version: aion.aibom.v1
+  model:
+    name: cirrus-7b-safety
+    version: 0.3.1
+    hash_algorithm: BLAKE3-256
+    hash: 58080c979d54ee5533b318eb626eec1ecfa63bbc6c0d886de3d93e0ff06f5092
+    size: 4096
+    format: safetensors
+  frameworks:
+  - name: pytorch
+    version: 2.3.1
+    cpe: null
+  datasets: []
+  licenses:
+  - spdx_id: Apache-2.0
+    scope: Weights
+    text_uri: null
+  hyperparameters: {}
+  safety_attestations:
+  - name: rlhf_alignment
+    result: PASS
+    report_hash_algorithm: null
+    report_hash: null
+    report_uri: null
+  export_controls:
+  - regime: US-EAR
+    classification: EAR99
+    notes: null
+  references: []
+  created_at_version: 1
+aibom_dsse:
+  payloadType: application/vnd.aion.aibom.v1+json
+  payload: eyJzY2hlbWFfdmVyc2lvbiI6ImFpb24uYWlib20udjEiLCJtb2RlbCI6eyJuYW1lIjoiY2lycnVzLTdiLXNhZmV0eSIsInZlcnNpb24iOiIwLjMuMSIsImhhc2hfYWxnb3JpdGhtIjoiQkxBS0UzLTI1NiIsImhhc2giOiI1ODA4MGM5NzlkNTRlZTU1MzNiMzE4ZWI2MjZlZWMxZWNmYTYzYmJjNmMwZDg4NmRlM2Q5M2UwZmYwNmY1MDkyIiwic2l6ZSI6NDA5NiwiZm9ybWF0Ijoic2FmZXRlbnNvcnMifSwiZnJhbWV3b3JrcyI6W3sibmFtZSI6InB5dG9yY2giLCJ2ZXJzaW9uIjoiMi4zLjEiLCJjcGUiOm51bGx9XSwiZGF0YXNldHMiOltdLCJsaWNlbnNlcyI6W3sic3BkeF9pZCI6IkFwYWNoZS0yLjAiLCJzY29wZSI6IldlaWdodHMiLCJ0ZXh0X3VyaSI6bnVsbH1dLCJoeXBlcnBhcmFtZXRlcnMiOnt9LCJzYWZldHlfYXR0ZXN0YXRpb25zIjpbeyJuYW1lIjoicmxoZl9hbGlnbm1lbnQiLCJyZXN1bHQiOiJQQVNTIiwicmVwb3J0X2hhc2hfYWxnb3JpdGhtIjpudWxsLCJyZXBvcnRfaGFzaCI6bnVsbCwicmVwb3J0X3VyaSI6bnVsbH1dLCJleHBvcnRfY29udHJvbHMiOlt7InJlZ2ltZSI6IlVTLUVBUiIsImNsYXNzaWZpY2F0aW9uIjoiRUFSOTkiLCJub3RlcyI6bnVsbH1dLCJyZWZlcmVuY2VzIjpbXSwiY3JlYXRlZF9hdF92ZXJzaW9uIjoxfQ
+  signatures:
+  - keyid: aion:author:8001
+    sig: <MASKED>
+slsa_statement:
+  _type: https://in-toto.io/Statement/v1
+  subject:
+  - name: model.safetensors
+    digest:
+      blake3-256: 58080c979d54ee5533b318eb626eec1ecfa63bbc6c0d886de3d93e0ff06f5092
+  predicateType: https://slsa.dev/provenance/v1
+  predicate:
+    buildDefinition:
+      buildType: https://aion-context.dev/buildtypes/generic/v1
+      externalParameters: {}
+      resolvedDependencies: []
+    runDetails:
+      builder:
+        id: https://ci.example/run/1
+slsa_dsse:
+  payloadType: application/vnd.in-toto+json
+  payload: eyJfdHlwZSI6Imh0dHBzOi8vaW4tdG90by5pby9TdGF0ZW1lbnQvdjEiLCJzdWJqZWN0IjpbeyJuYW1lIjoibW9kZWwuc2FmZXRlbnNvcnMiLCJkaWdlc3QiOnsiYmxha2UzLTI1NiI6IjU4MDgwYzk3OWQ1NGVlNTUzM2IzMThlYjYyNmVlYzFlY2ZhNjNiYmM2YzBkODg2ZGUzZDkzZTBmZjA2ZjUwOTIifX1dLCJwcmVkaWNhdGVUeXBlIjoiaHR0cHM6Ly9zbHNhLmRldi9wcm92ZW5hbmNlL3YxIiwicHJlZGljYXRlIjp7ImJ1aWxkRGVmaW5pdGlvbiI6eyJidWlsZFR5cGUiOiJodHRwczovL2Fpb24tY29udGV4dC5kZXYvYnVpbGR0eXBlcy9nZW5lcmljL3YxIiwiZXh0ZXJuYWxQYXJhbWV0ZXJzIjp7fSwicmVzb2x2ZWREZXBlbmRlbmNpZXMiOltdfSwicnVuRGV0YWlscyI6eyJidWlsZGVyIjp7ImlkIjoiaHR0cHM6Ly9jaS5leGFtcGxlL3J1bi8xIn19fX0
+  signatures:
+  - keyid: aion:author:8001
+    sig: <MASKED>
+oci_primary:
+  schemaVersion: 2
+  mediaType: application/vnd.oci.image.manifest.v1+json
+  artifactType: application/vnd.aion.context.v2
+  config:
+    mediaType: application/vnd.aion.context.config.v1+json
+    digest: <MASKED>
+    size: 138
+  layers:
+  - mediaType: application/vnd.aion.context.v2+binary
+    digest: <MASKED>
+    size: 173
+    annotations:
+      org.opencontainers.image.title: cirrus-7b-safety
+  annotations:
+    dev.aion.file.id: '0'
+    dev.aion.format.version: '2'
+oci_aibom_referrer:
+  schemaVersion: 2
+  mediaType: application/vnd.oci.image.manifest.v1+json
+  artifactType: application/vnd.aion.aibom.v1+json
+  config:
+    mediaType: application/vnd.oci.empty.v1+json
+    digest: <MASKED>
+    size: 2
+  layers:
+  - mediaType: application/vnd.aion.aibom.v1+json
+    digest: <MASKED>
+    size: 1066
+  subject:
+    mediaType: application/vnd.oci.image.manifest.v1+json
+    digest: <MASKED>
+    size: 585
+oci_slsa_referrer:
+  schemaVersion: 2
+  mediaType: application/vnd.oci.image.manifest.v1+json
+  artifactType: application/vnd.in-toto+json
+  config:
+    mediaType: application/vnd.oci.empty.v1+json
+    digest: <MASKED>
+    size: 2
+  layers:
+  - mediaType: application/vnd.in-toto+json
+    digest: <MASKED>
+    size: 769
+  subject:
+    mediaType: application/vnd.oci.image.manifest.v1+json
+    digest: <MASKED>
+    size: 585
+log_entries:
+- kind: 2
+  seq: 0
+- kind: 6
+  seq: 1
+- kind: 5
+  seq: 2
+
