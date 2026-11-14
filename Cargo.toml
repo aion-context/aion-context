@@ -57,7 +57,7 @@ memmap2 = "0.9"
 # Security - sensitive data handling
 zeroize = { version = "1.7", features = ["derive"] }
 keyring-core = "1.0"  # OS keyring integration for key storage
-argon2 = "0.5"   # Password hashing for key export/import
+argon2 = "0.6"   # Password hashing for key export/import
 
 # CLI
 clap = { version = "4.5", features = ["derive", "cargo"] }
