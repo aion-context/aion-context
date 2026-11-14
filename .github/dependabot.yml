@@ -14,10 +14,6 @@ updates:
       - rust
     commit-message:
       prefix: "deps"
-    ignore:
-      # sha2 0.11.1 needs rustc 1.88; we are on MSRV 1.87. Drop with the MSRV bump.
-      - dependency-name: "sha2"
-        versions: [">= 0.11.1"]
     groups:
       patch-updates:
         update-types: ["patch"]

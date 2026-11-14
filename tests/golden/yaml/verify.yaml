@@ -1,0 +1,14 @@
+🔍 Verifying AION file: <TMP>/archive/policy.aion
+   Registry: <TMP>/registry.json (registry-aware verify)
+file_id: <MASKED>
+version_count: 2
+structure_valid: true
+integrity_hash_valid: true
+hash_chain_valid: true
+audit_chain_valid: true
+signatures_valid: true
+metadata_signed: true
+is_valid: true
+errors: []
+temporal_warnings: []
+

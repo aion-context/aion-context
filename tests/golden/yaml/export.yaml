@@ -1,0 +1,32 @@
+export_version: "1.0"
+source_file: <TMP>/archive/policy.aion
+file_info:
+  file_id: <MASKED>
+  version_count: 2
+  current_version: 2
+  metadata_signed: true
+versions:
+- version: 1
+  author_id: 8001
+  timestamp: <MASKED>
+  message: "Initial: \"quoted\" yes"
+  rules_hash: ee6d2007735bff8b94dc22081164886b2db87ae0816480263027727e5719d272
+  parent_hash: null
+- version: 2
+  author_id: 8001
+  timestamp: <MASKED>
+  message: |-
+    multi
+    line
+  rules_hash: 2a70fac683c1bd4f6ce38f3e68c45dc7e72ad940846126b20b8209fd8eb7c80e
+  parent_hash: <MASKED>
+signatures:
+- version: 1
+  author_id: 8001
+  public_key: <MASKED>
+  verified: true
+- version: 2
+  author_id: 8001
+  public_key: <MASKED>
+  verified: true
+

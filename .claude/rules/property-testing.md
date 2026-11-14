@@ -219,6 +219,7 @@ blocks on a drop.
 | `src/chain.rs`                  | RFC-0039 an archived section opens exactly against verified entries with the same commitment |
 | `src/chain.rs`                  | RFC-0039 mixed public / confidential chains verify key-free; each listed recipient reads the head, others get `NotARecipient`, no key gets `RecipientKeyRequired` |
 | `src/acceptance.rs`             | RFC-0039 Tier-3 model: `MemoryStore` decisions match a reference model over main and fork chains (replay, equivocation, idempotence) |
+| `src/export.rs`                 | #191 `export_yaml` → `import_yaml` round-trips any `ExportData` (arbitrary text, including YAML-special strings) |
 
 ## Tier 3 (model / stateful — required once the audit chain is stable)
 

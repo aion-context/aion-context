@@ -116,10 +116,21 @@ fn export_json(path: &Path, file_info: &FileInfo) -> Result<String> {
 
 /// Export to YAML format
 fn export_yaml(path: &Path, file_info: &FileInfo) -> Result<String> {
-    let export_data = build_export_data(path, file_info);
-    serde_yaml::to_string(&export_data).map_err(|e| AionError::InvalidFormat {
-        reason: format!("YAML serialization failed: {e}"),
+    export_data_to_yaml(&build_export_data(path, file_info))
+}
+
+fn export_data_to_yaml(export_data: &ExportData) -> Result<String> {
+    serde_saphyr::to_string_with_options(export_data, yaml_options()).map_err(|e| {
+        AionError::InvalidFormat {
+            reason: format!("YAML serialization failed: {e}"),
+        }
     })
+}
+
+/// Never fold long single-line scalars (hashes, base64) across lines;
+/// multi-line strings still use `|` literal blocks.
+fn yaml_options() -> serde_saphyr::SerializerOptions {
+    serde_saphyr::ser_options! { folded_wrap_chars: usize::MAX }
 }
 
 /// Export audit trail to CSV format
@@ -259,7 +270,7 @@ pub fn import_json(json_data: &str) -> Result<ExportData> {
 
 /// Import data from YAML format
 pub fn import_yaml(yaml_data: &str) -> Result<ExportData> {
-    serde_yaml::from_str(yaml_data).map_err(|e| AionError::InvalidFormat {
+    serde_saphyr::from_str(yaml_data).map_err(|e| AionError::InvalidFormat {
         reason: format!("YAML parse failed: {e}"),
     })
 }
@@ -289,5 +300,63 @@ mod tests {
         let ts = 1704067200_000_000_000u64;
         let formatted = format_timestamp_nanos(ts);
         assert!(formatted.starts_with("2024-01-01"));
+    }
+
+    mod properties {
+        use super::*;
+        use hegel::generators as gs;
+
+        fn draw_version(tc: &hegel::TestCase) -> ExportVersion {
+            ExportVersion {
+                version: tc.draw(gs::integers::<u64>()),
+                author_id: tc.draw(gs::integers::<u64>()),
+                timestamp: tc.draw(gs::text().max_size(32)),
+                message: tc.draw(gs::text().max_size(128)),
+                rules_hash: tc.draw(gs::text().max_size(64)),
+                parent_hash: if tc.draw(gs::booleans()) {
+                    Some(tc.draw(gs::text().max_size(64)))
+                } else {
+                    None
+                },
+            }
+        }
+
+        fn draw_signature(tc: &hegel::TestCase) -> ExportSignature {
+            ExportSignature {
+                version: tc.draw(gs::integers::<u64>()),
+                author_id: tc.draw(gs::integers::<u64>()),
+                public_key: tc.draw(gs::text().max_size(64)),
+                verified: tc.draw(gs::booleans()),
+            }
+        }
+
+        fn draw_export_data(tc: &hegel::TestCase) -> ExportData {
+            let n_versions = tc.draw(gs::integers::<usize>().max_value(4));
+            let n_signatures = tc.draw(gs::integers::<usize>().max_value(4));
+            ExportData {
+                export_version: tc.draw(gs::text().max_size(8)),
+                source_file: tc.draw(gs::text().max_size(64)),
+                file_info: ExportFileInfo {
+                    file_id: tc.draw(gs::text().max_size(18)),
+                    version_count: tc.draw(gs::integers::<u64>()),
+                    current_version: tc.draw(gs::integers::<u64>()),
+                    metadata_signed: tc.draw(gs::booleans()),
+                },
+                versions: (0..n_versions).map(|_| draw_version(tc)).collect(),
+                signatures: (0..n_signatures).map(|_| draw_signature(tc)).collect(),
+            }
+        }
+
+        fn canonical(data: &ExportData) -> String {
+            serde_json::to_string(data).unwrap_or_else(|_| std::process::abort())
+        }
+
+        #[hegel::test]
+        fn prop_export_yaml_import_yaml_round_trips(tc: hegel::TestCase) {
+            let data = draw_export_data(&tc);
+            let yaml = export_data_to_yaml(&data).unwrap_or_else(|_| std::process::abort());
+            let back = import_yaml(&yaml).unwrap_or_else(|_| std::process::abort());
+            assert_eq!(canonical(&back), canonical(&data));
+        }
     }
 }

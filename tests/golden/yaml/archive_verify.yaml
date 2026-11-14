@@ -1,0 +1,18 @@
+archive_dir: <TMP>/archive
+file_count: 1
+valid_count: 1
+invalid_count: 0
+files:
+- path: policy.aion
+  valid: true
+  author: 8001
+  public_key_prefix: <MASKED>
+  error: null
+authors:
+- author: 8001
+  keys:
+  - pubkey_prefix: <MASKED>
+    files:
+    - policy.aion
+  rotated: false
+
