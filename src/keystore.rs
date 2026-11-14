@@ -908,11 +908,13 @@ fn open_from_storage(
 /// This provides basic obfuscation for file-based key storage.
 /// Real security comes from filesystem permissions.
 fn derive_machine_key(salt: &[u8; SALT_SIZE]) -> Result<[u8; 32]> {
-    use argon2::{Algorithm, Argon2, Params, Version};
+    machine_key_from_identifier(&get_machine_identifier(), salt)
+}
 
-    // Use a combination of fixed data as "password"
-    // This isn't true security, but provides obfuscation
-    let machine_id = get_machine_identifier();
+/// Argon2id over a machine identifier; split from [`derive_machine_key`]
+/// so the derivation can be pinned by known-answer tests.
+fn machine_key_from_identifier(machine_id: &str, salt: &[u8; SALT_SIZE]) -> Result<[u8; 32]> {
+    use argon2::{Algorithm, Argon2, Params, Version};
 
     // Use lighter Argon2 params for machine key (faster startup)
     let params = Params::new(
@@ -1082,6 +1084,36 @@ mod tests {
             assert!(decode_encryption_record(&record[..20]).is_err());
             record[0] = crate::envelope::STANZA_XWING;
             assert!(decode_encryption_record(&record).is_ok());
+        }
+    }
+
+    /// Known answers for both Argon2id parameter sets, computed with the
+    /// reference C implementation (argon2-cffi 23.1.0). A dependency bump
+    /// that changes either output would orphan every exported key or
+    /// file-backed keystore entry, so these must never be regenerated.
+    mod argon2_known_answers {
+        use super::*;
+
+        const SALT: [u8; SALT_SIZE] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+
+        #[test]
+        fn password_derivation_matches_reference() {
+            let key = derive_key_from_password("correct horse battery staple", &SALT)
+                .unwrap_or_else(|_| std::process::abort());
+            assert_eq!(
+                hex::encode(key),
+                "853b272a44db1421c02962669a55eb0994f3cab385ed1c4c79253eee19bab49e"
+            );
+        }
+
+        #[test]
+        fn machine_key_derivation_matches_reference() {
+            let key = machine_key_from_identifier("0123456789abcdef0123456789abcdef", &SALT)
+                .unwrap_or_else(|_| std::process::abort());
+            assert_eq!(
+                hex::encode(key),
+                "3bf942e080993f5986949d2ecac6b5fffd7d4c9777ac5da2f563d7c2cb6546fe"
+            );
         }
     }
 
