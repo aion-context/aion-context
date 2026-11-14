@@ -9,7 +9,7 @@ homepage = "https://aion-context.dev"
 documentation = "https://docs.rs/aion-context"
 # Floor set by ed25519-dalek 3.0, rand 0.10, chacha20poly1305 0.11, and
 # getrandom 0.4 (edition 2024). Checked in CI by the `msrv` job.
-rust-version = "1.87"
+rust-version = "1.89"
 description = "Tamper-evident policy files with hash-chained signatures — AI agent governance and regulatory compliance auditing in Rust"
 readme = "README.md"
 keywords = ["policy", "tamper-evident", "audit-trail", "compliance", "cryptography"]
@@ -26,9 +26,7 @@ chacha20poly1305 = "0.11"
 hpke = { version = "=0.14.1", default-features = false, features = ["alloc", "x25519", "mlkem", "chacha", "hkdfsha2"] }
 blake3 = "1.8"
 hkdf = "0.13"
-# Pinned exactly: sha2 0.11.1 raised its MSRV to 1.88, above our
-# `rust-version = "1.87"`. Lift the pin together with the MSRV bump.
-sha2 = "=0.11.0"
+sha2 = "0.11"
 # Constant-time comparisons for any secret-or-key-shaped bytes
 # (crypto-rule: `==` on key bytes is a BLOCK, see .claude/rules/crypto.md).
 subtle = "2.6"
@@ -70,7 +68,9 @@ rand = "0.10"
 # RNG primitive used for all key/nonce/salt material. rand's own OsRng
 # was removed in 0.10 in favour of this fallible interface.
 getrandom = "0.4"
-serde_yaml = "0.9.34"
+# Safe-Rust YAML (#191, replaces serde_yaml / unsafe-libyaml). The
+# default input budget stays on: `import_yaml` parses caller input.
+serde-saphyr = { version = "2.1", default-features = false, features = ["serialize", "deserialize"] }
 
 # Parallel processing
 rayon = "1.10"

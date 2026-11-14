@@ -22,8 +22,4 @@ ignore = [
     "RUSTSEC-2026-0166",
     "RUSTSEC-2026-0162",
     "RUSTSEC-2026-0163",
-    # unsafe-libyaml — unmaintained, via the deprecated serde_yaml that
-    # backs YAML export/import. Remove on migration to a safe-Rust YAML
-    # crate. See deny.toml.
-    "RUSTSEC-2024-0449",
 ]

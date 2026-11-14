@@ -1,7 +1,7 @@
 signer: 8001
 model_ref:
   name: cirrus-7b-safety
-  version: 0.3.1
+  version: "0.3.1"
   hash_algorithm: BLAKE3-256
   hash: 58080c979d54ee5533b318eb626eec1ecfa63bbc6c0d886de3d93e0ff06f5092
   size: 4096
@@ -21,14 +21,14 @@ aibom:
   schema_version: aion.aibom.v1
   model:
     name: cirrus-7b-safety
-    version: 0.3.1
+    version: "0.3.1"
     hash_algorithm: BLAKE3-256
     hash: 58080c979d54ee5533b318eb626eec1ecfa63bbc6c0d886de3d93e0ff06f5092
     size: 4096
     format: safetensors
   frameworks:
   - name: pytorch
-    version: 2.3.1
+    version: "2.3.1"
     cpe: null
   datasets: []
   licenses:
@@ -90,8 +90,8 @@ oci_primary:
     annotations:
       org.opencontainers.image.title: cirrus-7b-safety
   annotations:
-    dev.aion.file.id: '0'
-    dev.aion.format.version: '2'
+    dev.aion.file.id: "0"
+    dev.aion.format.version: "2"
 oci_aibom_referrer:
   schemaVersion: 2
   mediaType: application/vnd.oci.image.manifest.v1+json

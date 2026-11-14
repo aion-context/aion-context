@@ -1159,6 +1159,13 @@ fn commit_protection(
     kept_recipients(&chain)
 }
 
+/// YAML for `--format yaml`. Long single-line scalars (hashes, base64)
+/// stay on one line; multi-line strings use `|` literal blocks.
+fn to_yaml<T: serde::Serialize>(value: &T) -> Result<String> {
+    let options = serde_saphyr::ser_options! { folded_wrap_chars: usize::MAX };
+    serde_saphyr::to_string_with_options(value, options).context("serialize YAML")
+}
+
 fn cmd_verify(args: &VerifyArgs) -> Result<ExitCode> {
     println!("🔍 Verifying AION file: {}", args.path.display());
     if !args.path.exists() {
@@ -1174,7 +1181,7 @@ fn cmd_verify(args: &VerifyArgs) -> Result<ExitCode> {
 
     match args.format {
         OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&report)?),
-        OutputFormat::Yaml => println!("{}", serde_yaml::to_string(&report)?),
+        OutputFormat::Yaml => println!("{}", to_yaml(&report)?),
         OutputFormat::Text => print_verify_text_report(args, &report),
     }
     if report.is_valid && !report.metadata_signed {
@@ -1425,7 +1432,7 @@ fn show_history_subcommand(args: &ShowArgs) -> Result<()> {
     let versions = aion_context::chain::verified_history(&chain);
     match args.format {
         OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&versions)?),
-        OutputFormat::Yaml => println!("{}", serde_yaml::to_string(&versions)?),
+        OutputFormat::Yaml => println!("{}", to_yaml(&versions)?),
         OutputFormat::Text => {
             println!("Version History ({} versions)", versions.len());
             println!("================================\n");
@@ -1465,7 +1472,7 @@ fn show_signatures_subcommand(args: &ShowArgs) -> Result<()> {
     let signatures = show_signatures(&args.path, &registry)?;
     match args.format {
         OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&signatures)?),
-        OutputFormat::Yaml => println!("{}", serde_yaml::to_string(&signatures)?),
+        OutputFormat::Yaml => println!("{}", to_yaml(&signatures)?),
         OutputFormat::Text => {
             println!("Signatures ({} total)", signatures.len());
             println!("==================\n");
@@ -1496,7 +1503,7 @@ fn show_info_subcommand(args: &ShowArgs) -> Result<()> {
     }
     match args.format {
         OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&info)?),
-        OutputFormat::Yaml => println!("{}", serde_yaml::to_string(&info)?),
+        OutputFormat::Yaml => println!("{}", to_yaml(&info)?),
         OutputFormat::Text => {
             println!("File Information");
             println!("================");
@@ -2501,7 +2508,7 @@ fn cmd_release_inspect(bundle_dir: &std::path::Path, format: OutputFormat) -> Re
 
     match format {
         OutputFormat::Json => println!("{bundle_json}"),
-        OutputFormat::Yaml => println!("{}", serde_yaml::to_string(&bundle)?),
+        OutputFormat::Yaml => println!("{}", to_yaml(&bundle)?),
         OutputFormat::Text => {
             println!("Release bundle: {}", bundle_path.display());
             println!("  signer:        {}", bundle.signer);
@@ -2608,7 +2615,7 @@ fn cmd_archive_verify(
             println!("{}", serde_json::to_string_pretty(&report)?);
         }
         OutputFormat::Yaml => {
-            println!("{}", serde_yaml::to_string(&report)?);
+            println!("{}", to_yaml(&report)?);
         }
         OutputFormat::Text => render_archive_report_text(&report),
     }

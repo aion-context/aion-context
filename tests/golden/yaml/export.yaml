@@ -1,4 +1,4 @@
-export_version: '1.0'
+export_version: "1.0"
 source_file: <TMP>/archive/policy.aion
 file_info:
   file_id: <MASKED>
@@ -9,7 +9,7 @@ versions:
 - version: 1
   author_id: 8001
   timestamp: <MASKED>
-  message: 'Initial: "quoted" yes'
+  message: "Initial: \"quoted\" yes"
   rules_hash: ee6d2007735bff8b94dc22081164886b2db87ae0816480263027727e5719d272
   parent_hash: null
 - version: 2

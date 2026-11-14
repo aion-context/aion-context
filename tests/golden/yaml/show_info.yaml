@@ -5,7 +5,7 @@ versions:
 - version_number: 1
   author_id: 8001
   timestamp: <MASKED>
-  message: 'Initial: "quoted" yes'
+  message: "Initial: \"quoted\" yes"
   rules_hash:
   - 238
   - 109
