@@ -26,7 +26,9 @@ chacha20poly1305 = "0.11"
 hpke = { version = "=0.14.1", default-features = false, features = ["alloc", "x25519", "mlkem", "chacha", "hkdfsha2"] }
 blake3 = "1.8"
 hkdf = "0.13"
-sha2 = "0.11"
+# Pinned exactly: sha2 0.11.1 raised its MSRV to 1.88, above our
+# `rust-version = "1.87"`. Lift the pin together with the MSRV bump.
+sha2 = "=0.11.0"
 # Constant-time comparisons for any secret-or-key-shaped bytes
 # (crypto-rule: `==` on key bytes is a BLOCK, see .claude/rules/crypto.md).
 subtle = "2.6"
