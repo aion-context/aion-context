@@ -461,7 +461,12 @@ impl KeyStore {
         let parsed = parse_encrypted_key_blob(encrypted_data)?;
         let encryption_key = derive_key_from_password(password, &parsed.salt)?;
         let aad = author_id.as_u64().to_le_bytes();
-        let key_bytes = decrypt(&encryption_key, &parsed.nonce, parsed.ciphertext, &aad)?;
+        let key_bytes = Zeroizing::new(decrypt(
+            &encryption_key,
+            &parsed.nonce,
+            parsed.ciphertext,
+            &aad,
+        )?);
         let signing_key = SigningKey::from_bytes(&key_bytes)?;
         self.store_signing_key(author_id, &signing_key)?;
         Ok(signing_key)
@@ -728,7 +733,7 @@ fn generate_salt() -> Result<[u8; SALT_SIZE]> {
 /// - Memory: 64 MiB (`m_cost` = 65536)
 /// - Iterations: 3 (`t_cost` = 3)
 /// - Parallelism: 4 threads (`p_cost` = 4)
-fn derive_key_from_password(password: &str, salt: &[u8; SALT_SIZE]) -> Result<[u8; 32]> {
+fn derive_key_from_password(password: &str, salt: &[u8; SALT_SIZE]) -> Result<Zeroizing<[u8; 32]>> {
     use argon2::{Algorithm, Argon2, Params, Version};
 
     // Configure Argon2id parameters
@@ -745,9 +750,9 @@ fn derive_key_from_password(password: &str, salt: &[u8; SALT_SIZE]) -> Result<[u
 
     let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
 
-    let mut output = [0u8; 32];
+    let mut output = Zeroizing::new([0u8; 32]);
     argon2
-        .hash_password_into(password.as_bytes(), salt, &mut output)
+        .hash_password_into(password.as_bytes(), salt, output.as_mut_slice())
         .map_err(|e| AionError::InvalidPrivateKey {
             reason: format!("Argon2 key derivation failed: {e}"),
         })?;
@@ -907,13 +912,16 @@ fn open_from_storage(
 ///
 /// This provides basic obfuscation for file-based key storage.
 /// Real security comes from filesystem permissions.
-fn derive_machine_key(salt: &[u8; SALT_SIZE]) -> Result<[u8; 32]> {
+fn derive_machine_key(salt: &[u8; SALT_SIZE]) -> Result<Zeroizing<[u8; 32]>> {
     machine_key_from_identifier(&get_machine_identifier(), salt)
 }
 
 /// Argon2id over a machine identifier; split from [`derive_machine_key`]
 /// so the derivation can be pinned by known-answer tests.
-fn machine_key_from_identifier(machine_id: &str, salt: &[u8; SALT_SIZE]) -> Result<[u8; 32]> {
+fn machine_key_from_identifier(
+    machine_id: &str,
+    salt: &[u8; SALT_SIZE],
+) -> Result<Zeroizing<[u8; 32]>> {
     use argon2::{Algorithm, Argon2, Params, Version};
 
     // Use lighter Argon2 params for machine key (faster startup)
@@ -929,9 +937,9 @@ fn machine_key_from_identifier(machine_id: &str, salt: &[u8; SALT_SIZE]) -> Resu
 
     let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
 
-    let mut output = [0u8; 32];
+    let mut output = Zeroizing::new([0u8; 32]);
     argon2
-        .hash_password_into(machine_id.as_bytes(), salt, &mut output)
+        .hash_password_into(machine_id.as_bytes(), salt, output.as_mut_slice())
         .map_err(|e| AionError::InvalidPrivateKey {
             reason: format!("machine key derivation failed: {e}"),
         })?;
