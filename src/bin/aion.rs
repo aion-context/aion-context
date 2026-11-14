@@ -2663,7 +2663,7 @@ fn build_archive_report(
             Err(e) => {
                 invalid_count = invalid_count.saturating_add(1);
                 files.push(FileVerdict {
-                    path: display.clone(),
+                    path: display,
                     valid: false,
                     author: None,
                     public_key_prefix: None,
