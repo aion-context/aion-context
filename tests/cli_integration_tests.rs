@@ -16,11 +16,7 @@ use tempfile::TempDir;
 
 /// Get path to the built CLI binary
 fn get_cli_binary() -> PathBuf {
-    let mut path = std::env::current_exe().expect("Failed to get test executable path");
-    path.pop(); // Remove test binary name
-    path.pop(); // Remove deps
-    path.push("aion");
-    path
+    PathBuf::from(env!("CARGO_BIN_EXE_aion"))
 }
 
 /// Helper to run CLI commands

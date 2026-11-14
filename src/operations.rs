@@ -1229,7 +1229,6 @@ impl VerificationReport {
     /// `ExitCode::from(1)`. Callers must thread this through their
     /// return type rather than branching on `is_valid` and calling
     /// `std::process::exit` by hand — see issue #23.
-    #[must_use]
     pub const fn exit_code(&self) -> std::process::ExitCode {
         if self.is_valid {
             std::process::ExitCode::SUCCESS

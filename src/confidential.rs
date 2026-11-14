@@ -1247,8 +1247,7 @@ pub(crate) mod tests {
     fn corrupted_enc_fails_the_same_way_for_both_kems() {
         let (x, w) = two_identities();
         for (identity, enc_at) in [(&x, 40usize), (&w, 1216 + 500)] {
-            let bytes = seal_for(&[identity], &ctx(), b"rules");
-            let mut tampered = bytes.clone();
+            let mut tampered = seal_for(&[identity], &ctx(), b"rules");
             let body_start = 8 + 1 + 32 + 2 + 3;
             tampered[body_start + enc_at] ^= 0x01;
             let envelope = ok(Envelope::parse(&tampered));
