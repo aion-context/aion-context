@@ -16,11 +16,7 @@ use tempfile::TempDir;
 
 /// Get path to the built CLI binary
 fn get_cli_binary() -> PathBuf {
-    let mut path = std::env::current_exe().expect("Failed to get test executable path");
-    path.pop(); // Remove test binary name
-    path.pop(); // Remove deps
-    path.push("aion");
-    path
+    PathBuf::from(env!("CARGO_BIN_EXE_aion"))
 }
 
 /// Helper to run CLI commands
@@ -265,6 +261,7 @@ fn test_cli_init_creates_file() {
     // Init file
     let output = run_cli(&[
         "init",
+        "--public",
         file_path.to_str().unwrap(),
         "--rules",
         rules_path.to_str().unwrap(),
@@ -287,6 +284,59 @@ fn test_cli_init_creates_file() {
 }
 
 #[test]
+fn test_cli_init_requires_named_rules_protection() {
+    let (temp_dir, key_id) = setup_test_env();
+    let file_path = temp_dir.path().join("unprotected.aion");
+    let rules_path = temp_dir.path().join("rules.txt");
+    fs::write(&rules_path, "threshold: 100").expect("Failed to write rules");
+
+    let output = run_cli(&[
+        "init",
+        file_path.to_str().unwrap(),
+        "--rules",
+        rules_path.to_str().unwrap(),
+        "--author",
+        "1001",
+        "--key",
+        &key_id,
+    ]);
+
+    assert!(!output.status.success(), "init must require --public");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("--public"));
+    assert!(!file_path.exists());
+    cleanup_key(&key_id);
+}
+
+#[test]
+fn test_cli_init_accepts_deprecated_no_encryption_alias() {
+    let (temp_dir, key_id) = setup_test_env();
+    let file_path = temp_dir.path().join("alias.aion");
+    let rules_path = temp_dir.path().join("rules.txt");
+    fs::write(&rules_path, "threshold: 100").expect("Failed to write rules");
+
+    let output = run_cli(&[
+        "init",
+        "--no-encryption",
+        file_path.to_str().unwrap(),
+        "--rules",
+        rules_path.to_str().unwrap(),
+        "--author",
+        "1001",
+        "--key",
+        &key_id,
+    ]);
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stderr).contains("deprecated"));
+    assert!(file_path.exists());
+    cleanup_key(&key_id);
+}
+
+#[test]
 fn test_cli_init_with_stdin_rules() {
     let (temp_dir, key_id) = setup_test_env();
     let file_path = temp_dir.path().join("stdin_test.aion");
@@ -295,6 +345,7 @@ fn test_cli_init_with_stdin_rules() {
     let output = run_cli_with_stdin(
         &[
             "init",
+            "--public",
             file_path.to_str().unwrap(),
             "--author",
             "1002",
@@ -325,6 +376,7 @@ fn test_cli_init_fails_if_file_exists() {
     let output = run_cli_with_stdin(
         &[
             "init",
+            "--public",
             file_path.to_str().unwrap(),
             "--author",
             "1003",
@@ -339,6 +391,7 @@ fn test_cli_init_fails_if_file_exists() {
     let output = run_cli_with_stdin(
         &[
             "init",
+            "--public",
             file_path.to_str().unwrap(),
             "--author",
             "1003",
@@ -372,6 +425,7 @@ fn test_cli_commit_adds_version() {
     let output = run_cli_with_stdin(
         &[
             "init",
+            "--public",
             file_path.to_str().unwrap(),
             "--author",
             "2001",
@@ -386,6 +440,7 @@ fn test_cli_commit_adds_version() {
     let output = run_cli_with_stdin(
         &[
             "commit",
+            "--public",
             file_path.to_str().unwrap(),
             "--author",
             "2001",
@@ -437,6 +492,7 @@ fn test_cli_commit_with_different_author() {
     let output = run_cli_with_stdin(
         &[
             "init",
+            "--public",
             file_path.to_str().unwrap(),
             "--author",
             "3001",
@@ -451,6 +507,7 @@ fn test_cli_commit_with_different_author() {
     let output = run_cli_with_stdin(
         &[
             "commit",
+            "--public",
             file_path.to_str().unwrap(),
             "--author",
             "3002",
@@ -496,6 +553,7 @@ fn test_cli_verify_valid_file() {
     let output = run_cli_with_stdin(
         &[
             "init",
+            "--public",
             file_path.to_str().unwrap(),
             "--author",
             "4001",
@@ -538,6 +596,7 @@ fn test_cli_verify_verbose_output() {
     run_cli_with_stdin(
         &[
             "init",
+            "--public",
             file_path.to_str().unwrap(),
             "--author",
             "4002",
@@ -578,6 +637,7 @@ fn test_cli_verify_corrupted_file_fails() {
     run_cli_with_stdin(
         &[
             "init",
+            "--public",
             file_path.to_str().unwrap(),
             "--author",
             "4003",
@@ -632,6 +692,7 @@ fn test_cli_verify_exit_code_matches_verdict() {
     run_cli_with_stdin(
         &[
             "init",
+            "--public",
             file_path.to_str().unwrap(),
             "--author",
             "4099",
@@ -699,6 +760,7 @@ fn test_cli_show_rules() {
     run_cli_with_stdin(
         &[
             "init",
+            "--public",
             file_path.to_str().unwrap(),
             "--author",
             "5001",
@@ -728,6 +790,44 @@ fn test_cli_show_rules() {
 }
 
 #[test]
+fn test_cli_show_rules_refuses_a_file_that_fails_verification() {
+    let (temp_dir, key_id) = setup_test_env();
+    let file_path = temp_dir.path().join("show_tampered.aion");
+    let registry_path = temp_dir.path().join("registry.json");
+    pin_author(&registry_path, "5002", &key_id);
+    run_cli_with_stdin(
+        &[
+            "init",
+            "--public",
+            file_path.to_str().unwrap(),
+            "--author",
+            "5002",
+            "--key",
+            &key_id,
+        ],
+        b"threshold: 500",
+    );
+    let mut bytes = fs::read(&file_path).expect("read file");
+    let last = bytes.len() - 1;
+    bytes[last] ^= 0x01;
+    fs::write(&file_path, &bytes).expect("write file");
+
+    let output = run_cli(&[
+        "show",
+        file_path.to_str().unwrap(),
+        "--registry",
+        registry_path.to_str().unwrap(),
+        "rules",
+    ]);
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Refusing to show rules"), "{stderr}");
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("threshold"));
+    cleanup_key(&key_id);
+}
+
+#[test]
 fn test_cli_show_history() {
     let (temp_dir, key_id) = setup_test_env();
     let file_path = temp_dir.path().join("show_history.aion");
@@ -738,6 +838,7 @@ fn test_cli_show_history() {
     run_cli_with_stdin(
         &[
             "init",
+            "--public",
             file_path.to_str().unwrap(),
             "--author",
             "5002",
@@ -752,6 +853,7 @@ fn test_cli_show_history() {
     run_cli_with_stdin(
         &[
             "commit",
+            "--public",
             file_path.to_str().unwrap(),
             "--author",
             "5002",
@@ -793,6 +895,7 @@ fn test_cli_show_signatures() {
     run_cli_with_stdin(
         &[
             "init",
+            "--public",
             file_path.to_str().unwrap(),
             "--author",
             "5003",
@@ -830,6 +933,7 @@ fn test_cli_show_info() {
     run_cli_with_stdin(
         &[
             "init",
+            "--public",
             file_path.to_str().unwrap(),
             "--author",
             "5004",
@@ -877,6 +981,7 @@ fn test_cli_commit_rejects_unregistered_signer() {
     let output = run_cli_with_stdin(
         &[
             "init",
+            "--public",
             file_path.to_str().unwrap(),
             "--author",
             "6001",
@@ -893,6 +998,7 @@ fn test_cli_commit_rejects_unregistered_signer() {
     let output = run_cli_with_stdin(
         &[
             "commit",
+            "--public",
             file_path.to_str().unwrap(),
             "--author",
             "6999",
@@ -937,6 +1043,7 @@ fn test_cli_commit_rejects_wrong_operational_key() {
     run_cli_with_stdin(
         &[
             "init",
+            "--public",
             file_path.to_str().unwrap(),
             "--author",
             "6002",
@@ -952,6 +1059,7 @@ fn test_cli_commit_rejects_wrong_operational_key() {
     let output = run_cli_with_stdin(
         &[
             "commit",
+            "--public",
             file_path.to_str().unwrap(),
             "--author",
             "6002",
@@ -992,6 +1100,7 @@ fn test_cli_commit_force_unregistered_bypasses() {
     run_cli_with_stdin(
         &[
             "init",
+            "--public",
             file_path.to_str().unwrap(),
             "--author",
             "6003",
@@ -1006,6 +1115,7 @@ fn test_cli_commit_force_unregistered_bypasses() {
     let output = run_cli_with_stdin(
         &[
             "commit",
+            "--public",
             file_path.to_str().unwrap(),
             "--author",
             "6999",
@@ -1093,6 +1203,7 @@ fn test_cli_registry_rotate_happy_path() {
     run_cli_with_stdin(
         &[
             "init",
+            "--public",
             file_path.to_str().unwrap(),
             "--author",
             "7001",
@@ -1338,6 +1449,7 @@ fn test_cli_registry_revoke_happy_path() {
     run_cli_with_stdin(
         &[
             "init",
+            "--public",
             pre_file.to_str().unwrap(),
             "--author",
             "7003",
@@ -1666,6 +1778,7 @@ fn test_cli_archive_verify_finds_planted_anomalies() {
         run_cli_with_stdin(
             &[
                 "init",
+                "--public",
                 p.to_str().unwrap(),
                 "--author",
                 "9001",
@@ -1688,6 +1801,7 @@ fn test_cli_archive_verify_finds_planted_anomalies() {
     run_cli_with_stdin(
         &[
             "init",
+            "--public",
             other_path.to_str().unwrap(),
             "--author",
             "9999",
@@ -1753,6 +1867,7 @@ fn test_cli_archive_verify_clean_archive_exits_zero() {
         run_cli_with_stdin(
             &[
                 "init",
+                "--public",
                 p.to_str().unwrap(),
                 "--author",
                 "9002",
@@ -1799,6 +1914,7 @@ fn test_cli_archive_verify_detects_rotation() {
         run_cli_with_stdin(
             &[
                 "init",
+                "--public",
                 p.to_str().unwrap(),
                 "--author",
                 "9003",
@@ -1837,6 +1953,7 @@ fn test_cli_archive_verify_detects_rotation() {
     run_cli_with_stdin(
         &[
             "init",
+            "--public",
             post.to_str().unwrap(),
             "--author",
             "9003",
@@ -1911,6 +2028,7 @@ fn test_cli_commit_nonexistent_file_fails() {
     let output = run_cli_with_stdin(
         &[
             "commit",
+            "--public",
             "/nonexistent/path/file.aion",
             "--author",
             "9999",
@@ -1934,6 +2052,7 @@ fn test_cli_init_with_nonexistent_key_fails() {
     let output = run_cli_with_stdin(
         &[
             "init",
+            "--public",
             file_path.to_str().unwrap(),
             "--author",
             "1000",
@@ -2006,6 +2125,7 @@ fn test_verify_with_registry_accepts_matching_key() {
     let init_out = run_cli_with_stdin(
         &[
             "init",
+            "--public",
             file_path.to_str().unwrap(),
             "--author",
             &inspect_id,
@@ -2064,6 +2184,7 @@ fn test_verify_with_registry_rejects_mismatched_key() {
     let init_out = run_cli_with_stdin(
         &[
             "init",
+            "--public",
             file_path.to_str().unwrap(),
             "--author",
             &inspect_id,
@@ -2111,6 +2232,7 @@ fn test_verify_rejects_malformed_registry() {
     let init_out = run_cli_with_stdin(
         &[
             "init",
+            "--public",
             file_path.to_str().unwrap(),
             "--author",
             &key_id,
@@ -2144,4 +2266,615 @@ fn test_verify_rejects_malformed_registry() {
 
     cleanup_key(&key_id);
     drop(temp_dir);
+}
+
+#[test]
+fn test_cli_accept_defends_against_replay() {
+    let (temp_dir, key_id) = setup_test_env();
+    let file_path = temp_dir.path().join("accepted.aion");
+    let v1_copy = temp_dir.path().join("accepted-v1.aion");
+    let registry_path = temp_dir.path().join("registry.json");
+    let state_path = temp_dir.path().join("state.json");
+    pin_author(&registry_path, "6001", &key_id);
+    let init = run_cli_with_stdin(
+        &[
+            "init",
+            "--public",
+            file_path.to_str().unwrap(),
+            "--author",
+            "6001",
+            "--key",
+            &key_id,
+        ],
+        b"v1 rules",
+    );
+    assert!(init.status.success());
+    fs::copy(&file_path, &v1_copy).expect("snapshot v1");
+
+    let accept = |path: &std::path::Path, extra: &[&str]| {
+        let mut args = vec![
+            "accept",
+            path.to_str().unwrap(),
+            "--registry",
+            registry_path.to_str().unwrap(),
+            "--state",
+            state_path.to_str().unwrap(),
+        ];
+        args.extend_from_slice(extra);
+        run_cli(&args)
+    };
+
+    let missing = accept(&file_path, &[]);
+    assert_eq!(
+        missing.status.code(),
+        Some(2),
+        "missing state is not a verdict"
+    );
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("store_missing"));
+
+    let first = accept(&file_path, &["--init-state"]);
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&first.stdout);
+    assert!(stdout.contains("Accepted at version 1"), "{stdout}");
+    let genesis = stdout
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("Genesis: "))
+        .expect("genesis hash printed")
+        .to_string();
+    assert!(
+        accept(&file_path, &[]).status.success(),
+        "idempotent re-accept"
+    );
+
+    let commit = run_cli_with_stdin(
+        &[
+            "commit",
+            "--public",
+            file_path.to_str().unwrap(),
+            "--author",
+            "6001",
+            "--key",
+            &key_id,
+            "--message",
+            "v2",
+            "--registry",
+            registry_path.to_str().unwrap(),
+        ],
+        b"v2 rules",
+    );
+    assert!(commit.status.success());
+    assert!(accept(&file_path, &["--pin", &genesis]).status.success());
+
+    let replay = accept(&v1_copy, &[]);
+    assert!(!replay.status.success(), "older version must be refused");
+    assert!(String::from_utf8_lossy(&replay.stderr).contains("version_replay"));
+
+    cleanup_key(&key_id);
+}
+
+#[test]
+fn test_cli_accept_pin_mismatch_persists_nothing() {
+    let (temp_dir, key_id) = setup_test_env();
+    let file_path = temp_dir.path().join("pinned.aion");
+    let registry_path = temp_dir.path().join("registry.json");
+    pin_author(&registry_path, "6002", &key_id);
+    let init = run_cli_with_stdin(
+        &[
+            "init",
+            "--public",
+            file_path.to_str().unwrap(),
+            "--author",
+            "6002",
+            "--key",
+            &key_id,
+        ],
+        b"rules",
+    );
+    assert!(init.status.success());
+
+    let fresh_state = temp_dir.path().join("fresh-state.json");
+    let fresh = |extra: &[&str]| {
+        let mut args = vec![
+            "accept",
+            file_path.to_str().unwrap(),
+            "--registry",
+            registry_path.to_str().unwrap(),
+            "--state",
+            fresh_state.to_str().unwrap(),
+            "--init-state",
+        ];
+        args.extend_from_slice(extra);
+        run_cli(&args)
+    };
+    let wrong_pin = "ab".repeat(32);
+    let conflict = fresh(&["--pin", &wrong_pin]);
+    assert_eq!(conflict.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&conflict.stderr);
+    assert!(stderr.contains("file_id_conflict"), "{stderr}");
+    assert!(
+        fresh(&[]).status.success(),
+        "a mismatched --pin must not have persisted anything"
+    );
+    cleanup_key(&key_id);
+}
+
+// ============================================================================
+// RFC-0039 Phase B4: confidential rules from the CLI
+// ============================================================================
+
+/// Generate an encryption identity; returns its ID and recipient file.
+fn encryption_identity(dir: &std::path::Path, kem: &str) -> (String, std::path::PathBuf) {
+    let id = format!("{}", rand::random::<u32>() % 900_000 + 100_000);
+    let generated = run_cli(&["key", "generate", "--id", &id, "--encryption", "--kem", kem]);
+    assert!(
+        generated.status.success(),
+        "{}",
+        String::from_utf8_lossy(&generated.stderr)
+    );
+    assert!(String::from_utf8_lossy(&generated.stdout).contains(&format!("aion-recipient:{kem}:")));
+    let recipient = dir.join(format!("{id}.recipient"));
+    let written = run_cli(&["key", "recipient", &id, "-o", recipient.to_str().unwrap()]);
+    assert!(written.status.success());
+    (id, recipient)
+}
+
+fn cleanup_identity(id: &str) {
+    let _ = run_cli(&["key", "delete", id, "--force", "--encryption"]);
+}
+
+#[test]
+fn test_cli_confidential_rules_round_trip() {
+    let (temp_dir, key_id) = setup_test_env();
+    let file_path = temp_dir.path().join("confidential.aion");
+    let registry_path = temp_dir.path().join("registry.json");
+    pin_author(&registry_path, "7101", &key_id);
+    let (reader, reader_file) = encryption_identity(temp_dir.path(), "xwing");
+    let (stranger, _) = encryption_identity(temp_dir.path(), "xwing");
+
+    let init = run_cli_with_stdin(
+        &[
+            "init",
+            file_path.to_str().unwrap(),
+            "--author",
+            "7101",
+            "--key",
+            &key_id,
+            "--recipient",
+            reader_file.to_str().unwrap(),
+        ],
+        b"refund_limit: 5000",
+    );
+    assert!(
+        init.status.success(),
+        "{}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+    let raw = fs::read(&file_path).expect("read file");
+    assert!(
+        !raw.windows(17).any(|w| w == b"refund_limit: 500"),
+        "plaintext on disk"
+    );
+
+    let verify = run_cli(&[
+        "verify",
+        file_path.to_str().unwrap(),
+        "--registry",
+        registry_path.to_str().unwrap(),
+    ]);
+    assert!(
+        verify.status.success(),
+        "key-free verify: {}",
+        String::from_utf8_lossy(&verify.stdout)
+    );
+
+    let show = |extra: &[&str]| {
+        let mut args = vec![
+            "show",
+            file_path.to_str().unwrap(),
+            "--registry",
+            registry_path.to_str().unwrap(),
+        ];
+        args.extend_from_slice(extra);
+        args.push("rules");
+        run_cli(&args)
+    };
+    let no_key = show(&[]);
+    assert!(!no_key.status.success());
+    assert!(String::from_utf8_lossy(&no_key.stderr).contains("--identity"));
+    let wrong = show(&["--identity", &stranger]);
+    assert!(!wrong.status.success());
+    assert!(String::from_utf8_lossy(&wrong.stderr).contains("None of the supplied identities"));
+    let opened = show(&["--identity", &reader]);
+    assert!(
+        opened.status.success(),
+        "{}",
+        String::from_utf8_lossy(&opened.stderr)
+    );
+    assert!(String::from_utf8_lossy(&opened.stdout).contains("refund_limit: 5000"));
+
+    let accept = run_cli(&[
+        "accept",
+        file_path.to_str().unwrap(),
+        "--registry",
+        registry_path.to_str().unwrap(),
+        "--state",
+        temp_dir.path().join("state.json").to_str().unwrap(),
+        "--init-state",
+        "--require-confidential",
+        "head",
+    ]);
+    assert!(
+        accept.status.success(),
+        "{}",
+        String::from_utf8_lossy(&accept.stderr)
+    );
+
+    cleanup_identity(&reader);
+    cleanup_identity(&stranger);
+    cleanup_key(&key_id);
+}
+
+#[test]
+fn test_cli_keep_recipients_and_protection_flags() {
+    let (temp_dir, key_id) = setup_test_env();
+    let file_path = temp_dir.path().join("keep.aion");
+    let registry_path = temp_dir.path().join("registry.json");
+    pin_author(&registry_path, "7102", &key_id);
+    let (pq, pq_file) = encryption_identity(temp_dir.path(), "xwing");
+    let (classic, classic_file) = encryption_identity(temp_dir.path(), "x25519");
+
+    let both = run_cli_with_stdin(
+        &[
+            "init",
+            file_path.to_str().unwrap(),
+            "--author",
+            "7102",
+            "--key",
+            &key_id,
+            "--public",
+            "--recipient",
+            pq_file.to_str().unwrap(),
+        ],
+        b"v1",
+    );
+    assert!(
+        !both.status.success(),
+        "--public and --recipient are exclusive"
+    );
+
+    let init = run_cli_with_stdin(
+        &[
+            "init",
+            file_path.to_str().unwrap(),
+            "--author",
+            "7102",
+            "--key",
+            &key_id,
+            "--recipient",
+            pq_file.to_str().unwrap(),
+            "--recipient",
+            classic_file.to_str().unwrap(),
+        ],
+        b"v1",
+    );
+    assert!(
+        init.status.success(),
+        "{}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+    assert!(String::from_utf8_lossy(&init.stderr).contains("post-quantum"));
+
+    let commit = |flags: &[&str], rules: &[u8]| {
+        let mut args = vec![
+            "commit",
+            file_path.to_str().unwrap(),
+            "--author",
+            "7102",
+            "--key",
+            &key_id,
+            "--message",
+            "next",
+            "--registry",
+            registry_path.to_str().unwrap(),
+        ];
+        args.extend_from_slice(flags);
+        run_cli_with_stdin(&args, rules)
+    };
+    let kept = commit(&["--keep-recipients"], b"v2 secret");
+    assert!(
+        kept.status.success(),
+        "{}",
+        String::from_utf8_lossy(&kept.stderr)
+    );
+    assert!(String::from_utf8_lossy(&kept.stdout).contains("Keeping recipient"));
+    let show = run_cli(&[
+        "show",
+        file_path.to_str().unwrap(),
+        "--registry",
+        registry_path.to_str().unwrap(),
+        "--identity",
+        &classic,
+        "rules",
+    ]);
+    assert!(String::from_utf8_lossy(&show.stdout).contains("v2 secret"));
+
+    assert!(commit(&["--public"], b"v3").status.success());
+    let nothing_to_keep = commit(&["--keep-recipients"], b"v4");
+    assert!(!nothing_to_keep.status.success());
+    assert!(String::from_utf8_lossy(&nothing_to_keep.stderr).contains("public"));
+
+    cleanup_identity(&pq);
+    cleanup_identity(&classic);
+    cleanup_key(&key_id);
+}
+
+#[test]
+fn test_cli_rejects_malformed_recipients_and_misplaced_identity() {
+    let (temp_dir, key_id) = setup_test_env();
+    let x25519_key = "ab".repeat(32);
+    let bad = [
+        format!("aion-recipient:x25519:{}", x25519_key.to_uppercase()),
+        format!("aion-recipient:x25519:{}", "ab".repeat(31)),
+        format!("aion-recipient:rsa:{x25519_key}"),
+        temp_dir
+            .path()
+            .join("missing.recipient")
+            .display()
+            .to_string(),
+    ];
+    for (index, recipient) in bad.iter().enumerate() {
+        let path = temp_dir.path().join(format!("bad-{index}.aion"));
+        let init = run_cli_with_stdin(
+            &[
+                "init",
+                path.to_str().unwrap(),
+                "--author",
+                "7103",
+                "--key",
+                &key_id,
+                "--recipient",
+                recipient,
+            ],
+            b"rules",
+        );
+        assert!(!init.status.success(), "accepted {recipient}");
+        assert!(!path.exists(), "wrote a file for {recipient}");
+    }
+
+    let registry_path = temp_dir.path().join("registry.json");
+    pin_author(&registry_path, "7103", &key_id);
+    let public = temp_dir.path().join("public.aion");
+    let init = run_cli_with_stdin(
+        &[
+            "init",
+            "--public",
+            public.to_str().unwrap(),
+            "--author",
+            "7103",
+            "--key",
+            &key_id,
+        ],
+        b"rules",
+    );
+    assert!(init.status.success());
+    let history = run_cli(&[
+        "show",
+        public.to_str().unwrap(),
+        "--registry",
+        registry_path.to_str().unwrap(),
+        "--identity",
+        "1",
+        "history",
+    ]);
+    assert!(!history.status.success());
+    assert!(String::from_utf8_lossy(&history.stderr).contains("--identity only applies"));
+    cleanup_key(&key_id);
+}
+
+#[test]
+fn test_cli_deleting_an_identity_asks_first() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let (identity, _) = encryption_identity(temp_dir.path(), "x25519");
+    let declined = run_cli_with_stdin(&["key", "delete", &identity, "--encryption"], b"n\n");
+    assert!(declined.status.success());
+    assert!(String::from_utf8_lossy(&declined.stdout).contains("Cancelled"));
+    let still_there = run_cli(&["key", "recipient", &identity]);
+    assert!(
+        still_there.status.success(),
+        "declined delete removed the identity"
+    );
+
+    let forced = run_cli(&["key", "delete", &identity, "--encryption", "--force"]);
+    assert!(forced.status.success());
+    assert!(!run_cli(&["key", "recipient", &identity]).status.success());
+    let bad_kem = run_cli(&[
+        "key",
+        "generate",
+        "--id",
+        &identity,
+        "--encryption",
+        "--kem",
+        "rsa",
+    ]);
+    assert_eq!(
+        bad_kem.status.code(),
+        Some(2),
+        "unknown --kem is an argument error"
+    );
+}
+
+// ============================================================================
+// Migration (RFC-0040)
+// ============================================================================
+
+fn path_str(path: &std::path::Path) -> &str {
+    path.to_str().expect("path utf8")
+}
+
+/// A two-version public file by author 2101, and a registry pinning it.
+fn migration_source(temp_dir: &TempDir, key_id: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+    let source = temp_dir.path().join("source.aion");
+    let registry = temp_dir.path().join("registry.json");
+    pin_author(&registry, "2101", key_id);
+    let init = [
+        "init",
+        "--public",
+        path_str(&source),
+        "--author",
+        "2101",
+        "--key",
+        key_id,
+    ];
+    assert!(run_cli_with_stdin(&init, b"v1 rules").status.success());
+    let commit = [
+        "commit",
+        "--public",
+        path_str(&source),
+        "--author",
+        "2101",
+        "--key",
+        key_id,
+        "--message",
+        "raise",
+        "--registry",
+        path_str(&registry),
+    ];
+    assert!(run_cli_with_stdin(&commit, b"v2 rules").status.success());
+    (source, registry)
+}
+
+#[test]
+fn test_cli_migrate_writes_a_verifying_v4_file_and_leaves_the_source() {
+    let (temp_dir, key_id) = setup_test_env();
+    let (source, registry) = migration_source(&temp_dir, &key_id);
+    let before = std::fs::read(&source).expect("read source");
+    let dest = temp_dir.path().join("dest.aion");
+    let output = run_cli(&[
+        "migrate",
+        path_str(&source),
+        path_str(&dest),
+        "--registry",
+        path_str(&registry),
+        "--author",
+        "2101",
+        "--key",
+        &key_id,
+        "--public",
+    ]);
+    assert!(
+        output.status.success(),
+        "migrate failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(std::fs::read(&source).expect("read source"), before);
+    assert_eq!(std::fs::read(&dest).expect("read dest")[4], 4);
+
+    let verify = run_cli(&["verify", path_str(&dest), "--registry", path_str(&registry)]);
+    assert!(verify.status.success());
+    let rules = run_cli(&[
+        "show",
+        path_str(&dest),
+        "--registry",
+        path_str(&registry),
+        "rules",
+    ]);
+    assert!(String::from_utf8_lossy(&rules.stdout).contains("v2 rules"));
+    let history = run_cli(&[
+        "show",
+        path_str(&dest),
+        "--registry",
+        path_str(&registry),
+        "history",
+    ]);
+    let shown = String::from_utf8_lossy(&history.stdout);
+    assert!(shown.contains("Migrated to format v4"), "{shown}");
+    let unsigned_note = String::from_utf8_lossy(&history.stderr);
+    assert!(!unsigned_note.contains("unsigned"), "{unsigned_note}");
+    cleanup_key(&key_id);
+}
+
+#[test]
+fn test_cli_migrate_refuses_an_existing_dest_and_an_unpinned_author() {
+    let (temp_dir, key_id) = setup_test_env();
+    let (source, registry) = migration_source(&temp_dir, &key_id);
+    let existing = temp_dir.path().join("existing.aion");
+    std::fs::write(&existing, b"keep me").expect("write");
+    let refused = run_cli(&[
+        "migrate",
+        path_str(&source),
+        path_str(&existing),
+        "--registry",
+        path_str(&registry),
+        "--author",
+        "2101",
+        "--key",
+        &key_id,
+        "--public",
+    ]);
+    assert!(!refused.status.success());
+    assert_eq!(std::fs::read(&existing).expect("read"), b"keep me");
+
+    let dest = temp_dir.path().join("dest.aion");
+    let unpinned = run_cli(&[
+        "migrate",
+        path_str(&source),
+        path_str(&dest),
+        "--registry",
+        path_str(&registry),
+        "--author",
+        "2102",
+        "--key",
+        &key_id,
+        "--public",
+    ]);
+    assert!(!unpinned.status.success());
+    assert!(!dest.exists());
+
+    let unnamed = run_cli(&[
+        "migrate",
+        path_str(&source),
+        path_str(&dest),
+        "--registry",
+        path_str(&registry),
+        "--author",
+        "2101",
+        "--key",
+        &key_id,
+    ]);
+    assert!(!unnamed.status.success());
+    assert!(!dest.exists());
+    cleanup_key(&key_id);
+}
+
+#[test]
+fn test_cli_verify_notes_unsigned_metadata_only_for_legacy_formats() {
+    let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/legacy");
+    let legacy = run_cli(&[
+        "verify",
+        path_str(&fixtures.join("v3.aion")),
+        "--registry",
+        path_str(&fixtures.join("v3-registry.json")),
+    ]);
+    assert!(legacy.status.success());
+    let stderr = String::from_utf8_lossy(&legacy.stderr);
+    assert!(
+        stderr.contains("does not sign its commit messages"),
+        "{stderr}"
+    );
+
+    let (temp_dir, key_id) = setup_test_env();
+    let (current, registry) = migration_source(&temp_dir, &key_id);
+    let output = run_cli(&[
+        "verify",
+        path_str(&current),
+        "--registry",
+        path_str(&registry),
+    ]);
+    cleanup_key(&key_id);
+    assert!(output.status.success());
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("does not sign"));
 }

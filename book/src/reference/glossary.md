@@ -6,7 +6,8 @@ project's RFCs.
 ### `.aion` file
 
 The on-disk binary format. Header + audit trail + version
-chain + signatures + string table + encrypted rules +
+chain + signatures + string table + rules payload
+(public, confidential to named recipients, or format-v2 obfuscated) +
 integrity hash. Zero-copy parseable.
 
 ### active epoch

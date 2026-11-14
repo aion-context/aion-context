@@ -64,7 +64,7 @@ A signed root + tree size. The log operator's master key
 signs the canonical `(tree_size, root_hash)` bytes:
 
 ```rust
-let operator_key = SigningKey::generate();
+let operator_key = SigningKey::generate()?;
 log.set_operator(operator_key.verifying_key());
 let sth = log.sign_tree_head(&operator_key);
 log.verify_tree_head(&sth)?;

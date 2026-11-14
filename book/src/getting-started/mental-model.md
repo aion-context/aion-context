@@ -88,8 +88,11 @@ the structured `VerificationReport`, so an auditor can tell
 
 ## What lives where
 
-- **In the file:** the chain itself, signatures, encrypted rules,
-  the integrity hash.
+- **In the file:** the chain itself, signatures, the rules payload,
+  the integrity hash. Public rules (and all format-v2 rules) can be
+  read by anyone holding the file; confidential rules only by the
+  recipients the writer named. Either way they are tamper-evident
+  ([why](../architecture/crypto.md#public-rules-are-not-confidential)).
 - **In the registry:** master keys, operational-key epochs,
   rotation/revocation records.
 - **In the keystore:** secret keys (OS keyring or fallback file).

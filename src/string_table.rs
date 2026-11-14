@@ -111,8 +111,7 @@ impl StringTableBuilder {
     /// assert!(builder.is_empty());
     /// ```
     #[must_use]
-    #[allow(clippy::missing_const_for_fn)] // Vec::new() not const in MSRV 1.70
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self { data: Vec::new() }
     }
 
@@ -189,7 +188,7 @@ impl StringTableBuilder {
     /// assert_eq!(builder.len(), 12); // "Hello\0World\0"
     /// ```
     #[must_use]
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.data.len()
     }
 
@@ -207,7 +206,7 @@ impl StringTableBuilder {
     /// assert!(!builder.is_empty());
     /// ```
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.data.is_empty()
     }
 

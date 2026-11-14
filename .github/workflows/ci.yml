@@ -42,7 +42,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2
       # Crate-level Cargo.toml denies unwrap_used / expect_used /
       # panic / todo / unreachable / unimplemented (Tiger Style) and
       # warns indexing_slicing / arithmetic_side_effects (advisory).
@@ -57,11 +57,23 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v6
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2
       - name: Install uv (for hegeltest backend)
-        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9  # v9.0.0
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
       - run: cargo build --all-targets --all-features
       - run: cargo test --all-features --no-fail-fast
+
+  msrv:
+    name: msrv (1.87)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v6
+      - uses: dtolnay/rust-toolchain@1.87.0
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2
+      # Library and CLI with default features must build on the declared
+      # rust-version. Dev-dependencies and optional example features may
+      # need newer toolchains and are covered by the stable jobs.
+      - run: cargo check --locked --lib --bins
 
   deny:
     name: cargo-deny
@@ -79,6 +91,9 @@ jobs:
     permissions:
       contents: read
       checks: write
+      # Scheduled runs file an issue per new advisory warning; without
+      # this the API call fails and turns the job red on warnings alone.
+      issues: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v6
       - uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998  # v2

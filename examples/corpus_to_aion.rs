@@ -353,6 +353,7 @@ impl<'a> Replayer<'a> {
                     signing_key: &self.key,
                     message: &msg,
                     timestamp: None,
+                    protection: aion_context::format::RulesProtection::Public,
                 },
             )
             .map_err(|e| format!("init_file: {e}"))?;
@@ -365,6 +366,7 @@ impl<'a> Replayer<'a> {
                     signing_key: &self.key,
                     message: &msg,
                     timestamp: None,
+                    protection: aion_context::format::RulesProtection::Public,
                 },
                 &self.registry,
             )

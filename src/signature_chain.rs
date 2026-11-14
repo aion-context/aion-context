@@ -49,8 +49,9 @@
 //! ```
 
 use crate::crypto::{hash, SigningKey, VerifyingKey};
+use crate::format::{FormatVersion, RulesMode};
 use crate::serializer::{SignatureEntry, VersionEntry};
-use crate::types::AuthorId;
+use crate::types::{AuthorId, FileId};
 use crate::Result;
 use subtle::ConstantTimeEq;
 
@@ -67,6 +68,32 @@ const SIGNATURE_DOMAIN: &[u8] = b"AION_V2_VERSION_SIGNATURE_V1";
 /// signature cannot be replayed as a multi-party attestation nor vice versa.
 const ATTESTATION_DOMAIN: &[u8] = b"AION_V2_ATTESTATION_V1";
 
+/// Domain separator for format-v3 version signatures (RFC-0039).
+pub const SIGNATURE_DOMAIN_V3: &[u8] = b"AION_V3_VERSION_SIGNATURE_V1\0";
+
+/// Domain separator for format-v3 version hashes (RFC-0039).
+///
+/// Distinct from [`SIGNATURE_DOMAIN_V3`] so the hash that `parent_hash`
+/// links to is never the same BLAKE3 input as a signed message.
+pub const VERSION_HASH_DOMAIN_V3: &[u8] = b"AION_V3_VERSION_HASH_V1\0";
+
+/// Domain separator for format-v3 attestations (RFC-0021, RFC-0039).
+pub const ATTESTATION_DOMAIN_V3: &[u8] = b"AION_V3_ATTESTATION_V1\0";
+
+/// Domain separator for format-v4 version signatures (RFC-0040).
+pub const SIGNATURE_DOMAIN_V4: &[u8] = b"AION_V4_VERSION_SIGNATURE_V1\0";
+
+/// Domain separator for format-v4 version hashes (RFC-0040).
+pub const VERSION_HASH_DOMAIN_V4: &[u8] = b"AION_V4_VERSION_HASH_V1\0";
+
+/// Domain separator for format-v4 attestations (RFC-0021, RFC-0040).
+pub const ATTESTATION_DOMAIN_V4: &[u8] = b"AION_V4_ATTESTATION_V1\0";
+
+/// Length of the fields a v3 message binds, after its domain:
+/// format version (2), `file_id` (8), mode (1), and the 100 bytes of
+/// version fields that v2 also signs.
+const V3_BOUND_FIELDS_LEN: usize = 2 + 8 + 1 + 100;
+
 /// Compute the canonical message to be signed for a version entry
 ///
 /// The canonical format ensures deterministic serialization:
@@ -82,6 +109,10 @@ const ATTESTATION_DOMAIN: &[u8] = b"AION_V2_ATTESTATION_V1";
 /// Total: 128 bytes + domain separator
 #[must_use]
 #[allow(clippy::arithmetic_side_effects)] // Fixed capacity calculation
+///
+/// **Format v2 only.** For a file that may be format v3, use
+/// [`crate::format::FileContext::canonical_version_message`] with the context from
+/// [`crate::parser::FileHeader::context`].
 pub fn canonical_version_message(version: &VersionEntry) -> Vec<u8> {
     // Capacity: domain(28) + version(8) + parent(32) + rules(32) + author(8) + ts(8) + offset(8) + len(4) = 128
     let mut message = Vec::with_capacity(128 + SIGNATURE_DOMAIN.len());
@@ -138,6 +169,10 @@ pub fn canonical_version_message(version: &VersionEntry) -> Vec<u8> {
 /// let hash = compute_version_hash(&version);
 /// assert_eq!(hash.len(), 32);
 /// ```
+///
+/// **Format v2 only.** For a file that may be format v3, use
+/// [`crate::format::FileContext::version_hash`] with the context from
+/// [`crate::parser::FileHeader::context`].
 #[must_use]
 pub fn compute_version_hash(version: &VersionEntry) -> [u8; 32] {
     // Hash the canonical message (without domain separator for chain linking)
@@ -184,6 +219,10 @@ pub fn compute_version_hash(version: &VersionEntry) -> [u8; 32] {
 ///
 /// assert_eq!(signature_entry.author_id, 50001);
 /// ```
+///
+/// **Format v2 only.** For a file that may be format v3, use
+/// [`crate::format::FileContext::sign_version`] with the context from
+/// [`crate::parser::FileHeader::context`].
 #[must_use]
 pub fn sign_version(version: &VersionEntry, signing_key: &SigningKey) -> SignatureEntry {
     let message = canonical_version_message(version);
@@ -242,10 +281,32 @@ pub fn sign_version(version: &VersionEntry, signing_key: &SigningKey) -> Signatu
 /// let signature_entry = sign_version(&version, &signing_key);
 /// assert!(verify_signature(&version, &signature_entry, &registry).is_ok());
 /// ```
+///
+/// **Format v2 only.** For a file that may be format v3, use
+/// [`crate::format::FileContext::verify_signature`] with the context from
+/// [`crate::parser::FileHeader::context`].
 pub fn verify_signature(
     version: &VersionEntry,
     signature: &SignatureEntry,
     registry: &crate::key_registry::KeyRegistry,
+) -> Result<()> {
+    verify_version_signature_over(
+        version,
+        signature,
+        registry,
+        &canonical_version_message(version),
+    )
+}
+
+/// Registry-pinned check of a version signature over a caller-built
+/// canonical message: author binding, active epoch, constant-time key
+/// match, then Ed25519. Shared by the v2 entry point and
+/// [`crate::format::FileContext::verify_signature`].
+pub(crate) fn verify_version_signature_over(
+    version: &VersionEntry,
+    signature: &SignatureEntry,
+    registry: &crate::key_registry::KeyRegistry,
+    message: &[u8],
 ) -> Result<()> {
     if version.author_id != signature.author_id {
         emit_sig_rejected(
@@ -275,13 +336,11 @@ pub fn verify_signature(
             author: signer,
         });
     }
-    let message = canonical_version_message(version);
     let verifying_key = VerifyingKey::from_bytes(&signature.public_key)?;
     verifying_key
-        .verify(&message, &signature.signature)
-        .map_err(|e| {
+        .verify(message, &signature.signature)
+        .inspect_err(|_| {
             emit_sig_rejected(version.version_number, signer, "bad_signature");
-            e
         })
 }
 
@@ -301,6 +360,10 @@ fn emit_sig_rejected(version: u64, author: AuthorId, reason: &'static str) {
 /// prevents signature replay across signers and across protocols.
 #[must_use]
 #[allow(clippy::arithmetic_side_effects)] // capacity calculation over consts
+///
+/// **Format v2 only.** For a file that may be format v3, use
+/// [`crate::format::FileContext::attestation_message`] with the context from
+/// [`crate::parser::FileHeader::context`].
 pub fn canonical_attestation_message(version: &VersionEntry, signer: AuthorId) -> Vec<u8> {
     let mut message = Vec::with_capacity(128 + 8 + ATTESTATION_DOMAIN.len());
     message.extend_from_slice(ATTESTATION_DOMAIN);
@@ -315,11 +378,170 @@ pub fn canonical_attestation_message(version: &VersionEntry, signer: AuthorId) -
     message
 }
 
+/// The fields every v3 version message binds, in order:
+/// `format_version u16 ‖ file_id u64 ‖ rules_mode u8 ‖ version u64 ‖
+/// parent_hash[32] ‖ rules_commitment[32] ‖ author u64 ‖ timestamp u64 ‖
+/// message_offset u64 ‖ message_length u32`, all little-endian.
+fn v3_bound_fields(version: &VersionEntry, file_id: FileId) -> Result<Vec<u8>> {
+    bound_fields(version, file_id, FormatVersion::V3)
+}
+
+/// The fields a v3 or v4 message binds. v4 inserts the entry's
+/// `metadata_commitment[32]` after the mode (RFC-0040).
+fn bound_fields(version: &VersionEntry, file_id: FileId, format: FormatVersion) -> Result<Vec<u8>> {
+    let mode = RulesMode::of(version, format)?;
+    let mut fields = Vec::with_capacity(V3_BOUND_FIELDS_LEN.saturating_add(32));
+    fields.extend_from_slice(&format.as_u16().to_le_bytes());
+    fields.extend_from_slice(&file_id.as_u64().to_le_bytes());
+    fields.push(mode.as_u8());
+    if format == FormatVersion::V4 {
+        fields.extend_from_slice(&crate::format::stored_metadata_commitment(version));
+    }
+    fields.extend_from_slice(&version.version_number.to_le_bytes());
+    fields.extend_from_slice(&version.parent_hash);
+    fields.extend_from_slice(&version.rules_hash);
+    fields.extend_from_slice(&version.author_id.to_le_bytes());
+    fields.extend_from_slice(&version.timestamp.to_le_bytes());
+    fields.extend_from_slice(&version.message_offset.to_le_bytes());
+    fields.extend_from_slice(&version.message_length.to_le_bytes());
+    Ok(fields)
+}
+
+/// Canonical message a format-v3 version signature covers (RFC-0039).
+///
+/// `SIGNATURE_DOMAIN_V3 ‖ format_version ‖ file_id ‖ rules_mode ‖` the
+/// v2 version fields. Binding `file_id` and the mode means a signed entry
+/// cannot be moved into another file or reinterpreted under another mode.
+/// In v3, `rules_hash` holds the rules commitment.
+///
+/// # Errors
+///
+/// Returns [`crate::AionError::InvalidFormat`] if the entry's rules mode
+/// byte is unknown or another reserved byte is non-zero.
+///
+/// Crate-internal: callers go through [`crate::format::FileContext`], so
+/// v3 construction cannot be applied to a v2 file by mistake.
+pub(crate) fn canonical_version_message_v3(
+    version: &VersionEntry,
+    file_id: FileId,
+) -> Result<Vec<u8>> {
+    let fields = v3_bound_fields(version, file_id)?;
+    let mut message = Vec::with_capacity(SIGNATURE_DOMAIN_V3.len().saturating_add(fields.len()));
+    message.extend_from_slice(SIGNATURE_DOMAIN_V3);
+    message.extend_from_slice(&fields);
+    Ok(message)
+}
+
+/// Hash of a format-v3 version entry, the value the next version's
+/// `parent_hash` links to (RFC-0039).
+///
+/// Covers the same fields as [`canonical_version_message_v3`], including
+/// the rules mode, under [`VERSION_HASH_DOMAIN_V3`]. So the same version
+/// number re-signed with a different mode is a different version.
+///
+/// # Errors
+///
+/// Returns [`crate::AionError::InvalidFormat`] if the entry's rules mode
+/// byte is unknown or another reserved byte is non-zero.
+pub(crate) fn compute_version_hash_v3(version: &VersionEntry, file_id: FileId) -> Result<[u8; 32]> {
+    let fields = v3_bound_fields(version, file_id)?;
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(VERSION_HASH_DOMAIN_V3);
+    hasher.update(&fields);
+    Ok(*hasher.finalize().as_bytes())
+}
+
+/// Canonical message a format-v3 attestation signature covers
+/// (RFC-0021, RFC-0039): `ATTESTATION_DOMAIN_V3 ‖` the v3 bound fields
+/// `‖ signer u64`.
+///
+/// # Errors
+///
+/// Returns [`crate::AionError::InvalidFormat`] if the entry's rules mode
+/// byte is unknown or another reserved byte is non-zero.
+pub(crate) fn canonical_attestation_message_v3(
+    version: &VersionEntry,
+    file_id: FileId,
+    signer: AuthorId,
+) -> Result<Vec<u8>> {
+    let fields = v3_bound_fields(version, file_id)?;
+    let capacity = ATTESTATION_DOMAIN_V3
+        .len()
+        .saturating_add(fields.len())
+        .saturating_add(8);
+    let mut message = Vec::with_capacity(capacity);
+    message.extend_from_slice(ATTESTATION_DOMAIN_V3);
+    message.extend_from_slice(&fields);
+    message.extend_from_slice(&signer.as_u64().to_le_bytes());
+    Ok(message)
+}
+
+/// Canonical message a format-v4 version signature covers (RFC-0040):
+/// `SIGNATURE_DOMAIN_V4 ‖ format_version ‖ file_id ‖ rules_mode ‖
+/// metadata_commitment ‖` the v2 version fields.
+///
+/// # Errors
+///
+/// Returns [`crate::AionError::InvalidFormat`] if the entry's rules mode
+/// byte is unknown or a reserved byte that must be zero is not.
+pub(crate) fn canonical_version_message_v4(
+    version: &VersionEntry,
+    file_id: FileId,
+) -> Result<Vec<u8>> {
+    let fields = bound_fields(version, file_id, FormatVersion::V4)?;
+    let mut message = Vec::with_capacity(SIGNATURE_DOMAIN_V4.len().saturating_add(fields.len()));
+    message.extend_from_slice(SIGNATURE_DOMAIN_V4);
+    message.extend_from_slice(&fields);
+    Ok(message)
+}
+
+/// Hash of a format-v4 version entry, the value the next version's
+/// `parent_hash` links to (RFC-0040). Covers the metadata commitment, so a
+/// version's metadata is part of its identity.
+///
+/// # Errors
+///
+/// As [`canonical_version_message_v4`].
+pub(crate) fn compute_version_hash_v4(version: &VersionEntry, file_id: FileId) -> Result<[u8; 32]> {
+    let fields = bound_fields(version, file_id, FormatVersion::V4)?;
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(VERSION_HASH_DOMAIN_V4);
+    hasher.update(&fields);
+    Ok(*hasher.finalize().as_bytes())
+}
+
+/// Canonical message a format-v4 attestation covers (RFC-0021, RFC-0040):
+/// `ATTESTATION_DOMAIN_V4 ‖` the v4 bound fields `‖ signer u64`.
+///
+/// # Errors
+///
+/// As [`canonical_version_message_v4`].
+pub(crate) fn canonical_attestation_message_v4(
+    version: &VersionEntry,
+    file_id: FileId,
+    signer: AuthorId,
+) -> Result<Vec<u8>> {
+    let fields = bound_fields(version, file_id, FormatVersion::V4)?;
+    let capacity = ATTESTATION_DOMAIN_V4
+        .len()
+        .saturating_add(fields.len())
+        .saturating_add(8);
+    let mut message = Vec::with_capacity(capacity);
+    message.extend_from_slice(ATTESTATION_DOMAIN_V4);
+    message.extend_from_slice(&fields);
+    message.extend_from_slice(&signer.as_u64().to_le_bytes());
+    Ok(message)
+}
+
 /// Produce an attestation signature over a version — RFC-0021.
 ///
 /// Unlike [`sign_version`], the signer need not equal `version.author_id`:
 /// attestations are multi-party by design. Returns a `SignatureEntry` whose
 /// `author_id` is the attesting signer's id.
+///
+/// **Format v2 only.** For a file that may be format v3, use
+/// [`crate::format::FileContext::sign_attestation`] with the context from
+/// [`crate::parser::FileHeader::context`].
 #[must_use]
 pub fn sign_attestation(
     version: &VersionEntry,
@@ -345,10 +567,32 @@ pub fn sign_attestation(
 /// attester at `version.version_number`, if the signature's
 /// embedded public key does not match that epoch, or if the
 /// Ed25519 signature does not verify.
+///
+/// **Format v2 only.** For a file that may be format v3, use
+/// [`crate::format::FileContext::verify_attestation`] with the context from
+/// [`crate::parser::FileHeader::context`].
 pub fn verify_attestation(
     version: &VersionEntry,
     signature: &SignatureEntry,
     registry: &crate::key_registry::KeyRegistry,
+) -> Result<()> {
+    let signer = AuthorId::new(signature.author_id);
+    verify_attestation_over(
+        version,
+        signature,
+        registry,
+        &canonical_attestation_message(version, signer),
+    )
+}
+
+/// Registry-pinned check of an attestation signature over a caller-built
+/// canonical message. Shared by the v2 entry point and
+/// [`crate::format::FileContext::verify_attestation`].
+pub(crate) fn verify_attestation_over(
+    version: &VersionEntry,
+    signature: &SignatureEntry,
+    registry: &crate::key_registry::KeyRegistry,
+    message: &[u8],
 ) -> Result<()> {
     let signer = AuthorId::new(signature.author_id);
     let epoch = registry
@@ -367,13 +611,11 @@ pub fn verify_attestation(
             author: signer,
         });
     }
-    let message = canonical_attestation_message(version, signer);
     let verifying_key = VerifyingKey::from_bytes(&signature.public_key)?;
     verifying_key
-        .verify(&message, &signature.signature)
-        .map_err(|e| {
+        .verify(message, &signature.signature)
+        .inspect_err(|_| {
             emit_sig_rejected(version.version_number, signer, "bad_attestation");
-            e
         })
 }
 
@@ -391,11 +633,31 @@ pub fn verify_attestation(
 /// - `AionError::SignatureVerificationFailed` on the first pair
 ///   where registry lookup or the Ed25519 verify fails.
 /// - `AionError::InvalidPublicKey` if any embedded public key is malformed.
+///
+/// **Format v2 only.** For a file that may be format v3, use
+/// [`crate::format::FileContext::verify_signatures`] with the context from
+/// [`crate::parser::FileHeader::context`].
 pub fn verify_signatures_batch(
     versions: &[VersionEntry],
     signatures: &[SignatureEntry],
     registry: &crate::key_registry::KeyRegistry,
 ) -> Result<()> {
+    verify_signatures_with(versions, signatures, |version, signature| {
+        verify_signature(version, signature, registry)
+    })
+}
+
+/// Verify every `(version, signature)` pair with `verify_one`, in
+/// parallel for chains longer than 10. Shared by the v2 entry point and
+/// [`crate::format::FileContext::verify_signatures`].
+pub(crate) fn verify_signatures_with<F>(
+    versions: &[VersionEntry],
+    signatures: &[SignatureEntry],
+    verify_one: F,
+) -> Result<()>
+where
+    F: Fn(&VersionEntry, &SignatureEntry) -> Result<()> + Sync,
+{
     if versions.len() != signatures.len() {
         return Err(crate::AionError::InvalidFormat {
             reason: format!(
@@ -410,10 +672,10 @@ pub fn verify_signatures_batch(
         versions
             .par_iter()
             .zip(signatures.par_iter())
-            .try_for_each(|(version, signature)| verify_signature(version, signature, registry))
+            .try_for_each(|(version, signature)| verify_one(version, signature))
     } else {
         for (version, signature) in versions.iter().zip(signatures.iter()) {
-            verify_signature(version, signature, registry)?;
+            verify_one(version, signature)?;
         }
         Ok(())
     }
@@ -583,6 +845,10 @@ pub fn create_child_version(
 /// let versions = vec![genesis, v2];
 /// assert!(verify_hash_chain(&versions).is_ok());
 /// ```
+///
+/// **Format v2 only.** For a file that may be format v3, use
+/// [`crate::format::FileContext::verify_hash_chain`] with the context from
+/// [`crate::parser::FileHeader::context`].
 pub fn verify_hash_chain(versions: &[VersionEntry]) -> Result<()> {
     let genesis = versions
         .first()
@@ -590,7 +856,24 @@ pub fn verify_hash_chain(versions: &[VersionEntry]) -> Result<()> {
             reason: "Version chain is empty".to_string(),
         })?;
     verify_genesis_version(genesis)?;
-    verify_chain_links(versions)
+    verify_chain_links(versions, |parent| Ok(compute_version_hash(parent)))
+}
+
+/// Verify chain structure with a caller-supplied version hash: genesis is
+/// version 1 with a zero parent, versions increase by one, and each
+/// `parent_hash` equals `version_hash(parent)`. Shared by the v2 entry
+/// point and [`crate::format::FileContext::verify_hash_chain`].
+pub(crate) fn verify_hash_chain_with<H>(versions: &[VersionEntry], version_hash: H) -> Result<()>
+where
+    H: Fn(&VersionEntry) -> Result<[u8; 32]>,
+{
+    let genesis = versions
+        .first()
+        .ok_or_else(|| crate::AionError::InvalidFormat {
+            reason: "Version chain is empty".to_string(),
+        })?;
+    verify_genesis_version(genesis)?;
+    verify_chain_links(versions, version_hash)
 }
 
 fn verify_genesis_version(genesis: &VersionEntry) -> Result<()> {
@@ -611,7 +894,10 @@ fn verify_genesis_version(genesis: &VersionEntry) -> Result<()> {
     Ok(())
 }
 
-fn verify_chain_links(versions: &[VersionEntry]) -> Result<()> {
+fn verify_chain_links<H>(versions: &[VersionEntry], version_hash: H) -> Result<()>
+where
+    H: Fn(&VersionEntry) -> Result<[u8; 32]>,
+{
     for pair in versions.windows(2) {
         let [parent, current] = pair else { continue };
         let expected_version =
@@ -627,7 +913,7 @@ fn verify_chain_links(versions: &[VersionEntry]) -> Result<()> {
                 current: expected_version,
             });
         }
-        if current.parent_hash != compute_version_hash(parent) {
+        if current.parent_hash != version_hash(parent)? {
             return Err(crate::AionError::BrokenVersionChain {
                 version: current.version_number,
             });
@@ -679,6 +965,157 @@ mod tests {
             let msg1 = canonical_version_message(&version);
             let msg2 = canonical_version_message(&version);
             assert_eq!(msg1, msg2);
+        }
+
+        /// RFC-0039 golden vectors. The expected bytes are written out
+        /// literally rather than rebuilt with `to_le_bytes`, so a swapped,
+        /// resized, or reordered field fails here even when every
+        /// round-trip property still passes.
+        fn golden_v3_entry() -> VersionEntry {
+            VersionEntry::new(
+                crate::types::VersionNumber(0x0102_0304_0506_0708),
+                [0x11; 32],
+                [0x22; 32],
+                AuthorId::new(0x0A0B_0C0D_0E0F_1011),
+                0x2122_2324_2526_2728,
+                0x3132_3334_3536_3738,
+                0x4142_4344,
+            )
+            .with_rules_mode(crate::format::RulesMode::Confidential)
+        }
+
+        fn golden_v3_fields() -> Vec<u8> {
+            let mut fields = vec![0x03, 0x00];
+            fields.extend_from_slice(&[0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11]);
+            fields.push(0x01);
+            fields.extend_from_slice(&[0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01]);
+            fields.extend_from_slice(&[0x11; 32]);
+            fields.extend_from_slice(&[0x22; 32]);
+            fields.extend_from_slice(&[0x11, 0x10, 0x0F, 0x0E, 0x0D, 0x0C, 0x0B, 0x0A]);
+            fields.extend_from_slice(&[0x28, 0x27, 0x26, 0x25, 0x24, 0x23, 0x22, 0x21]);
+            fields.extend_from_slice(&[0x38, 0x37, 0x36, 0x35, 0x34, 0x33, 0x32, 0x31]);
+            fields.extend_from_slice(&[0x44, 0x43, 0x42, 0x41]);
+            fields
+        }
+
+        const GOLDEN_FILE_ID: u64 = 0x1122_3344_5566_7788;
+
+        #[test]
+        fn v3_version_message_matches_golden_layout() {
+            let mut expected = b"AION_V3_VERSION_SIGNATURE_V1\0".to_vec();
+            expected.extend_from_slice(&golden_v3_fields());
+            assert_eq!(expected.len(), 29 + 111);
+            let actual =
+                canonical_version_message_v3(&golden_v3_entry(), FileId::new(GOLDEN_FILE_ID))
+                    .unwrap_or_else(|_| std::process::abort());
+            assert_eq!(actual, expected);
+        }
+
+        #[test]
+        fn v3_version_hash_matches_golden_layout() {
+            let mut input = b"AION_V3_VERSION_HASH_V1\0".to_vec();
+            input.extend_from_slice(&golden_v3_fields());
+            let expected = *blake3::hash(&input).as_bytes();
+            let actual = compute_version_hash_v3(&golden_v3_entry(), FileId::new(GOLDEN_FILE_ID))
+                .unwrap_or_else(|_| std::process::abort());
+            assert_eq!(actual, expected);
+        }
+
+        #[test]
+        fn v3_attestation_message_matches_golden_layout() {
+            let mut expected = b"AION_V3_ATTESTATION_V1\0".to_vec();
+            expected.extend_from_slice(&golden_v3_fields());
+            expected.extend_from_slice(&[0xEF, 0xCD, 0xAB, 0x89, 0x67, 0x45, 0x23, 0x01]);
+            let actual = canonical_attestation_message_v3(
+                &golden_v3_entry(),
+                FileId::new(GOLDEN_FILE_ID),
+                AuthorId::new(0x0123_4567_89AB_CDEF),
+            )
+            .unwrap_or_else(|_| std::process::abort());
+            assert_eq!(actual, expected);
+        }
+
+        /// RFC-0040: the v4 fields are the v3 fields with the metadata
+        /// commitment inserted after the mode byte.
+        fn golden_v4_fields() -> Vec<u8> {
+            let v3 = golden_v3_fields();
+            let (head, tail) = v3.split_at(11);
+            let mut fields = vec![0x04, 0x00];
+            fields.extend_from_slice(head.get(2..).unwrap_or_default());
+            fields.extend_from_slice(&[0x5C; 32]);
+            fields.extend_from_slice(tail);
+            fields
+        }
+
+        fn golden_v4_entry() -> VersionEntry {
+            golden_v3_entry().with_metadata_commitment([0x5C; 32])
+        }
+
+        #[test]
+        fn v4_version_message_matches_golden_layout() {
+            let mut expected = b"AION_V4_VERSION_SIGNATURE_V1\0".to_vec();
+            expected.extend_from_slice(&golden_v4_fields());
+            assert_eq!(expected.len(), 29 + 111 + 32);
+            let actual =
+                canonical_version_message_v4(&golden_v4_entry(), FileId::new(GOLDEN_FILE_ID))
+                    .unwrap_or_else(|_| std::process::abort());
+            assert_eq!(actual, expected);
+        }
+
+        #[test]
+        fn v4_version_hash_and_attestation_match_golden_layout() {
+            let mut input = b"AION_V4_VERSION_HASH_V1\0".to_vec();
+            input.extend_from_slice(&golden_v4_fields());
+            let actual = compute_version_hash_v4(&golden_v4_entry(), FileId::new(GOLDEN_FILE_ID))
+                .unwrap_or_else(|_| std::process::abort());
+            assert_eq!(actual, *blake3::hash(&input).as_bytes());
+
+            let mut expected = b"AION_V4_ATTESTATION_V1\0".to_vec();
+            expected.extend_from_slice(&golden_v4_fields());
+            expected.extend_from_slice(&[0xEF, 0xCD, 0xAB, 0x89, 0x67, 0x45, 0x23, 0x01]);
+            let attestation = canonical_attestation_message_v4(
+                &golden_v4_entry(),
+                FileId::new(GOLDEN_FILE_ID),
+                AuthorId::new(0x0123_4567_89AB_CDEF),
+            )
+            .unwrap_or_else(|_| std::process::abort());
+            assert_eq!(attestation, expected);
+        }
+
+        #[test]
+        fn v4_entries_are_not_valid_v3_entries_and_domains_do_not_prefix() {
+            let entry = golden_v4_entry();
+            assert!(canonical_version_message_v3(&entry, FileId::new(GOLDEN_FILE_ID)).is_err());
+            let domains: [&[u8]; 9] = [
+                SIGNATURE_DOMAIN,
+                ATTESTATION_DOMAIN,
+                SIGNATURE_DOMAIN_V3,
+                VERSION_HASH_DOMAIN_V3,
+                ATTESTATION_DOMAIN_V3,
+                SIGNATURE_DOMAIN_V4,
+                VERSION_HASH_DOMAIN_V4,
+                ATTESTATION_DOMAIN_V4,
+                crate::audit::AUDIT_ENTRY_DOMAIN_V4,
+            ];
+            for (i, a) in domains.iter().enumerate() {
+                for (j, b) in domains.iter().enumerate() {
+                    if i != j {
+                        assert!(!b.starts_with(a), "{i} prefixes {j}");
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn metadata_commitment_matches_golden_layout() {
+            let mut input = b"AION_V4_METADATA_COMMIT_V1\0".to_vec();
+            input.extend_from_slice(&7u64.to_le_bytes());
+            input.extend_from_slice(&5u32.to_le_bytes());
+            input.extend_from_slice(b"hello");
+            input.extend_from_slice(&[0xA5; 32]);
+            let actual = crate::format::metadata_commitment(7, b"hello", &[0xA5; 32])
+                .unwrap_or_else(|_| std::process::abort());
+            assert_eq!(actual, *blake3::hash(&input).as_bytes());
         }
 
         #[test]
@@ -1496,6 +1933,118 @@ mod tests {
             // Attacker swaps the embedded public_key to a key they control.
             sig.public_key = attacker.verifying_key().to_bytes();
             assert!(verify_signature(&version, &sig, &reg).is_err());
+        }
+
+        // ------------------------------------------------------------------
+        // RFC-0039 format-v3 message and hash properties.
+        // ------------------------------------------------------------------
+
+        use crate::format::RulesMode;
+
+        fn draw_mode(tc: &hegel::TestCase) -> RulesMode {
+            if tc.draw(gs::booleans()) {
+                RulesMode::Confidential
+            } else {
+                RulesMode::Public
+            }
+        }
+
+        fn draw_v3_entry(tc: &hegel::TestCase, mode: RulesMode) -> VersionEntry {
+            VersionEntry::new(
+                crate::types::VersionNumber(tc.draw(gs::integers::<u64>())),
+                draw_hash(tc),
+                draw_hash(tc),
+                AuthorId::new(tc.draw(gs::integers::<u64>())),
+                tc.draw(gs::integers::<u64>()),
+                tc.draw(gs::integers::<u64>()),
+                tc.draw(gs::integers::<u32>()),
+            )
+            .with_rules_mode(mode)
+        }
+
+        fn v3_message(entry: &VersionEntry, file_id: u64) -> Vec<u8> {
+            canonical_version_message_v3(entry, FileId::new(file_id))
+                .unwrap_or_else(|_| std::process::abort())
+        }
+
+        fn v3_hash(entry: &VersionEntry, file_id: u64) -> [u8; 32] {
+            compute_version_hash_v3(entry, FileId::new(file_id))
+                .unwrap_or_else(|_| std::process::abort())
+        }
+
+        #[hegel::test]
+        fn prop_v3_message_and_hash_bind_file_id(tc: hegel::TestCase) {
+            let entry = draw_v3_entry(&tc, draw_mode(&tc));
+            let file_a = tc.draw(gs::integers::<u64>());
+            let file_b = file_a ^ tc.draw(gs::integers::<u64>().min_value(1));
+            assert_ne!(v3_message(&entry, file_a), v3_message(&entry, file_b));
+            assert_ne!(v3_hash(&entry, file_a), v3_hash(&entry, file_b));
+        }
+
+        #[hegel::test]
+        fn prop_v3_message_and_hash_bind_rules_mode(tc: hegel::TestCase) {
+            let entry = draw_v3_entry(&tc, RulesMode::Public);
+            let flipped = entry.with_rules_mode(RulesMode::Confidential);
+            let file_id = tc.draw(gs::integers::<u64>());
+            assert_ne!(v3_message(&entry, file_id), v3_message(&flipped, file_id));
+            assert_ne!(v3_hash(&entry, file_id), v3_hash(&flipped, file_id));
+        }
+
+        #[hegel::test]
+        fn prop_v3_version_hash_differs_from_v2(tc: hegel::TestCase) {
+            let entry = draw_v3_entry(&tc, RulesMode::Public);
+            let file_id = tc.draw(gs::integers::<u64>());
+            assert_ne!(v3_hash(&entry, file_id), compute_version_hash(&entry));
+        }
+
+        #[hegel::test]
+        fn prop_v3_signature_round_trip_and_file_binding(tc: hegel::TestCase) {
+            let entry = draw_v3_entry(&tc, draw_mode(&tc));
+            let file_id = tc.draw(gs::integers::<u64>());
+            let other_file = file_id ^ tc.draw(gs::integers::<u64>().min_value(1));
+            let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+            let signature = key.sign(&v3_message(&entry, file_id));
+            let verifying = key.verifying_key();
+            assert!(verifying
+                .verify(&v3_message(&entry, file_id), &signature)
+                .is_ok());
+            assert!(verifying
+                .verify(&v3_message(&entry, other_file), &signature)
+                .is_err());
+        }
+
+        #[hegel::test]
+        fn prop_v3_version_and_attestation_are_domain_separated(tc: hegel::TestCase) {
+            let entry = draw_v3_entry(&tc, draw_mode(&tc));
+            let file_id = FileId::new(tc.draw(gs::integers::<u64>()));
+            let signer = AuthorId::new(tc.draw(gs::integers::<u64>()));
+            let key = SigningKey::generate().unwrap_or_else(|_| std::process::abort());
+            let version_message = canonical_version_message_v3(&entry, file_id)
+                .unwrap_or_else(|_| std::process::abort());
+            let attestation_message = canonical_attestation_message_v3(&entry, file_id, signer)
+                .unwrap_or_else(|_| std::process::abort());
+            let signature = key.sign(&version_message);
+            assert!(key
+                .verifying_key()
+                .verify(&attestation_message, &signature)
+                .is_err());
+        }
+
+        #[hegel::test]
+        fn prop_v3_rejects_invalid_mode_and_reserved_bytes(tc: hegel::TestCase) {
+            let mut bad_mode = draw_v3_entry(&tc, RulesMode::Public);
+            bad_mode.reserved[0] = tc.draw(gs::integers::<u8>().min_value(2));
+            let mut bad_reserved = draw_v3_entry(&tc, draw_mode(&tc));
+            let index = tc.draw(gs::integers::<usize>().min_value(1).max_value(51));
+            let flipped = tc.draw(gs::integers::<u8>().min_value(1));
+            if let Some(byte) = bad_reserved.reserved.get_mut(index) {
+                *byte = flipped;
+            }
+            let file_id = FileId::new(tc.draw(gs::integers::<u64>()));
+            assert!(canonical_version_message_v3(&bad_mode, file_id).is_err());
+            assert!(compute_version_hash_v3(&bad_mode, file_id).is_err());
+            assert!(canonical_version_message_v3(&bad_reserved, file_id).is_err());
+            assert!(compute_version_hash_v3(&bad_reserved, file_id).is_err());
         }
     }
 }

@@ -24,8 +24,9 @@ every byte; this page is the operator-facing summary.
 │ String Table                          │
 │   null-delimited UTF-8 messages       │
 ├──────────────────────────────────────┤
-│ Encrypted Rules (XChaCha20-Poly1305)  │
-│   payload + nonce                     │
+│ Rules Section (latest version only)   │
+│   v3 public: framed, Padmé-padded     │
+│   v2: nonce + ChaCha20-Poly1305       │
 ├──────────────────────────────────────┤
 │ Integrity Hash                        │
 │   BLAKE3 over all preceding bytes     │
@@ -44,14 +45,55 @@ allocating. Internal entry types (`VersionEntry`,
 |---:|---:|---|
 | 0 | 8 | `version_number: u64` |
 | 8 | 32 | `parent_hash: [u8; 32]` (BLAKE3 of prior version's canonical bytes) |
-| 40 | 32 | `rules_hash: [u8; 32]` (BLAKE3 of plaintext rules) |
+| 40 | 32 | `rules_hash: [u8; 32]` (v3: BLAKE3 commitment to the stored rules section; v2: BLAKE3 of the plaintext rules) |
 | 72 | 8 | `author_id: u64` |
 | 80 | 8 | `timestamp: u64` (nanoseconds since epoch) |
 | 88 | 8 | `message_offset: u64` (into string table) |
 | 96 | 4 | `message_length: u32` |
-| 100 | 52 | `reserved` — must be zero |
+| 100 | 52 | `reserved`: v3 and v4 store `rules_mode` in byte 100 (0 public, 1 confidential). v4 stores the 32-byte metadata commitment in bytes 101–132. The rest must be zero; in v2, all of it. |
 
-The `reserved` region is **strictly validated as zero**
+## Format versions
+
+The header's `version` field selects the format. Readers accept v2, v3
+and v4; `init` and `migrate` write v4, and `commit` keeps a file's format.
+
+- **v4 (RFC-0040).** v3, plus signed metadata.
+  - Each version's signature covers a commitment to its commit message
+    and its own audit entry, under `AION_V4_METADATA_COMMIT_V1\0`.
+  - There is exactly one audit entry per version, chained by a hash over
+    the stored 80 bytes and any details text. Through the version-hash
+    chain, each signature covers the whole history before it.
+  - The string table holds each message (and genesis migration details)
+    once, in order, with nothing else. Sections are contiguous, and the
+    header's copies must equal the signed values.
+  - Messages are UTF-8 without NUL. Tools display them only from a
+    verified chain (`chain::verified_history`).
+  - A migrated file's genesis audit action is `MigratedFrom`, and its
+    details are the signed link
+    `aion-migrated-from:v<format>:<file_id>:<head version>:<head hash>`.
+- **v3 (RFC-0039).**
+  - Every version records its own rules mode, and the signature
+    covers it.
+  - The signed canonical message also binds the format version and
+    `file_id`, under `AION_V3_VERSION_SIGNATURE_V1\0`.
+  - `parent_hash` links to a v3 version hash under
+    `AION_V3_VERSION_HASH_V1\0`.
+  - The head's rules section must commit to its signed `rules_hash`,
+    and header flag bit 0 mirrors the head's mode. Both are checked
+    without any key.
+  - A public section is `u64_le(len) ‖ plaintext ‖ zero padding`,
+    padded to the Padmé size of `8 + len`.
+  - Commit messages and the audit trail are **not** signed
+    (GHSA-69cp-fwrw-82vh): anyone holding the file can rewrite them and
+    recompute the unkeyed hashes. Treat them as unauthenticated, or
+    migrate the file to v4.
+- **v2.** The original format. The rules section is obfuscated under a
+  key derived from public header fields, so it is not confidential.
+  Its commit messages and audit trail are unsigned, as in v3. Commits
+  to a v2 file keep it v2; `aion migrate` writes a v4 file that
+  continues it.
+
+The `reserved` region is **strictly validated**
 (post-PR #42). Tampering with reserved bytes would let an
 attacker plant data that the integrity hash detects but a
 subsequent `commit_version` could silently launder by
@@ -86,6 +128,29 @@ totality is exercised by:
 Reserved-byte validation at the entry level is exercised by
 analogous fuzz harnesses for `from_canonical_bytes` (manifest)
 and `from_trusted_json` (registry).
+
+Format-v3 and v4 verification is fuzzed by
+`fuzz/fuzz_targets/fuzz_verify_chain.rs`. It drives
+`VerifiedChain::from_bytes` and `format::unframe_rules` against a
+registry pinning one fixed fuzz-only key. The signed v3 and v4 seeds in
+`fuzz/seeds/fuzz_verify_chain/` carry that key, so mutations reach
+the rules-commitment, framing, and mode-byte checks that run after
+signature verification:
+
+The confidential envelope parser (RFC-0039 Phase B1) has its own
+target, `fuzz_confidential_envelope`. It also asserts that every
+accepted envelope re-serializes to exactly the input bytes.
+
+```bash
+cd fuzz
+# corpus/ is gitignored scratch; seeds/ is the committed starting set.
+cargo +nightly fuzz run fuzz_confidential_envelope \
+  corpus/fuzz_confidential_envelope seeds/fuzz_confidential_envelope
+cargo +nightly fuzz run fuzz_verify_chain \
+  corpus/fuzz_verify_chain seeds/fuzz_verify_chain
+cargo +nightly fuzz run fuzz_file_parser \
+  corpus/fuzz_file_parser seeds/fuzz_verify_chain
+```
 
 ## Verification gates
 

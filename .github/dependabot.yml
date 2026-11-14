@@ -14,6 +14,10 @@ updates:
       - rust
     commit-message:
       prefix: "deps"
+    ignore:
+      # sha2 0.11.1 needs rustc 1.88; we are on MSRV 1.87. Drop with the MSRV bump.
+      - dependency-name: "sha2"
+        versions: [">= 0.11.1"]
     groups:
       patch-updates:
         update-types: ["patch"]
@@ -55,3 +59,7 @@ updates:
       - ci
     commit-message:
       prefix: "ci"
+    ignore:
+      # The tag on dtolnay/rust-toolchain selects the Rust version (the MSRV
+      # job), not the action version; Dependabot misreads it (see #219).
+      - dependency-name: "dtolnay/rust-toolchain"

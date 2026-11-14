@@ -55,6 +55,19 @@ files in the report.
 If you're unsure, err on the side of reporting privately. We can
 move it to a public issue if it turns out to be out of scope.
 
+### Known limitations
+
+- **Public and format-v2 rules are not confidential.** Public format-v3
+  rules are stored in the clear, and format-v2 rules are encrypted
+  with a key derived only from public header fields, so anyone who
+  holds such a file can read its rules. Confidential format-v3 rules
+  hide the content but not the recipient list, padded length, commit
+  messages, or authors. This is documented behavior, not an embargoed
+  vulnerability. See
+  [crypto.md](book/src/architecture/crypto.md#public-rules-are-not-confidential).
+  A report that shows a way to *forge or alter* rules without
+  detection is in scope.
+
 ## What we'll do
 
 1. **Acknowledge** within 3 business days that we received the report.

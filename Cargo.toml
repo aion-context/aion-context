@@ -1,13 +1,15 @@
 [package]
 name = "aion-context"
-version = "1.0.0"
+version = "3.0.0"
 edition = "2021"
 authors = ["AION Context Contributors"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/aion-context/aion-context"
 homepage = "https://aion-context.dev"
 documentation = "https://docs.rs/aion-context"
-rust-version = "1.70"
+# Floor set by ed25519-dalek 3.0, rand 0.10, chacha20poly1305 0.11, and
+# getrandom 0.4 (edition 2024). Checked in CI by the `msrv` job.
+rust-version = "1.87"
 description = "Tamper-evident policy files with hash-chained signatures — AI agent governance and regulatory compliance auditing in Rust"
 readme = "README.md"
 keywords = ["policy", "tamper-evident", "audit-trail", "compliance", "cryptography"]
@@ -17,9 +19,16 @@ categories = ["cryptography", "command-line-utilities", "filesystem", "encoding"
 # Cryptography - pinned versions for security
 ed25519-dalek = "3.0"
 chacha20poly1305 = "0.11"
+# RFC-0039 Phase B: HPKE recipient stanzas (X25519 and X-Wing). Pinned
+# exactly: X-Wing and its HPKE binding are IETF drafts, and golden-stanza
+# tests fix the wire bytes. No `getrandom` feature: randomness comes from
+# `crypto::fill_os_entropy`, so an RNG failure is an error, not a panic.
+hpke = { version = "=0.14.1", default-features = false, features = ["alloc", "x25519", "mlkem", "chacha", "hkdfsha2"] }
 blake3 = "1.8"
-hkdf = "0.12"
-sha2 = "0.10"
+hkdf = "0.13"
+# Pinned exactly: sha2 0.11.1 raised its MSRV to 1.88, above our
+# `rust-version = "1.87"`. Lift the pin together with the MSRV bump.
+sha2 = "=0.11.0"
 # Constant-time comparisons for any secret-or-key-shaped bytes
 # (crypto-rule: `==` on key bytes is a BLOCK, see .claude/rules/crypto.md).
 subtle = "2.6"
@@ -92,7 +101,7 @@ flate2 = { version = "1.0", optional = true }
 # Property-based testing (see .claude/rules/property-testing.md).
 # Requires `uv` on PATH at test time to launch the hegel-core backend;
 # absent that, hegeltest self-installs a private copy to ~/.cache/hegel.
-hegeltest = "0.28"
+hegeltest = "0.29"
 criterion = { version = "0.5", features = ["html_reports"] }
 tempfile = "3.8"
 

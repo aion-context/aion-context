@@ -10,7 +10,7 @@ cargo install aion-context
 
 `cargo install` fetches the latest published `aion-context` from
 crates.io and puts the `aion` binary on your `PATH`. To pin to a
-specific version: `cargo install aion-context --version 1.0.0`.
+specific version: `cargo install aion-context --version 3.0.0`.
 
 To use the library from your own crate:
 
@@ -69,7 +69,7 @@ registry.
 ```bash
 echo "threshold: 75%" > rules.yaml
 
-aion init policy.aion \
+aion init --public policy.aion \
     --author 50001 \
     --key 50001 \
     --rules rules.yaml \
@@ -84,7 +84,7 @@ version):
 ```bash
 echo "threshold: 80%" > rules-v2.yaml
 
-aion commit policy.aion \
+aion commit --public policy.aion \
     --author 50001 \
     --key 50001 \
     --rules rules-v2.yaml \

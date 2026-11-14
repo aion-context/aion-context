@@ -28,7 +28,7 @@ aion registry rotate \
     --registry registry.json
 
 # 3. Successor signs the next commit using the new key.
-aion commit policy.aion \
+aion commit --public policy.aion \
     --author 50001 --key 50002 \
     --rules new-amendment.yaml \
     --message "First amendment under successor" \
@@ -71,7 +71,7 @@ aion registry pin --author 50001 --key 50002 \
 for week in 1 2 3 ... 13; do
     aion show "week-$week.aion" --registry registry.json rules \
         > "week-$week-rules.yaml"
-    aion init "new-week-$week.aion" \
+    aion init --public "new-week-$week.aion" \
         --author 50001 --key 50002 \
         --rules "week-$week-rules.yaml" \
         --force

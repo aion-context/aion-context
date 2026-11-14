@@ -64,6 +64,7 @@ blocks on a drop.
 |---------------------------------|---------------------------------------------------------------|
 | `src/parser.rs`                 | `AionParser::new(&[u8])` never panics on arbitrary bytes      |
 | `src/parser.rs`                 | Accessors on a successfully-constructed `AionParser` never panic |
+| `src/parser.rs`                 | GHSA-9c6x-g6hv-mpvr `AionParser::new` accepts an entry count only if `count × entry_size` fits in the file |
 | `src/crypto.rs`                 | `sign` → `verify` round-trip succeeds for any payload         |
 | `src/crypto.rs`                 | `verify` rejects a signature made by a different key          |
 | `src/crypto.rs`                 | `verify` rejects a tampered payload (single-bit flip)         |
@@ -180,6 +181,8 @@ blocks on a drop.
 | `src/dsse.rs`                   | RFC-0034 envelope registry verify accepts pinned signer        |
 | `src/dsse.rs`                   | RFC-0034 envelope registry verify rejects unregistered signer  |
 | `src/dsse.rs`                   | RFC-0034 envelope registry verify rejects revoked signer       |
+| `src/dsse.rs`                   | `wrap_version_attestation` → `verify_envelope` round-trip, payload fields preserved |
+| `src/dsse.rs`                   | `wrap_manifest` → `verify_envelope` round-trip, every entry preserved |
 | `src/hw_attestation.rs`         | RFC-0034 registry verify accepts freshly-bound key             |
 | `src/hw_attestation.rs`         | RFC-0034 registry verify rejects binding signed by wrong master |
 | `src/release.rs`                | RFC-0034 `verify_with_registry` accepts a pinned release       |
@@ -196,6 +199,26 @@ blocks on a drop.
 | `src/operations.rs`             | RFC-0038 the provider is called exactly once, on the committed entry's canonical message |
 | `src/operations.rs`             | RFC-0038 provider failure leaves the artifact byte-identical  |
 | `src/operations.rs`             | RFC-0038 arbitrary provider signature bytes ⇒ rejected, nothing written |
+| `src/operations.rs`             | GHSA-7625-44v8-v62f substituted rules payload (integrity hash recomputed) ⇒ `verify_file` rejects |
+| `src/format.rs`                 | RFC-0039 Padmé length: ≥ input, ≤ 12.5% overhead, idempotent, monotonic |
+| `src/format.rs`                 | RFC-0039 frame → unframe round-trip; unframe never panics on arbitrary bytes |
+| `src/format.rs`                 | RFC-0039 non-zero frame padding ⇒ unframe rejects |
+| `src/format.rs`                 | RFC-0039 rules commitment separates modes and detects any byte flip |
+| `src/signature_chain.rs`        | RFC-0039 v3 message and version hash bind `file_id` and rules mode |
+| `src/signature_chain.rs`        | RFC-0039 v3 version hash ≠ v2 version hash; v3 version vs attestation domain-separated |
+| `src/signature_chain.rs`        | RFC-0039 v3 signature verifies, and fails under another `file_id` |
+| `src/signature_chain.rs`        | RFC-0039 invalid mode byte or non-zero reserved byte ⇒ v3 message/hash rejects |
+| `src/operations.rs`             | RFC-0039 v3 public file: build → `verify_file` → `show_current_rules` round-trip |
+| `src/operations.rs`             | RFC-0039 any byte flip in a v3 rules section (either mode) ⇒ `verify_file` rejects |
+| `src/operations.rs`             | RFC-0039 v3 `init` + N `commit`s ⇒ valid chain, head readable, every entry Public |
+| `src/envelope.rs`               | RFC-0039 `Envelope::parse` never panics on arbitrary bytes, and anything it accepts re-serializes to the same bytes |
+| `src/envelope.rs`               | RFC-0039 encode → parse round-trip for any stanza set, in canonical order |
+| `src/envelope.rs`               | RFC-0039 any single-byte mutation of an envelope is rejected or still canonical |
+| `src/confidential.rs`           | RFC-0039 seal → open round-trip for 1–4 mixed X25519 / X-Wing recipients; every recipient reads the same rules |
+| `src/confidential.rs`           | RFC-0039 any byte flip in a single-recipient envelope ⇒ it fails to parse or to open |
+| `src/chain.rs`                  | RFC-0039 an archived section opens exactly against verified entries with the same commitment |
+| `src/chain.rs`                  | RFC-0039 mixed public / confidential chains verify key-free; each listed recipient reads the head, others get `NotARecipient`, no key gets `RecipientKeyRequired` |
+| `src/acceptance.rs`             | RFC-0039 Tier-3 model: `MemoryStore` decisions match a reference model over main and fork chains (replay, equivocation, idempotence) |
 
 ## Tier 3 (model / stateful — required once the audit chain is stable)
 

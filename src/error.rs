@@ -238,6 +238,84 @@ pub enum AionError {
         actual: [u8; 32],
     },
 
+    /// A file failed verification, so no verified chain was produced
+    /// (RFC-0039). `reason` is the same bounded code that the
+    /// `file_rejected` trace event carries.
+    #[error("File rejected by verification: {reason}")]
+    ChainRejected {
+        /// Bounded reason code, e.g. `signature_invalid`
+        reason: &'static str,
+    },
+
+    /// A verified file was not accepted because it does not extend the
+    /// version this receiver already accepted for its `file_id`
+    /// (RFC-0039 replay defense)
+    #[error("Version rejected: {reason}")]
+    VersionRejected {
+        /// Why the version was rejected
+        reason: crate::acceptance::VersionRejectReason,
+    },
+
+    /// A verified file was not accepted because it violates the
+    /// receiver's acceptance policy (RFC-0039). The reason is an open set
+    /// of bounded codes, unlike [`AionError::VersionRejected`]'s closed
+    /// enum, which callers branch on.
+    #[error("Rejected by acceptance policy: {reason}")]
+    PolicyRejected {
+        /// Bounded reason code, e.g. `head_not_confidential`
+        reason: &'static str,
+    },
+
+    /// A migrated file's link does not match its claimed source, is
+    /// malformed, or its migrating author is not allowed by the
+    /// [`crate::migration::MigrationPolicy`] (RFC-0040).
+    ///
+    /// The reasons are a closed set: `not_migrated`, `self_migration`,
+    /// `link_malformed`, `source_mismatch`, `policy_unmet`, and
+    /// `empty_author_set` (an [`crate::migration::AuthorSet`] cannot be
+    /// empty).
+    #[error("Migration rejected: {reason}")]
+    MigrationRejected {
+        /// Bounded reason code, e.g. `source_mismatch`
+        reason: &'static str,
+    },
+
+    /// The accepted-version store could not be read or updated, so the
+    /// acceptance failed closed (RFC-0039). Custom stores may add their
+    /// own bounded reason codes.
+    #[error("Accepted-version store unavailable: {reason}")]
+    StoreUnavailable {
+        /// Bounded reason code, e.g. `store_write_failed`
+        reason: &'static str,
+    },
+
+    /// The rules section is confidential and no recipient key was
+    /// supplied to open it (RFC-0039)
+    #[error("Rules are confidential: a recipient key is required to read them")]
+    RecipientKeyRequired,
+
+    /// None of the supplied identities is a recipient of this confidential
+    /// rules section (RFC-0039). Recipient identities are public in the
+    /// section, so this reveals nothing.
+    #[error("None of the supplied identities is a recipient of these rules")]
+    NotARecipient,
+
+    /// A stanza addressed to a supplied identity exists, but the rules
+    /// could not be opened (RFC-0039). Deliberately opaque about which step
+    /// failed: unwrap, key commitment, decryption, or framing.
+    #[error("Confidential rules could not be opened")]
+    RulesUnopenable,
+
+    /// Confidential rules were requested with no recipients, or a version
+    /// that should carry recipients has none (RFC-0039)
+    #[error("Confidential rules need at least one recipient")]
+    NoRecipients,
+
+    /// Confidential rules were requested for a format that has no
+    /// confidential mode; only format v3 does (RFC-0039)
+    #[error("Confidential rules need format v3")]
+    ConfidentialityUnsupported,
+
     /// Invalid private key
     #[error("Invalid private key: {reason}")]
     InvalidPrivateKey {
@@ -309,6 +387,13 @@ pub enum AionError {
     KeyStoreFailed {
         /// Description of storage failure
         reason: String,
+    },
+
+    /// No encryption identity is stored under this ID (RFC-0039)
+    #[error("Encryption identity {id} not found")]
+    IdentityNotFound {
+        /// The identity ID that was looked up
+        id: crate::types::EncryptionIdentityId,
     },
 
     /// Keyring operation error

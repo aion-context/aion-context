@@ -8,10 +8,351 @@ and the project follows [Semantic Versioning].
 [Keep a Changelog 1.1.0]: https://keepachangelog.com/en/1.1.0/
 [Semantic Versioning]: https://semver.org/spec/v2.0.0.html
 
-## [Unreleased]
+## [3.0.0] — 2026-10-23
+
+Major release. New files are format v4 (RFC-0040): each version's
+signature now covers its commit message and audit trail, which fixes
+GHSA-69cp-fwrw-82vh. Rules can be confidential (RFC-0039 Phase B and
+C1): encrypted to X25519 or X-Wing recipients, or to an external key
+service.
+
+**Upgrading from 2.x:**
+
+- **Upgrade readers before writers.** 3.0.0 reads, verifies and commits
+  format v2, v3 and v4 files. 2.x rejects v4 files with
+  `UnsupportedVersion`.
+- **Existing v2/v3 files still verify, but their commit messages and
+  audit trail are not authenticated** (GHSA-69cp-fwrw-82vh). `aion
+  verify`, `show` and `commit` print a note for them. `aion migrate
+  SOURCE DEST` writes a v4 file that continues one; keep the old file
+  as the record of its history. Receivers can require v4 with `aion
+  accept --min-format 4` or `AcceptPolicy::min_format`.
+- Code that matches on the enums or builds the report structs listed
+  under Breaking needs updating. Implementers of
+  `AcceptedVersionStore` get fail-closed defaults for the new migration
+  methods.
+
+### Breaking
+
+Each item below is deliberate (RFC-0040).
+
+- **New files are format v4.** `init_file` and `aion init` write v4,
+  which 2.x readers reject with `UnsupportedVersion`. 3.x reads and
+  verifies v2, v3 and v4, and `commit_version` keeps a file's format.
+- **Enum additions** (all documented as closed):
+  - `FormatVersion::V4`;
+  - `ActionCode::MigratedFrom` (5), so `ActionCode::from_u16(5)` now
+    succeeds and 6 is the first unknown code;
+  - `VersionRejectReason::MigrationConflict`, with reason code
+    `migration_conflict`;
+  - `AionError::MigrationRejected` (`AionError` is `#[non_exhaustive]`).
+- **`RulesMode::of(&entry)` is now `RulesMode::of(&entry, format)`**, and
+  `RulesMode::from_reserved` takes the format too. A v2 format is an
+  error, since v2 has no rules mode.
+- **Report structs.** `VerificationReport`, `FileInfo`,
+  `ExportFileInfo` and `VerificationSummary` gain
+  `metadata_signed: bool` and are now `#[non_exhaustive]`. Use
+  `VerificationReport::new` or the functions that return them. The
+  field is `#[serde(default)]`, so 2.x JSON still deserializes (as
+  unsigned).
+- **Exports and reports.** CSV exports gain a trailing
+  `metadata_signed` column. Text and Markdown compliance reports escape
+  control characters in messages and warn before the history of a v2
+  or v3 file.
+- **`show_version_history` refuses v4 files.** It cannot verify, and v4
+  messages are shown only from a verified chain: use
+  `chain::verify_file_chain` and `chain::verified_history`.
+  `show_file_info` and report generation verify a v4 file against the
+  registry.
+- **`AcceptedVersionStore`** gains `check_and_advance_migration` and
+  `clear_migration`. Their defaults fail closed with
+  `migration_unsupported`, so a custom store compiles unchanged but
+  must override both to accept migrations.
+- **`FileStore` state file.** It is now saved as
+  `{"records": …, "migrations": …}`. 3.x still reads the flat 2.x
+  layout, but once 3.x writes the file a 2.x reader reports
+  `store_corrupt`, failing closed. Non-canonical `file_id` keys (`042`,
+  `+42`) are now rejected as `store_corrupt`.
+- **`init_file` refuses an existing path even when racing**: it now
+  creates the file exclusively and never follows a symlink.
+
+### Security
+
+- **GHSA-69cp-fwrw-82vh: commit messages and the audit trail were not
+  signed.** In formats v2 and v3 a version's signature covers its message
+  offset and length but not the message bytes, and the audit trail is
+  linked only by unkeyed hashes. Anyone holding a file could rewrite an
+  approval note or an audit entry's author, recompute the hashes, and the
+  file still verified. No in-place fix is possible for existing files.
+  **Format v4 (RFC-0040)** signs both:
+  - each version's signature covers a commitment to its message and its
+    own audit entry, and the audit entries chain under a v4 hash, so
+    each signature covers the whole history before it;
+  - the string table, header copies and section layout are checked to
+    the byte, so no byte of a v4 file is unchecked;
+  - messages are shown only from a verified chain.
+
+  New files are v4. Existing v2/v3 files still verify, but their
+  messages and audit trail are unauthenticated: `VerifiedChain::
+  metadata_signed`, `FileInfo::metadata_signed`, exports and compliance
+  reports say so, and `aion migrate` writes a v4 file that continues
+  them. `aion verify`, `aion show` and `aion commit` print a note on
+  v2/v3 files but still pass them. `AcceptPolicy::min_format(
+  FormatVersion::V4)` (CLI `aion accept --min-format 4`) refuses
+  unsigned metadata; it is opt-in.
 
 ### Added
 
+- **RFC-0040: format v4, signed version metadata.** `FormatVersion::V4`,
+  the v4 signed message, version hash, attestation and audit-entry
+  hash, `format::metadata_commitment`, `VerifiedEntry::message`,
+  `chain::verified_history`, and the DSSE payload type
+  `application/vnd.aion.version-attestation.v4+json`
+  (`dsse::wrap_version_attestation_v4`), which binds `file_id`, the
+  format, the rules mode and the metadata commitment.
+- **RFC-0040 / RFC-0039 Phase C2: migration.** `aion migrate SOURCE
+  DEST`, `operations::migrate_file`, the `migration` module
+  (`MigrationLink`, `MigrationPolicy`, `verify_migration`), and
+  `acceptance::accept_migration` with first-verified-claim-wins
+  migration records and `AcceptedVersionStore::clear_migration`.
+  `audit::ActionCode::MigratedFrom` (5).
+
+- **RFC-0039 Phase B1: confidential envelope codec** (`envelope`
+  module). `Envelope::parse` reads the confidential rules envelope
+  zero-copy and accepts only its canonical encoding:
+  - the `AIONENV1` magic and content suite `0x01`;
+  - 1–64 stanzas, each body at most 4096 bytes, at most 160 KiB in
+    total;
+  - X25519 (`0x01`, 112 bytes) and X-Wing (`0x03`, 2,384 bytes)
+    stanzas at their exact lengths, and strict external-wrapper
+    (`0x02`) fields;
+  - stanzas strictly ascending by `kind ‖ body`, with no two for one
+    recipient identity;
+  - a ciphertext of at least 24 bytes and no trailing bytes.
+
+  `Envelope::to_bytes` re-serializes, and returns exactly the parsed
+  bytes. Unknown stanza kinds parse as `StanzaRecipient::Unknown`. No
+  cryptography yet: sealing and opening arrive in B2 and B3.
+- Fuzz target `fuzz_confidential_envelope`, with seeds for every
+  stanza kind in `fuzz/seeds/fuzz_confidential_envelope/`.
+- **RFC-0039 Phase B2: key schedule and recipient stanzas**
+  (crate-internal; B3 adds the public API).
+  - The content key schedule: a fresh DEK per version and attempt,
+    `K_enc` via HKDF-SHA256 over `ctx = file_id ‖ author_id ‖ version`,
+    ChaCha20-Poly1305 content sealing, and the BLAKE3 DEK commitment.
+  - HPKE base-mode DEK wrapping for X25519 (kind `0x01`) and X-Wing
+    (kind `0x03`) recipients, bound to `ctx` and the DEK commitment.
+    Encryption identities are 32-byte seeds, one per KEM, with the
+    public key cached.
+  - `hpke`'s RNG cannot fail, so encapsulation randomness is drawn
+    first through the fallible OS RNG path. An OS RNG failure is an
+    error, never a panic.
+  - Tests: the RFC 9180 X25519 vector and the HPKE-PQ X-Wing vector
+    shipped with `hpke`; golden stanza and content bytes; moved
+    sections, wrong recipients, mismatched DEKs, and corrupted `enc`
+    all fail to open; Hegel round-trip and tamper properties.
+- RFC 5869 HKDF-SHA256 known-answer test for `crypto::derive_key`.
+- **RFC-0039 Phase B3: confidential rules in the library.**
+  - Writers: `RulesProtection::Confidential { recipients }` seals a
+    format-v3 version to `Recipient::X25519` / `Recipient::XWing` keys.
+    Empty lists are refused with `AionError::NoRecipients` and
+    format-v2 files with `AionError::ConfidentialityUnsupported`;
+    repeated recipients are written once;
+    framed rules over `format::MAX_CONFIDENTIAL_RULES_LEN` (16 MiB) are
+    refused.
+  - Readers: `RecipientKeys::new` / `with` / `From<EncryptionIdentity>`
+    hold `confidential::EncryptionIdentity` values (`generate`,
+    `from_seed`, `recipient`). `open_current_rules` and
+    `open_rules_section` open confidential sections; failures are
+    `RecipientKeyRequired`, `NotARecipient`, or the deliberately opaque
+    `RulesUnopenable` (new variants), and are logged as
+    `confidential_rules_not_opened` with a bounded reason.
+  - Selective disclosure: `chain::disclose_version_key` returns one
+    version's `confidential::VersionKey`, and
+    `chain::open_rules_section_with_key` opens that version only.
+  - `VerifiedChain::head_recipients` lists the head's recipients for
+    re-sealing the next version.
+  - `verify_file` now also checks a confidential head's envelope
+    structure and size, still without any key.
+- **RFC-0039 Phase C1: external key-service (KMS) recipients.**
+  - `confidential::DekWrapper` / `DekUnwrapper` (`Send + Sync`) and
+    `ExternalStanza`: a KMS or HSM wraps a version's DEK into stanza kind
+    `0x02`, bound to `"AION_V3_DEK_WRAP_V1\0" ‖ ctx ‖ dek_commitment` as
+    its encryption context.
+  - Writers: `Recipient::External(Arc<dyn DekWrapper>)` /
+    `Recipient::external(..)`; a repeated handle is written once, while two
+    *different* handles reporting the same `(provider, key)` refuse to
+    seal; out-of-range provider output (including a stanza over 4096
+    bytes) refuses to seal before encoding, and nothing is written.
+  - Readers: unwrappers implement `accepts` (exact match) and
+    `unwrap_dek`; a provider failure or a commitment mismatch is logged
+    as `external_unwrap_failed` with a bounded reason.
+  - Readers: `RecipientKeys::with_unwrapper(..)`. The unwrapped DEK is
+    always checked against the key commitment, so a lying or buggy
+    provider gets `RulesUnopenable`, never different rules.
+  - `Recipient::kem()` and `Recipient::public_key()` now return `Option`
+    (`None` for external recipients). Library only: the CLI takes no
+    `kms:` recipients yet.
+- **RFC-0039 Phase B4: confidential rules from the CLI and keystore.**
+  - `aion key generate --id N --encryption [--kem xwing|x25519]`
+    creates an encryption identity (X-Wing by default), stored as its
+    KEM kind plus a 32-byte seed in a namespace separate from signing
+    keys. `aion key recipient N [-o FILE]` prints its recipient string;
+    `aion key delete N --encryption` removes it.
+  - `aion init` and `aion commit` take `--recipient` (repeatable; a
+    recipient file or an `aion-recipient:<kem>:<hex>` string) as the
+    alternative to `--public`. `aion commit --keep-recipients`
+    re-seals to the current version's recipients, read from the
+    verified file and printed first. Mixing X-Wing with non-post-quantum
+    recipients prints a note.
+  - `aion show … --identity N rules` opens confidential rules.
+  - Library: `KeyStore::{store,load,has,delete}_encryption_identity`,
+    keyed by the new `types::EncryptionIdentityId` (a namespace separate
+    from `AuthorId`). Storing refuses to overwrite an existing identity;
+    a missing one is `AionError::IdentityNotFound`. `Recipient` gains
+    `Display` / `FromStr` for the canonical text form (lowercase hex only;
+    every parse failure is `InvalidPublicKey`); `EncryptionKem` gains
+    `as_str`, `Display`, `FromStr`.
+  - `aion key delete --encryption` asks for confirmation unless `--force`
+    is given, like signing keys. `aion key list`, `export` and `import`
+    do not cover encryption identities yet.
+  - Keystore files (signing keys and identities) are now created with
+    mode 0600 from the start instead of being restricted after writing.
+
+### Changed
+
+- New dependency `hpke = "=0.14.1"` (`alloc`, `x25519`, `mlkem`,
+  `chacha`, `hkdfsha2`; no `getrandom`). It brings `ml-kem` 0.3,
+  `x-wing` 0.1, `sha3` 0.12, `shake`, `turboshake` and `x25519-dalek`
+  3.0. `hkdf` 0.12 → 0.13 and `sha2` 0.10 → 0.11, so the crate and
+  `hpke` share one HKDF and one SHA-256. Key-derivation output is
+  unchanged (RFC 5869 and the existing vectors pass).
+
+## [2.0.0] — 2026-10-23
+
+Major release. New files are format v3 (RFC-0039 Phase A). Every
+version's signature covers the exact stored rules bytes, the file ID,
+and the rules mode, and anyone can check that without a key. Readers
+can now reject replayed and forked versions with `accept_file` and
+`aion accept`.
+
+**Upgrading from 1.x:**
+
+- **Upgrade readers before writers.** 2.0.0 reads, verifies, and
+  commits format-v2 files. 1.0.x rejects format-v3 files with
+  `UnsupportedVersion`.
+- 2.0.0 includes the fixes for GHSA-7625-44v8-v62f (1.0.1) and
+  GHSA-9c6x-g6hv-mpvr (1.0.2).
+- Add `protection: RulesProtection::Public` to `InitOptions`,
+  `CommitOptions`, and `ExternalCommitOptions`, and `--public` to
+  `aion init` and `aion commit`.
+- `SigningKey::generate`, `crypto::generate_nonce`,
+  `HybridSigningKey::generate`, and four `dsse` payload builders return
+  `Result`. Add `?`.
+- The minimum supported Rust version is 1.87.
+- Rules are not confidential in either format. Format-v3 public rules
+  are stored in the clear. Confidential rules are RFC-0039 Phase B.
+
+### Added
+
+- **RFC-0039 Phase A4: receiver-side acceptance with replay defense**
+  (`acceptance` module).
+  - `accept_file(path, &registry, &AcceptPolicy, &dyn
+    AcceptedVersionStore)` verifies the chain, applies the policy, and
+    only then consults the store, which is mandatory.
+  - The store keys records by `file_id`. It advances only along the
+    chain it already accepted, and rejects rollbacks
+    (`version_replay`), forks or equivocation
+    (`version_equivocation`), and a different genesis
+    (`file_id_conflict`) as `AionError::VersionRejected`. Re-accepting
+    the same head is idempotent.
+  - The decision table is the public pure function `decide`, so custom
+    stores apply it inside their own compare-and-swap.
+  - `AcceptPolicy` sets a minimum format and a required confidentiality
+    scope, rejecting as `AionError::PolicyRejected`.
+  - `AcceptedVersionStore: Send + Sync`. Two stores ship with the crate:
+    - `MemoryStore`.
+    - `FileStore`. `FileStore::open` requires an existing file
+      (`store_missing` otherwise), and `FileStore::create` refuses to
+      overwrite one. Every write holds an exclusive `<state>.lock`
+      (`store_locked` for a concurrent writer). Writes go to an
+      exclusive temp file (mode 0600 on Unix), which is fsynced and
+      renamed into place before the directory is fsynced.
+
+    Store failures fail closed with `AionError::StoreUnavailable`.
+  - `VerifiedEntry::version_hash()` is new.
+  - New CLI command: `aion accept <FILE> --registry … --state …
+    [--init-state] [--pin GENESIS] [--min-format 3]
+    [--require-confidential head|all]`.
+    - `--pin` is a check that never persists anything.
+    - Exit codes: 0 accepted, 1 not accepted, 2 state missing, locked,
+      or unreadable.
+- **RFC-0039 Phase A3: verified chains** (`chain` module).
+  - `verify_file_chain(path, &registry)` and
+    `VerifiedChain::from_bytes(&bytes, &registry)` run exactly
+    `verify_file`'s checks. They return a `VerifiedChain` (not
+    `Clone`) that holds the verified entries, with modes decoded once,
+    and an owned copy of the verified head section. On any failure,
+    malformed structure included, they return
+    `AionError::ChainRejected { reason }` with the bounded
+    `file_rejected` reason (`structure_invalid` for parse failures).
+  - `VerifiedEntry` exposes the signed version, author, timestamp,
+    rules commitment, and mode. It can only be obtained from a
+    `VerifiedChain`; a `compile_fail` doctest pins this.
+  - `open_current_rules(&chain, &RecipientKeys)` reads the head's rules
+    from the verified bytes, never from the path. It and
+    `open_rules_section` return `zeroize::Zeroizing<Vec<u8>>`, so
+    plaintext rules are wiped on drop. `zeroize` is already part of the
+    public API through `crypto`.
+  - `open_rules_section(section, entry, &keys)` opens an archived
+    historical section after binding it to that entry's signed
+    commitment.
+  - `RecipientKeys::none()` is a placeholder until Phase B adds
+    identities.
+  - `aion show <FILE> rules` now verifies the whole chain against
+    `--registry` first and refuses to print rules from a file that
+    fails.
+- **RFC-0039 Phase A2a: reading and verifying format-v3 files.** The
+  parser accepts format 2 and 3 (`FileHeader::format`,
+  `FileHeader::context`). For v3 it reads a per-entry rules mode from
+  `reserved[0]` and still rejects any other non-zero reserved byte.
+  `verify_file`, `show_signatures`, and `show_current_rules` handle
+  both formats. For v3, verification is key-free:
+  - the chain is checked with v3 version hashes;
+  - signatures cover the v3 canonical message;
+  - the head's stored section must commit to its signed
+    `rules_hash` under its own mode;
+  - header flag bit 0 must mirror the head's mode;
+  - a public section must be a canonical frame.
+
+  `show_current_rules` returns a public v3 head's plaintext, and
+  returns the new `AionError::RecipientKeyRequired` for a confidential
+  one. New `FileContext` methods are the format-aware signing API:
+  `sign_version`, `verify_signature`, `verify_signatures`,
+  `verify_hash_chain`, `sign_attestation`, `verify_attestation`, and
+  `verify_multisig`, which takes RFC-0021 quorums with v3 attestations.
+  The v2 free functions in `signature_chain` and `multisig` are
+  unchanged and documented as format-v2 only. Readers accept format 2
+  and 3; `parser::FORMAT_VERSION` is now documented as the version
+  written by default. **Breaking:** `AionFile` gains a `format` field
+  and is now `#[non_exhaustive]`. Build files through `AionFile::builder()`. Committing to
+  a v3 file returns `UnsupportedVersion` until the v3 writer lands
+  (Phase A2b). Writers still produce v2.
+- **RFC-0039 Phase A1: format-v3 primitives.** No change to what is
+  written yet.
+  - A new `format` module with `FormatVersion`, `RulesMode`,
+    `rules_commitment` (a BLAKE3 commitment to the stored rules
+    section), Padmé `padme_len` / `frame_rules` / `unframe_rules`, and
+    `FileContext`. `FileContext` is constructor-only and is the single
+    public entry point for building v2 or v3 version messages, version
+    hashes, and attestation messages.
+  - The v3 message and hash bind `file_id`, the format version, and the
+    per-entry rules mode under new NUL-terminated domains, exported as
+    `signature_chain::{SIGNATURE_DOMAIN_V3, VERSION_HASH_DOMAIN_V3,
+    ATTESTATION_DOMAIN_V3}`. Golden-vector tests pin the byte layout.
+  - `VersionEntry::with_rules_mode`.
+  - The SHA-256 key-derivation exception is recorded in
+    `.claude/rules/crypto.md`.
 - **RFC-0036 Enforcement Receipt** (#151, #154) — the `enforcement_receipt`
   module attests that a runtime *applied* a policy, the claim the
   provenance chain (DSSE/SLSA/transparency-log) does not make. A receipt
@@ -43,20 +384,167 @@ and the project follows [Semantic Versioning].
   authorization passes.
 - **`AionError::SigningFailed`** — provider-safe failure propagation for
   external signing adapters.
+- **Fuzz target `fuzz_verify_chain`** for format-v3 verification. It
+  drives `VerifiedChain::from_bytes` and `format::unframe_rules`. Signed
+  v3 seeds in `fuzz/seeds/fuzz_verify_chain/` carry a fixed fuzz-only
+  key, so mutations reach the commitment, framing, and mode-byte checks.
 
 ### Changed
 
+- **BREAKING (RFC-0039 Phase A2b): new files are format v3.**
+  - `init_file` and `aion init` write format v3. Readers older than
+    Phase A2a, including every 1.0.x release, reject these files with
+    `UnsupportedVersion`.
+  - `commit_version` and `commit_version_with_signer` keep the file's
+    format. A v3 file gains v3 entries. A v2 file stays v2 with its
+    legacy encoding, and `aion commit` prints a note saying so.
+  - `CommitResult.rules_hash` and `InitResult.rules_hash` are the v3
+    rules commitment for v3 files.
+- **BREAKING (RFC-0039 Phase A2b): rules protection is always named.**
+  - `InitOptions`, `CommitOptions`, and `ExternalCommitOptions` have a
+    new required `protection: RulesProtection` field with no default.
+  - `RulesProtection::Public` stores the rules in the clear, framed and
+    Padmé-padded, and signs a commitment to the stored bytes.
+    `RulesProtection` is `#[non_exhaustive]`; Phase B adds
+    `Confidential`.
+  - `aion init` and `aion commit` require `--public`. `--no-encryption`
+    is a hidden, deprecated alias that prints a note and will be
+    removed in 3.0.
+  - **Migration:** add `protection: RulesProtection::Public` to option
+    literals, and `--public` to `aion init` / `aion commit` invocations.
+- The commit path is split into small format-generic steps;
+  `commit_version_with_signer_inner` goes from 90 to 58 lines.
+- An external `VersionSigner`'s returned signature is now checked
+  against its own public key on every path, including
+  `commit_version_force_unregistered`, which skips the registry check.
+- **BREAKING (RFC-0037, #165)** — `SigningKey::generate`,
+  `crypto::generate_nonce`, and `HybridSigningKey::generate` return
+  `Result`, propagating `AionError::EntropyUnavailable` instead of
+  panicking when the OS RNG fails. The Ed25519 stack moved to
+  `ed25519-dalek` 3.0 and `rand` 0.10. Key and signature byte
+  encodings are unchanged.
+- **BREAKING** — `dsse::version_attestation_payload`,
+  `dsse::manifest_payload`, `dsse::wrap_version_attestation`, and
+  `dsse::wrap_manifest` return `Result` instead of aborting the process
+  if JSON serialization fails. Payload bytes are unchanged, so existing
+  envelopes still verify. Migration: add `?` (or handle the `Err`) at
+  each call site; the error is `AionError::InvalidFormat`.
 - `commit_version` and the software-keystore CLI path now use the same internal
   signer abstraction as hardware-backed commits. Existing public call sites
   remain source-compatible.
 
 ### Fixed
 
+- **Stale documentation examples.** The README and developer-guide
+  examples called `SigningKey::generate()` without `?`; the call returns
+  `Result` since #165. The user guide's `aion commit` synopsis now lists
+  the required `--registry`.
+- **Declared `rust-version` corrected from 1.70 to 1.85.** The 1.70
+  declaration has been wrong since the RFC-0037 dependency upgrade
+  (#165): `ed25519-dalek` 3.0, `rand` 0.10, `chacha20poly1305` 0.11, and
+  `getrandom` 0.4 (edition 2024) all require 1.85, and 1.84 cannot even
+  parse the dependency graph. A new `msrv (1.85)` CI job builds the
+  library and CLI on 1.85.0. Raising the declaration let clippy apply
+  lints it had suppressed for 1.70, so a few setters became `const fn`
+  and `map_err` logging closures became `inspect_err`.
 - **Constant-time public-key comparison** — `hw_attestation::verify_binding`,
   `manifest::verify_manifest_signature`, and
   `signature_chain::{verify_signature, verify_attestation}` compared pinned
   public keys with `==` / `!=`, against the hard rule in
   `.claude/rules/crypto.md`. All four now use `subtle::ConstantTimeEq`.
+- **Documentation overstated rules confidentiality** — the rules section
+  is ChaCha20-Poly1305 ciphertext under a key derived only from public
+  header fields (`file_id`, version), so anyone holding an `.aion` file
+  can read its rules. The README, book, `SECURITY.md`, the audit guide,
+  and an RFC-0003 errata now say so plainly. `aion init --no-encryption`
+  never changed behavior; its help text and the init banner now say so.
+  Restoring real confidentiality is a format change and needs an RFC.
+- **No process aborts in library code** — rules encryption propagated
+  an OS-RNG failure as `std::process::abort()` rather than through its
+  `Result`. The four abort sites in non-test library code are gone:
+  `operations::encrypt_rules` uses `?`, the manifest capacity hint
+  saturates, and the DSSE payload builders return `Result`.
+- **`cargo audit` ignore list was never applied** — the config lived at
+  the repo root as `audit.toml`, where cargo-audit does not look. Moved
+  to `.cargo/audit.toml` and synced with `deny.toml`.
+
+### Security
+
+- **GHSA-9c6x-g6hv-mpvr: unbounded header entry counts let a crafted
+  `.aion` file abort the verifying process.** `AionParser::new` did not
+  check `version_chain_count`, `signatures_count`, or
+  `audit_trail_count` against the file length, and readers sized
+  buffers from them. A file of a few hundred bytes, with no key, made
+  `verify_file`, `VerifiedChain::from_bytes`, `aion verify`, and the
+  history readers abort on a huge allocation or panic with `capacity
+  overflow`. `AionParser::new` now rejects such headers with
+  `InvalidFormat` and a `parser_rejected` / `section_out_of_bounds`
+  trace event. Found by the new `fuzz_verify_chain` target. Also fixed
+  in 1.0.2.
+- **GHSA-7625-44v8-v62f: `verify_file` did not bind the rules payload to
+  the signed `rules_hash`.** The rules key is public and the whole-file
+  integrity hash is unkeyed. So a substituted payload, with the
+  integrity hash recomputed, passed `verify_file`, `aion verify`, and
+  `aion archive verify`. `verify_file` now decrypts the latest payload
+  and compares it with the latest signed `rules_hash`. A mismatch fails
+  `hash_chain_valid` and `is_valid`. Reads through `show_current_rules`
+  were already fail-closed. Also fixed in 1.0.1.
+- Bumped `rustls` 0.23.39 → 0.23.46, `rustls-webpki` 0.103.13 →
+  0.103.16, and `webpki-roots` 1.0.7 → 1.0.10 for RUSTSEC-2026-0285,
+  -0346, -0348, -0349, -0381, and -0382. These are only reachable
+  through the optional `llm-agent-example` feature's `ureq` client.
+- Bumped `ctutils` 0.4.2 → 0.4.5 for RUSTSEC-2026-0385 (non-constant-time
+  mask generation and `u128` comparisons). It is reached through
+  `chacha20poly1305` → `poly1305` → `universal-hash`, which is the format-v2
+  rules-section tag check. The 1.0.x line does not depend on `ctutils`.
+  Every fixed `ctutils` release requires Rust 1.87, so the minimum
+  supported Rust version rises from 1.85 to 1.87, and the CI job is now
+  `msrv (1.87)`.
+- Replaced the yanked `chacha20` 0.10.1 with 0.10.2, and bumped `blake3`
+  to 1.8.7, which drops the `arrayref` dependency after its crates.io
+  owner account was compromised. The locked `arrayref` 0.3.9 predates
+  the compromise.
+- `unsafe-libyaml` (RUSTSEC-2024-0449, via the deprecated `serde_yaml`)
+  is ignored with a written reason pending migration to a safe-Rust
+  YAML crate.
+
+## [1.0.2] — 2026-10-23
+
+Security patch release. No API, format, or CLI changes.
+
+### Security
+
+- **GHSA-9c6x-g6hv-mpvr: unbounded header entry counts let a crafted
+  `.aion` file abort the verifying process.** `AionParser::new` did not
+  check `version_chain_count`, `signatures_count`, or
+  `audit_trail_count` against the file length, and readers sized
+  buffers from them. A file of a few hundred bytes, with no key, made
+  `verify_file`, `aion verify`, `aion archive verify`, and the history
+  readers abort on a huge allocation or panic with `capacity overflow`.
+  `AionParser::new` now rejects such headers with `InvalidFormat` and a
+  `parser_rejected` / `section_out_of_bounds` trace event. The bug
+  does not affect signature or hash-chain verification: it crashes the
+  reader rather than making it accept a forged file.
+
+## [1.0.1] — 2026-10-23
+
+Security patch release. No API, format, or CLI changes.
+
+### Security
+
+- **GHSA-7625-44v8-v62f: `verify_file` did not bind the rules payload to
+  the signed `rules_hash`.** The rules-section key is derived from public
+  header fields and the whole-file integrity hash is unkeyed. So a
+  substituted payload, with the integrity hash recomputed, passed
+  `verify_file`, `aion verify`, and `aion archive verify`.
+  `verify_file` now decrypts the latest payload and compares it with the
+  latest signed `rules_hash`. A mismatch fails `hash_chain_valid` and
+  `is_valid`. Reads through `show_current_rules` were already
+  fail-closed.
+
+  Note: the rules section is not confidential. Anyone holding an
+  `.aion` file can read its rules. This is documented behavior, not
+  part of this advisory.
 
 ## [1.0.0] — 2026-04-25
 

@@ -16,6 +16,7 @@
 //! ```rust,no_run
 //! use aion_context::crypto::SigningKey;
 //! use aion_context::key_registry::KeyRegistry;
+//! use aion_context::format::RulesProtection;
 //! use aion_context::operations::{init_file, verify_file, InitOptions};
 //! use aion_context::types::AuthorId;
 //! use std::path::Path;
@@ -28,7 +29,7 @@
 //!     init_file(
 //!         Path::new("/tmp/policy.aion"),
 //!         b"allow: read\nallow: write",
-//!         &InitOptions { author_id: author, signing_key: &key, message: "v1", timestamp: None },
+//!         &InitOptions { author_id: author, signing_key: &key, message: "v1", timestamp: None, protection: RulesProtection::Public },
 //!     )?;
 //!     let report = verify_file(Path::new("/tmp/policy.aion"), &registry)?;
 //!     assert!(report.is_valid);
@@ -65,21 +66,28 @@
 #![warn(missing_docs, unsafe_code, unused_must_use)]
 
 // Module structure (to be implemented in future issues)
+pub mod acceptance; // RFC-0039: Receiver-side acceptance
 pub mod aibom; // RFC-0029: AI Bill of Materials
 pub mod audit; // Issue #7: Audit trail
+pub mod chain; // RFC-0039: Verified chains
 pub mod compliance; // Issue #33: Compliance reporting
+pub mod confidential; // RFC-0039: Confidential key schedule and stanzas
 pub mod conflict; // Issue #30: Conflict resolution
 pub mod crypto; // Issue #4: Cryptography
 pub mod dsse; // RFC-0023: DSSE envelope support
 pub mod enforcement_receipt; // RFC-0036: Enforcement receipt
+pub mod envelope; // RFC-0039: Confidential envelope codec
 pub mod error; // Issue #3: Error handling
 pub mod export; // Issue #31: Export/Import formats
+pub mod format; // RFC-0039: Format-v3 primitives
 pub mod hw_attestation; // RFC-0026: Hardware attestation binding
 pub mod hybrid_sig; // RFC-0027: Post-quantum hybrid signatures
 pub mod jcs; // RFC-0031: RFC 8785 JSON canonicalization
 pub mod key_registry; // RFC-0028: Key rotation and revocation
 pub mod keystore; // Issue #12: Key generation and storage
 pub mod manifest; // RFC-0022: External artifact manifest
+pub(crate) mod metadata; // RFC-0040: Signed version metadata
+pub mod migration; // RFC-0040: Migration links
 pub mod multisig; // Issue #29: Multi-signature support
 pub mod oci; // RFC-0030: OCI artifact packaging
 pub mod operations; // Issue #15: Version commit operation

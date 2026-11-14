@@ -38,8 +38,14 @@ layout requires:
 4. a major-version bump of the crate.
 
 Older readers reject newer-format files with a deterministic
-`Error::UnsupportedFormat(version)`. We will **never** silently
+`AionError::UnsupportedVersion`. We will **never** silently
 misparse an older format.
+
+| Crate | Writes | Reads and verifies |
+|---|---|---|
+| 1.0.x | format 2 | format 2 |
+| 2.x | format 3 (`init`); `commit` keeps the file's format | formats 2 and 3 |
+| 3.x | format 4 (`init`, `migrate`); `commit` keeps the file's format | formats 2, 3 and 4 |
 
 ### 3. Cryptographic primitives
 
@@ -47,8 +53,13 @@ The pinned primitives are:
 
 - **Ed25519** (via `ed25519-dalek`) — author signatures
 - **BLAKE3** (via `blake3`) — file hashing, hash-chain links, integrity hash
-- **ChaCha20-Poly1305** (via `chacha20poly1305`) — rules-section encryption
+- **ChaCha20-Poly1305** (via `chacha20poly1305`) — format-v2 rules-section encoding.
+  This is not a confidentiality boundary: see
+  [crypto.md](crypto.md#public-rules-are-not-confidential).
 - **HKDF-SHA-256** (via `hkdf` / `sha2`) — key derivation
+- **HPKE** (RFC 9180 base mode, via `hpke`) with **DHKEM(X25519)** and
+  **X-Wing** (ML-KEM-768 + X25519, via `ml-kem` / `x-wing`) — RFC-0039
+  confidential-rules recipient stanzas
 - **ML-DSA-65** (via `pqcrypto-mldsa`) — RFC-0027 hybrid PQC signatures
 
 Replacing any of these is a major version bump and requires an RFC.

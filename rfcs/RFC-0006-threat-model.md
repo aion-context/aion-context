@@ -269,6 +269,12 @@ pub struct KeyManager {
 - Secure temporary file handling
 - Minimal metadata exposure
 
+> **Errata (2026-10).** I1 is not mitigated by the implementation.
+> The rules key derives from public header fields only, so there is
+> no key to compromise: any holder of the file can read the rules.
+> Treat I1 as an accepted, documented limitation until an RFC adds a
+> key held outside the file. See the RFC-0003 errata.
+
 #### Denial of Service (Availability)
 
 **Threat:** System becomes unavailable for legitimate use

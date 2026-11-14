@@ -242,6 +242,7 @@ fn init_demo(path: &Path, key: &SigningKey, author: AuthorId) -> KeyRegistry {
             signing_key: key,
             message: "genesis: lenient policy",
             timestamp: None,
+            protection: aion_context::format::RulesProtection::Public,
         },
     )
     .unwrap();
@@ -261,6 +262,7 @@ fn commit_tightened(path: &Path, key: &SigningKey, author: AuthorId, registry: &
             signing_key: key,
             message: "tightened: incident response posture",
             timestamp: None,
+            protection: aion_context::format::RulesProtection::Public,
         },
         registry,
     )

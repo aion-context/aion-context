@@ -56,6 +56,14 @@ policy payload in a versioned signature chain with integrity checks.
 The technical details matter, but the outcome is simple: policy changes
 become provable instead of assumed.
 
+> **Tamper-evident always; secret only when you ask.** Public rules,
+> and every format-v2 file, can be read by anyone who holds the file.
+> Format-v3 rules sealed to recipients (`aion init --recipient …`, or
+> `RulesProtection::Confidential` in the library) are readable only by
+> the X25519 or X-Wing recipients you name, and still verify without
+> any key. See [crypto](book/src/architecture/crypto.md#confidential-rules)
+> and [the CLI guide](book/src/cli/lifecycle.md#confidential-rules).
+
 It is *not* a replacement for sigstore, in-toto, or SLSA. It is the
 policy/document-shaped sibling those systems leave on the table — see
 [the comparison chapter] for the contrast.
@@ -67,12 +75,13 @@ policy/document-shaped sibling those systems leave on the table — see
 ```rust
 use aion_context::crypto::SigningKey;
 use aion_context::key_registry::KeyRegistry;
+use aion_context::format::RulesProtection;
 use aion_context::operations::{init_file, verify_file, InitOptions};
 use aion_context::types::AuthorId;
 use std::path::Path;
 
 fn main() -> anyhow::Result<()> {
-    let key = SigningKey::generate();
+    let key = SigningKey::generate()?;
     let author = AuthorId::new(1);
     let mut registry = KeyRegistry::new();
     registry.register_author(author, key.verifying_key(), key.verifying_key(), 0)?;
@@ -80,7 +89,13 @@ fn main() -> anyhow::Result<()> {
     init_file(
         Path::new("/tmp/policy.aion"),
         b"allow: read\nallow: write",
-        &InitOptions { author_id: author, signing_key: &key, message: "v1", timestamp: None },
+        &InitOptions {
+            author_id: author,
+            signing_key: &key,
+            message: "v1",
+            timestamp: None,
+            protection: RulesProtection::Public,
+        },
     )?;
 
     let report = verify_file(Path::new("/tmp/policy.aion"), &registry)?;
@@ -118,7 +133,7 @@ aion --help
 |---|---|
 | **CLI** (`aion`) | `init` / `commit` / `verify` / `inspect` / `registry rotate \| revoke` / `release seal \| verify` / `archive verify` / `key generate` |
 | **Library** | `init_file` / `commit_version` / hardware-backed `commit_version_with_signer` / `verify_file` / `KeyRegistry` / `verify_multisig` (RFC-0021) / sealed releases (RFC-0032) / hardware attestation (RFC-0026) / hybrid PQC (RFC-0027) / transparency log (RFC-0025) |
-| **Format** | Zero-copy binary layout. One header, one chained signature history, one encrypted_rules section, one trailing integrity hash. The latest payload is always inline; historical payloads are addressed by their `rules_hash` for external archival. |
+| **Format** | Zero-copy binary layout. One header, one chained signature history, one rules section, one trailing integrity hash. Format v3 rules are public or confidential to named recipients (RFC-0039). The latest payload is always inline; historical payloads are addressed by their `rules_hash` for external archival. |
 | **Tracing** | `AION_LOG=info` produces structured per-event lines (`event=file_verified`, `event=signature_rejected reason=...`, etc.). `AION_LOG_FORMAT=json` for log-store ingest. |
 | **Examples** | `policy_loop`, `llm_policy_agent` (Claude as proposer + `.aion` as gate), `aegis_consortium` (5-party PQC quorum), `federation_hw_attest` (cross-domain TEE keys), `corpus_to_aion` (any git history → signed chain) |
 
@@ -141,7 +156,7 @@ transparency log (RFC-0025) is RFC 6962-compatible; OCI manifests
 let releases publish through container registries; JCS gives
 deterministic JSON for cross-implementation hashing.
 
-[![Rust](https://img.shields.io/badge/Rust-1.70%2B-DEA584?logo=rust&logoColor=white)](https://www.rust-lang.org/)
+[![Rust](https://img.shields.io/badge/Rust-1.87%2B-DEA584?logo=rust&logoColor=white)](https://www.rust-lang.org/)
 [![Crates.io](https://img.shields.io/crates/v/aion-context.svg?logo=rust&logoColor=white&color=DEA584)](https://crates.io/crates/aion-context)
 [![Sigstore](https://img.shields.io/badge/Sigstore-DSSE%20envelopes-3F2828?logo=sigstore&logoColor=white)](https://www.sigstore.dev/)
 [![SLSA v1.1](https://img.shields.io/badge/SLSA-v1.1-2F855A)](https://slsa.dev/)
@@ -188,9 +203,11 @@ Production-shaped examples that show aion-context wired into a real domain, end 
 
 ## Status
 
-**1.0.0** — public API, on-disk binary format, CLI exit-code
+**3.0.0** — public API, on-disk binary format, CLI exit-code
 contract, structured tracing event vocabulary, and bounded
-`reason` codes are now under semver. The full written stability
+`reason` codes are under semver. 3.0.0 writes format v4 and still
+reads formats v2 and v3; 2.x readers reject v4 files, so upgrade
+readers first. [CHANGELOG.md] has the migration notes. The full written stability
 promise lives at [`book/src/architecture/stability.md`].
 
 The crypto primitives (Ed25519, BLAKE3, ChaCha20-Poly1305,

@@ -204,7 +204,7 @@ impl ReleaseBuilder {
     }
 
     /// aion version number at seal time.
-    pub fn current_aion_version(&mut self, v: u64) -> &mut Self {
+    pub const fn current_aion_version(&mut self, v: u64) -> &mut Self {
         self.current_aion_version = v;
         self
     }
@@ -225,7 +225,7 @@ impl ReleaseBuilder {
     ) -> Result<SignedRelease> {
         let core = self.build_core()?;
         let manifest_signature = sign_manifest(&core.manifest, signer, signing_key);
-        let manifest_dsse = dsse::wrap_manifest(&core.manifest, signer, signing_key);
+        let manifest_dsse = dsse::wrap_manifest(&core.manifest, signer, signing_key)?;
         let aibom_dsse = crate::aibom::wrap_aibom_dsse(&core.aibom, signer, signing_key)?;
         let slsa_dsse = wrap_statement_dsse(&core.slsa_statement, signer, signing_key)?;
         let log_entries = append_release_log_entries(

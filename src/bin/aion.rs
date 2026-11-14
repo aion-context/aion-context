@@ -4,15 +4,17 @@
 //! Command-line interface for managing AION files with cryptographic verification.
 
 use aion_context::compliance::{generate_compliance_report, ComplianceFramework, ReportFormat};
+use aion_context::confidential::EncryptionKem;
 use aion_context::export::{export_file, ExportFormat};
+use aion_context::format::{Recipient, RulesProtection};
 use aion_context::keystore::KeyStore;
 use aion_context::operations::{
-    commit_version, commit_version_force_unregistered, init_file, show_current_rules,
-    show_file_info, show_signatures, show_version_history, verify_file, CommitOptions, InitOptions,
+    commit_version, commit_version_force_unregistered, init_file, show_file_info, show_signatures,
+    verify_file, CommitOptions, InitOptions,
 };
-use aion_context::types::AuthorId;
+use aion_context::types::{AuthorId, EncryptionIdentityId};
 use anyhow::{Context, Result};
-use clap::{Args, Parser, Subcommand};
+use clap::{ArgGroup, Args, Parser, Subcommand};
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -59,9 +61,140 @@ enum Commands {
 
     /// Bulk-verify a directory of `.aion` files (issue #48)
     Archive(ArchiveArgs),
+
+    /// Accept a verified file with replay defense (RFC-0039): refuses
+    /// older versions, forks, and foreign chains recorded in a state file
+    Accept(AcceptArgs),
+
+    /// Write a new format-v4 file that continues a verified file's head
+    /// (RFC-0040): its genesis carries a signed link to the source, whose
+    /// commit messages and audit trail it signs from then on
+    Migrate(MigrateArgs),
 }
 
 #[derive(Args, Debug)]
+#[command(group(
+    ArgGroup::new("protection")
+        .required(true)
+        .multiple(false)
+        .args(["public", "recipient", "keep_recipients"])
+))]
+struct MigrateArgs {
+    /// The file to migrate. It is verified first and never modified
+    #[arg(value_name = "SOURCE")]
+    source: PathBuf,
+
+    /// The new format-v4 file to write. Must not exist
+    #[arg(value_name = "DEST")]
+    dest: PathBuf,
+
+    /// Path to a JSON registry file (RFC-0034). The source must verify
+    /// against it, and it must pin `--author` with `--key`
+    #[arg(long, value_name = "REGISTRY_FILE")]
+    registry: PathBuf,
+
+    /// Author ID signing the new genesis (the migrating author)
+    #[arg(short, long, value_name = "AUTHOR_ID")]
+    author: u64,
+
+    /// Signing key ID from keystore
+    #[arg(short, long, value_name = "KEY_ID")]
+    key: String,
+
+    /// Commit message for the new genesis
+    #[arg(
+        short,
+        long,
+        value_name = "MESSAGE",
+        default_value = "Migrated to format v4"
+    )]
+    message: String,
+
+    /// Store the new genesis rules in the clear
+    #[arg(long)]
+    public: bool,
+
+    /// Encrypt the new genesis rules to this recipient: a recipient file or
+    /// an `aion-recipient:…` string. Repeatable
+    #[arg(long, value_name = "RECIPIENT")]
+    recipient: Vec<String>,
+
+    /// Encrypt to the same recipients as the source's head version
+    #[arg(long)]
+    keep_recipients: bool,
+
+    /// Encryption identity ID from the keystore, to open a confidential
+    /// source head. Repeatable
+    #[arg(long, value_name = "IDENTITY_ID")]
+    identity: Vec<EncryptionIdentityId>,
+}
+
+#[derive(Args, Debug)]
+struct AcceptArgs {
+    /// Path to the AION file
+    #[arg(value_name = "FILE")]
+    path: PathBuf,
+
+    /// Path to a JSON registry file (RFC-0034)
+    #[arg(long, value_name = "REGISTRY_FILE")]
+    registry: PathBuf,
+
+    /// Accepted-version state file. Must already exist unless
+    /// `--init-state` is given; writers take an exclusive lock on it.
+    #[arg(long, value_name = "STATE_FILE")]
+    state: PathBuf,
+
+    /// Create the state file if it does not exist yet (first run only)
+    #[arg(long)]
+    init_state: bool,
+
+    /// Require this file's genesis version hash (64 hex characters). A
+    /// check only: nothing is persisted on a mismatch
+    #[arg(long, value_name = "GENESIS_HASH")]
+    pin: Option<String>,
+
+    /// Reject files whose format is older than this version (2, 3 or 4). Use 4
+    /// to require signed commit messages and audit trails (RFC-0040)
+    #[arg(long, value_name = "VERSION")]
+    min_format: Option<u16>,
+
+    /// Require confidential rules for the head, or for every version
+    #[arg(long, value_enum, value_name = "SCOPE")]
+    require_confidential: Option<ConfidentialArg>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum KemArg {
+    /// X-Wing (ML-KEM-768 + X25519), post-quantum hybrid
+    Xwing,
+    /// X25519 alone; not post-quantum
+    X25519,
+}
+
+impl From<KemArg> for EncryptionKem {
+    fn from(kem: KemArg) -> Self {
+        match kem {
+            KemArg::Xwing => Self::XWing,
+            KemArg::X25519 => Self::X25519,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum ConfidentialArg {
+    /// The latest version must be confidential
+    Head,
+    /// Every version must be confidential
+    All,
+}
+
+#[derive(Args, Debug)]
+#[command(group(
+    ArgGroup::new("protection")
+        .required(true)
+        .multiple(false)
+        .args(["public", "no_encryption", "recipient"])
+))]
 struct InitArgs {
     /// Path to the AION file to create
     #[arg(value_name = "FILE")]
@@ -87,12 +220,30 @@ struct InitArgs {
     #[arg(long)]
     force: bool,
 
-    /// Disable encryption (not recommended for production)
+    /// Store the rules in the clear (RFC-0039). Anyone holding the file
+    /// can read them; the signature makes them tamper-evident. Required:
+    /// the rules protection is always named explicitly.
     #[arg(long)]
+    public: bool,
+
+    /// Deprecated alias for `--public`; removed in 3.0.
+    #[arg(long, hide = true)]
     no_encryption: bool,
+
+    /// Encrypt the rules to this recipient (RFC-0039): a recipient file
+    /// written by `aion key recipient`, or an `aion-recipient:…` string.
+    /// Repeat for several recipients. Verification stays key-free.
+    #[arg(long, value_name = "RECIPIENT")]
+    recipient: Vec<String>,
 }
 
 #[derive(Args, Debug)]
+#[command(group(
+    ArgGroup::new("protection")
+        .required(true)
+        .multiple(false)
+        .args(["public", "recipient", "keep_recipients"])
+))]
 struct CommitArgs {
     /// Path to the AION file
     #[arg(value_name = "FILE")]
@@ -130,6 +281,23 @@ struct CommitArgs {
     /// `aion verify --registry` until the registry is updated.
     #[arg(long)]
     force_unregistered: bool,
+
+    /// Store the new version's rules in the clear (RFC-0039). Required:
+    /// the rules protection is always named explicitly. For a format-v2
+    /// file, the file keeps its v2 encoding.
+    #[arg(long)]
+    public: bool,
+
+    /// Encrypt the new version's rules to this recipient (RFC-0039): a
+    /// recipient file or an `aion-recipient:…` string. Repeatable.
+    #[arg(long, value_name = "RECIPIENT")]
+    recipient: Vec<String>,
+
+    /// Encrypt to the same recipients as the current version, read from
+    /// the verified file. Fails if the current version is public or has
+    /// a recipient the file alone cannot re-seal to.
+    #[arg(long)]
+    keep_recipients: bool,
 }
 
 #[derive(Args, Debug)]
@@ -168,6 +336,11 @@ struct ShowArgs {
     #[arg(short, long, value_name = "FORMAT", default_value = "text")]
     format: OutputFormat,
 
+    /// Encryption identity ID from the keystore, to read confidential
+    /// rules (RFC-0039). Repeatable; each listed identity is tried.
+    #[arg(long, value_name = "IDENTITY_ID")]
+    identity: Vec<EncryptionIdentityId>,
+
     /// Path to a JSON registry file (RFC-0034). Required post-Phase-E
     /// by every subcommand that verifies signatures or summarises the
     /// file state (which internally runs verify).
@@ -198,7 +371,8 @@ struct KeyArgs {
 
 #[derive(Subcommand, Debug)]
 enum KeySubcommand {
-    /// Generate a new signing key pair
+    /// Generate a new signing key pair, or with `--encryption` an
+    /// encryption identity for reading confidential rules
     Generate {
         /// Key ID for storage
         #[arg(short, long, value_name = "KEY_ID")]
@@ -207,6 +381,28 @@ enum KeySubcommand {
         /// Description for the key
         #[arg(short, long, value_name = "DESCRIPTION")]
         description: Option<String>,
+
+        /// Generate an encryption identity (RFC-0039) instead of a signing
+        /// key. Its IDs are separate from signing-key IDs.
+        #[arg(long)]
+        encryption: bool,
+
+        /// KEM for `--encryption`. `xwing` is a post-quantum hybrid;
+        /// `x25519` is smaller but not post-quantum.
+        #[arg(long, value_enum, default_value_t = KemArg::Xwing, requires = "encryption")]
+        kem: KemArg,
+    },
+
+    /// Print an encryption identity's recipient string, for writers to
+    /// pass to `--recipient`
+    Recipient {
+        /// Encryption identity ID
+        #[arg(value_name = "IDENTITY_ID")]
+        id: EncryptionIdentityId,
+
+        /// Write the recipient to this file instead of stdout
+        #[arg(short, long, value_name = "FILE")]
+        output: Option<PathBuf>,
     },
 
     /// List all stored keys
@@ -243,6 +439,10 @@ enum KeySubcommand {
         /// Skip confirmation prompt
         #[arg(short, long)]
         force: bool,
+
+        /// Delete the encryption identity with this ID, not the signing key
+        #[arg(long)]
+        encryption: bool,
     },
 }
 
@@ -686,6 +886,8 @@ fn main() -> Result<ExitCode> {
         Commands::Registry(args) => cmd_registry(&args),
         Commands::Release(args) => cmd_release(&args),
         Commands::Archive(args) => cmd_archive(&args),
+        Commands::Accept(args) => cmd_accept(&args),
+        Commands::Migrate(args) => cmd_migrate(&args),
     }
 }
 
@@ -699,13 +901,15 @@ fn cmd_init(args: &InitArgs) -> Result<ExitCode> {
     }
     let rules = load_rules_content(args.rules.as_ref())?;
     println!("   Rules size: {} bytes", rules.len());
+    let protection = chosen_protection(&args.recipient)?;
 
-    let signing_key = load_signing_key_for_init(args)?;
+    let signing_key = load_signing_key_for(&args.key)?;
     let options = InitOptions {
         author_id: AuthorId::new(args.author),
         signing_key: &signing_key,
         message: &args.message,
         timestamp: None,
+        protection,
     };
     if args.force && args.path.exists() {
         std::fs::remove_file(&args.path)
@@ -720,28 +924,109 @@ fn cmd_init(args: &InitArgs) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// Advisory only: `commit_version` reports any read or parse error
+/// itself, so a file this cannot read is left for it to reject.
+fn note_legacy_format(path: &std::path::Path) {
+    let Ok(bytes) = std::fs::read(path) else {
+        return;
+    };
+    let Ok(parser) = aion_context::parser::AionParser::new(&bytes) else {
+        return;
+    };
+    match parser.header().version {
+        2 => eprintln!(
+            "note: {} is format v2; --public keeps its v2 encoding (obfuscated, not \
+             confidential), and its commit messages and audit trail are unsigned. \
+             `aion migrate` writes a format-v4 file that continues it.",
+            path.display()
+        ),
+        3 => eprintln!(
+            "note: {} is format v3; its commit messages and audit trail are unsigned. \
+             `aion migrate` writes a format-v4 file that continues it.",
+            path.display()
+        ),
+        _ => {}
+    }
+}
+
 fn print_init_banner(args: &InitArgs) {
     println!("🚀 Initializing AION file: {}", args.path.display());
     println!("   Author: {}", args.author);
     println!("   Message: {}", args.message);
-    println!(
-        "   Encryption: {}",
-        if args.no_encryption {
-            "disabled"
-        } else {
-            "enabled"
-        }
-    );
+    if args.no_encryption {
+        eprintln!("note: --no-encryption is deprecated and will be removed in 3.0; use --public");
+    }
 }
 
-fn load_signing_key_for_init(args: &InitArgs) -> Result<aion_context::crypto::SigningKey> {
+/// `--public` when no `--recipient` is given (clap requires one of the
+/// two); otherwise confidential to every listed recipient.
+fn chosen_protection(recipients: &[String]) -> Result<RulesProtection> {
+    if recipients.is_empty() {
+        println!("   Rules: public (tamper-evident, readable by anyone holding the file)");
+        return Ok(RulesProtection::Public);
+    }
+    Ok(confidential_to(load_recipients(recipients)?))
+}
+
+fn confidential_to(recipients: Vec<Recipient>) -> RulesProtection {
+    println!(
+        "   Rules: confidential to {} recipient(s); verification stays key-free",
+        recipients.len()
+    );
+    let xwing = recipients
+        .iter()
+        .any(|r| r.kem() == Some(EncryptionKem::XWing));
+    let classical = recipients
+        .iter()
+        .any(|r| r.kem() == Some(EncryptionKem::X25519));
+    if xwing && classical {
+        eprintln!(
+            "note: this version mixes X-Wing and non-post-quantum recipients; it is only as \
+             post-quantum-safe as its weakest recipient (RFC-0039)"
+        );
+    }
+    RulesProtection::Confidential { recipients }
+}
+
+/// Read a recipient file, refusing anything larger than a recipient line
+/// can be (an X-Wing key is 2,432 hex characters).
+fn read_recipient_file(path: &str) -> Result<String> {
+    const LIMIT: u64 = 8 * 1024;
+    let file = std::fs::File::open(path)
+        .with_context(|| format!("Failed to read recipient file: {path}"))?;
+    let mut text = String::new();
+    file.take(LIMIT.saturating_add(1))
+        .read_to_string(&mut text)
+        .with_context(|| format!("Failed to read recipient file: {path}"))?;
+    if text.len() as u64 > LIMIT {
+        anyhow::bail!("Recipient file is too large to be a recipient: {path}");
+    }
+    Ok(text)
+}
+
+/// Each `--recipient` is an `aion-recipient:…` string or a file holding one.
+fn load_recipients(values: &[String]) -> Result<Vec<Recipient>> {
+    values
+        .iter()
+        .map(|value| {
+            let text = if value.trim_start().starts_with("aion-recipient:") {
+                value.clone()
+            } else {
+                read_recipient_file(value)?
+            };
+            text.parse::<Recipient>()
+                .with_context(|| format!("Invalid recipient: {value}"))
+        })
+        .collect()
+}
+
+fn load_signing_key_for(key: &str) -> Result<aion_context::crypto::SigningKey> {
     let keystore = KeyStore::new();
-    let key_author_id = parse_key_id(&args.key)?;
+    let key_author_id = parse_key_id(key)?;
     keystore.load_signing_key(key_author_id).with_context(|| {
         format!(
-            "Failed to load key '{}' from keystore.\n\
-            Hint: Generate a key first with: aion key generate --id {}",
-            args.key, args.key
+            "Failed to load key '{key}' from keystore.\n\
+            Hint: Generate a key first with: aion key generate --id {key}"
         )
     })
 }
@@ -750,57 +1035,128 @@ fn cmd_commit(args: &CommitArgs) -> Result<ExitCode> {
     println!("📝 Committing new version to: {}", args.path.display());
     println!("   Author: {}", args.author);
     println!("   Message: {}", args.message);
-
-    // Check if file exists
     if !args.path.exists() {
         anyhow::bail!("File not found: {}", args.path.display());
     }
+    note_legacy_format(&args.path);
 
-    // Load new rules from file or stdin
     let rules = load_rules_content(args.rules.as_ref())?;
     println!("   New rules size: {} bytes", rules.len());
-
-    // Load signing key from keystore
-    let keystore = KeyStore::new();
-    let key_author_id = parse_key_id(&args.key)?;
-
-    let signing_key = keystore.load_signing_key(key_author_id).with_context(|| {
-        format!(
-            "Failed to load key '{}' from keystore.\n\
-            Hint: Generate a key first with: aion key generate --id {}",
-            args.key, args.key
-        )
-    })?;
-
-    // Create commit options
+    let signing_key = load_signing_key_for(&args.key)?;
+    let registry = load_registry_from_path(&args.registry)?;
+    let protection = commit_protection(args, &registry)?;
     let options = CommitOptions {
         author_id: AuthorId::new(args.author),
         signing_key: &signing_key,
         message: &args.message,
-        timestamp: None, // Use current time
+        timestamp: None,
+        protection,
     };
-
-    // Commit the new version
-    let registry = load_registry_from_path(&args.registry)?;
-    let result = if args.force_unregistered {
+    let committed = if args.force_unregistered {
         eprintln!(
             "⚠️  --force-unregistered: skipping registry authz pre-check. \
              The resulting file will NOT pass `aion verify --registry` until \
              the registry is updated to pin this signer (issue #25)."
         );
         commit_version_force_unregistered(&args.path, &rules, &options, &registry)
-            .with_context(|| format!("Failed to commit new version to: {}", args.path.display()))?
     } else {
         commit_version(&args.path, &rules, &options, &registry)
-            .with_context(|| format!("Failed to commit new version to: {}", args.path.display()))?
     };
+    let result = committed
+        .with_context(|| format!("Failed to commit new version to: {}", args.path.display()))?;
 
     println!("\n✅ Version committed successfully!");
     println!("   New version: {}", result.version.as_u64());
     println!("   Rules hash: {}", hex::encode(result.rules_hash));
     println!("   Path: {}", args.path.display());
-
     Ok(ExitCode::SUCCESS)
+}
+
+fn cmd_migrate(args: &MigrateArgs) -> Result<ExitCode> {
+    println!(
+        "🔁 Migrating {} → {}",
+        args.source.display(),
+        args.dest.display()
+    );
+    if args.dest.exists() {
+        anyhow::bail!("Destination already exists: {}", args.dest.display());
+    }
+    let registry = load_registry_from_path(&args.registry)?;
+    let source = aion_context::chain::verify_file_chain(&args.source, &registry)
+        .with_context(|| format!("Refusing to migrate: {}", args.source.display()))?;
+    let rules = aion_context::chain::open_current_rules(&source, &reader_keys(&args.identity)?)
+        .map_err(|e| match e {
+            aion_context::AionError::RecipientKeyRequired => anyhow::anyhow!(
+                "The source's rules are confidential: pass --identity <IDENTITY_ID> for a \
+                 listed recipient"
+            ),
+            other => anyhow::anyhow!("Cannot open the source's rules: {other}"),
+        })?;
+    let protection = if args.keep_recipients {
+        kept_recipients(&source)?
+    } else {
+        chosen_protection(&args.recipient)?
+    };
+    let signing_key = load_signing_key_for(&args.key)?;
+    let options = InitOptions {
+        author_id: AuthorId::new(args.author),
+        signing_key: &signing_key,
+        message: &args.message,
+        timestamp: None,
+        protection,
+    };
+    let result =
+        aion_context::operations::migrate_file(&source, &rules, &args.dest, &options, &registry)
+            .with_context(|| format!("Failed to write: {}", args.dest.display()))?;
+    println!("\n✅ Migrated to format v4");
+    println!(
+        "   Source: format v{}, file ID 0x{:016x}, head version {}",
+        source.context().format().as_u16(),
+        source.context().file_id().as_u64(),
+        source.head().version().as_u64()
+    );
+    println!("   New file ID: 0x{:016x}", result.file_id.as_u64());
+    println!("   Path: {}", args.dest.display());
+    println!(
+        "   The source is unchanged; archive it. Receivers check the link with \
+         aion_context::migration::verify_migration."
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
+fn kept_recipients(chain: &aion_context::chain::VerifiedChain) -> Result<RulesProtection> {
+    let recipients = chain.head_recipients().map_err(|e| match e {
+        aion_context::AionError::NoRecipients => anyhow::anyhow!(
+            "--keep-recipients: the current version is public, so there are no recipients to keep"
+        ),
+        other => anyhow::anyhow!(
+            "--keep-recipients: the current version has a recipient that cannot be re-sealed \
+             from the file alone; name the recipients with --recipient ({other})"
+        ),
+    })?;
+    for recipient in &recipients {
+        println!("   Keeping recipient: {recipient:?}");
+    }
+    Ok(confidential_to(recipients))
+}
+
+/// `--keep-recipients` re-seals to the current version's recipients, read
+/// from the verified file and printed so nothing carries over unseen.
+fn commit_protection(
+    args: &CommitArgs,
+    registry: &aion_context::key_registry::KeyRegistry,
+) -> Result<RulesProtection> {
+    if !args.keep_recipients {
+        return chosen_protection(&args.recipient);
+    }
+    let chain =
+        aion_context::chain::verify_file_chain(&args.path, registry).with_context(|| {
+            format!(
+                "--keep-recipients needs a verified file: {}",
+                args.path.display()
+            )
+        })?;
+    kept_recipients(&chain)
 }
 
 fn cmd_verify(args: &VerifyArgs) -> Result<ExitCode> {
@@ -821,8 +1177,115 @@ fn cmd_verify(args: &VerifyArgs) -> Result<ExitCode> {
         OutputFormat::Yaml => println!("{}", serde_yaml::to_string(&report)?),
         OutputFormat::Text => print_verify_text_report(args, &report),
     }
+    if report.is_valid && !report.metadata_signed {
+        note_unsigned_metadata(&args.path);
+    }
 
     Ok(report.exit_code())
+}
+
+fn note_unsigned_metadata(path: &std::path::Path) {
+    eprintln!(
+        "note: {} does not sign its commit messages or audit trail (format v2/v3). \
+         `aion migrate` re-signs it as format v4.",
+        path.display()
+    );
+}
+
+fn cmd_accept(args: &AcceptArgs) -> Result<ExitCode> {
+    use aion_context::acceptance::accept_file;
+    use aion_context::AionError;
+    println!("📥 Accepting AION file: {}", args.path.display());
+    let registry = load_registry_from_path(&args.registry)?;
+    let policy = accept_policy(args)?;
+    let store = match open_state(args) {
+        Ok(store) => store,
+        Err(e) => return Ok(store_failure(&e)),
+    };
+    if let Some(pin) = &args.pin {
+        if let Some(code) = check_pin(args, &registry, &parse_hash32(pin)?) {
+            return Ok(code);
+        }
+    }
+    match accept_file(&args.path, &registry, &policy, &store) {
+        Ok(chain) => {
+            println!("✅ Accepted at version {}", chain.head().version().as_u64());
+            if let Some(genesis) = chain.entry(aion_context::types::VersionNumber::GENESIS) {
+                println!("   Genesis: {}", hex::encode(genesis.version_hash()));
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        Err(
+            e @ (AionError::ChainRejected { .. }
+            | AionError::PolicyRejected { .. }
+            | AionError::VersionRejected { .. }),
+        ) => {
+            eprintln!("❌ Not accepted: {e}");
+            Ok(ExitCode::FAILURE)
+        }
+        Err(e) => Ok(store_failure(&e)),
+    }
+}
+
+/// `--state` must already exist unless `--init-state` is given, so a
+/// typo or a deleted state file never silently restarts replay defense.
+fn open_state(
+    args: &AcceptArgs,
+) -> std::result::Result<aion_context::acceptance::FileStore, aion_context::AionError> {
+    use aion_context::acceptance::FileStore;
+    if args.init_state && !args.state.exists() {
+        return FileStore::create(&args.state);
+    }
+    if !args.state.exists() {
+        return Err(aion_context::AionError::StoreUnavailable {
+            reason: "store_missing",
+        });
+    }
+    Ok(FileStore::open(&args.state))
+}
+
+/// `--pin` is a check, not a write: the presented chain's genesis must
+/// equal it. A mismatch is reported as `file_id_conflict` and nothing is
+/// persisted, so a mistyped pin can never lock the state.
+fn check_pin(
+    args: &AcceptArgs,
+    registry: &aion_context::key_registry::KeyRegistry,
+    expected: &[u8; 32],
+) -> Option<ExitCode> {
+    let chain = aion_context::chain::verify_file_chain(&args.path, registry).ok()?;
+    let genesis = chain.entry(aion_context::types::VersionNumber::GENESIS)?;
+    if genesis.version_hash() == *expected {
+        return None;
+    }
+    eprintln!("❌ Not accepted: Version rejected: file_id_conflict (genesis does not match --pin)");
+    Some(ExitCode::FAILURE)
+}
+
+/// Exit 2: the store could not be used, so no verdict was reached.
+fn store_failure(error: &aion_context::AionError) -> ExitCode {
+    eprintln!("⚠️  Acceptance state unavailable: {error}");
+    ExitCode::from(2)
+}
+
+fn accept_policy(args: &AcceptArgs) -> Result<aion_context::acceptance::AcceptPolicy> {
+    use aion_context::acceptance::{AcceptPolicy, ConfidentialScope};
+    let mut policy = AcceptPolicy::new();
+    if let Some(version) = args.min_format {
+        policy = policy.min_format(aion_context::format::FormatVersion::from_u16(version)?);
+    }
+    policy = match args.require_confidential {
+        None => policy,
+        Some(ConfidentialArg::Head) => policy.require_confidential(ConfidentialScope::Head),
+        Some(ConfidentialArg::All) => policy.require_confidential(ConfidentialScope::AllVersions),
+    };
+    Ok(policy)
+}
+
+fn parse_hash32(text: &str) -> Result<[u8; 32]> {
+    let bytes = hex::decode(text.trim()).context("--pin must be hex")?;
+    bytes
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("--pin must be 32 bytes (64 hex characters)"))
 }
 
 fn load_registry_from_path(
@@ -894,6 +1357,9 @@ fn cmd_show(args: &ShowArgs) -> Result<ExitCode> {
         anyhow::bail!("File not found: {}", args.path.display());
     }
 
+    if !args.identity.is_empty() && !matches!(args.subcommand, ShowSubcommand::Rules) {
+        anyhow::bail!("--identity only applies to `aion show … rules`");
+    }
     match &args.subcommand {
         ShowSubcommand::Rules => show_rules_subcommand(args)?,
         ShowSubcommand::History => show_history_subcommand(args)?,
@@ -904,7 +1370,16 @@ fn cmd_show(args: &ShowArgs) -> Result<ExitCode> {
 }
 
 fn show_rules_subcommand(args: &ShowArgs) -> Result<()> {
-    let rules = show_current_rules(&args.path)?;
+    let registry = load_registry_from_path(&args.registry)?;
+    let chain = aion_context::chain::verify_file_chain(&args.path, &registry)
+        .with_context(|| format!("Refusing to show rules: {}", args.path.display()))?;
+    let rules = aion_context::chain::open_current_rules(&chain, &reader_keys(&args.identity)?)
+        .map_err(|e| match e {
+            aion_context::AionError::RecipientKeyRequired => anyhow::anyhow!(
+                "Rules are confidential: pass --identity <IDENTITY_ID> for a listed recipient"
+            ),
+            other => anyhow::Error::new(other),
+        })?;
     match args.format {
         OutputFormat::Json | OutputFormat::Yaml => println!("{}", hex::encode(&rules)),
         OutputFormat::Text => {
@@ -919,8 +1394,35 @@ fn show_rules_subcommand(args: &ShowArgs) -> Result<()> {
     Ok(())
 }
 
+/// Load each `--identity` from the keystore.
+fn reader_keys(
+    identity_ids: &[EncryptionIdentityId],
+) -> Result<aion_context::chain::RecipientKeys> {
+    let keystore = KeyStore::new();
+    let identities = identity_ids
+        .iter()
+        .map(|id| {
+            keystore
+                .load_encryption_identity(*id)
+                .with_context(|| format!("No encryption identity {id} in the keystore"))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(aion_context::chain::RecipientKeys::new(identities))
+}
+
 fn show_history_subcommand(args: &ShowArgs) -> Result<()> {
-    let versions = show_version_history(&args.path)?;
+    let registry = load_registry_from_path(&args.registry)?;
+    let chain = aion_context::chain::verify_file_chain(&args.path, &registry)
+        .with_context(|| format!("Refusing to show history: {}", args.path.display()))?;
+    if !chain.metadata_signed() {
+        eprintln!(
+            "note: {} is format v{}; its commit messages and audit trail are not signed. \
+             `aion migrate` re-signs it as format v4.",
+            args.path.display(),
+            chain.context().format().as_u16()
+        );
+    }
+    let versions = aion_context::chain::verified_history(&chain);
     match args.format {
         OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&versions)?),
         OutputFormat::Yaml => println!("{}", serde_yaml::to_string(&versions)?),
@@ -931,7 +1433,7 @@ fn show_history_subcommand(args: &ShowArgs) -> Result<()> {
                 println!("Version {}:", v.version_number);
                 println!("  Author:    {}", v.author_id);
                 println!("  Timestamp: {}", v.timestamp);
-                println!("  Message:   {}", v.message);
+                println!("  Message:   {}", escape_controls(&v.message));
                 println!("  Rules Hash: {}", hex::encode(v.rules_hash));
                 if let Some(parent) = v.parent_hash {
                     println!("  Parent Hash: {}", hex::encode(parent));
@@ -941,6 +1443,21 @@ fn show_history_subcommand(args: &ShowArgs) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Escape control characters so signer-authored text cannot drive the
+/// terminal.
+fn escape_controls(text: &str) -> String {
+    text.chars()
+        .flat_map(|c| {
+            let escaped: Vec<char> = if c.is_control() {
+                c.escape_default().collect()
+            } else {
+                vec![c]
+            };
+            escaped
+        })
+        .collect()
 }
 
 fn show_signatures_subcommand(args: &ShowArgs) -> Result<()> {
@@ -974,6 +1491,9 @@ fn show_signatures_subcommand(args: &ShowArgs) -> Result<()> {
 fn show_info_subcommand(args: &ShowArgs) -> Result<()> {
     let registry = load_registry_from_path(&args.registry)?;
     let info = show_file_info(&args.path, &registry)?;
+    if !info.metadata_signed {
+        note_unsigned_metadata(&args.path);
+    }
     match args.format {
         OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&info)?),
         OutputFormat::Yaml => println!("{}", serde_yaml::to_string(&info)?),
@@ -988,7 +1508,7 @@ fn show_info_subcommand(args: &ShowArgs) -> Result<()> {
                 println!("  Number:   {}", latest.version_number);
                 println!("  Author:   {}", latest.author_id);
                 println!("  Timestamp: {}", latest.timestamp);
-                println!("  Message:  {}", latest.message);
+                println!("  Message:  {}", escape_controls(&latest.message));
             }
             println!("\nSignature Status:");
             let valid_count = info.signatures.iter().filter(|s| s.verified).count();
@@ -1002,15 +1522,75 @@ fn cmd_key(args: &KeyArgs) -> Result<ExitCode> {
     let keystore = KeyStore::new();
 
     match &args.subcommand {
-        KeySubcommand::Generate { id, description } => {
+        KeySubcommand::Generate {
+            id,
+            description,
+            encryption: false,
+            ..
+        } => {
             cmd_key_generate(&keystore, id, description.as_deref())?;
+        }
+        KeySubcommand::Generate {
+            id,
+            encryption: true,
+            kem,
+            ..
+        } => cmd_key_generate_encryption(&keystore, id, *kem)?,
+        KeySubcommand::Recipient { id, output } => {
+            cmd_key_recipient(&keystore, *id, output.as_ref())?;
         }
         KeySubcommand::List => cmd_key_list(&keystore)?,
         KeySubcommand::Export { id, output } => cmd_key_export(&keystore, id, output)?,
         KeySubcommand::Import { path, id } => cmd_key_import(&keystore, path, id)?,
-        KeySubcommand::Delete { id, force } => cmd_key_delete(&keystore, id, *force)?,
+        KeySubcommand::Delete {
+            id,
+            force,
+            encryption,
+        } => cmd_key_delete(&keystore, id, *force, *encryption)?,
     }
     Ok(ExitCode::SUCCESS)
+}
+
+fn cmd_key_generate_encryption(keystore: &KeyStore, key_id: &str, kem: KemArg) -> Result<()> {
+    let identity_id: EncryptionIdentityId = key_id.parse()?;
+    let kem = EncryptionKem::from(kem);
+    if keystore.has_encryption_identity(identity_id) {
+        anyhow::bail!(
+            "Encryption identity {identity_id} already exists\n\
+             Use 'aion key delete {identity_id} --encryption' first or choose a different ID"
+        );
+    }
+    let identity = aion_context::confidential::EncryptionIdentity::generate(kem)
+        .context("Failed to generate encryption identity")?;
+    keystore
+        .store_encryption_identity(identity_id, &identity)
+        .context("Failed to store encryption identity")?;
+    println!("✅ Encryption identity generated");
+    println!("   Identity ID: {identity_id}");
+    println!("   KEM: {kem}");
+    if kem == EncryptionKem::X25519 {
+        eprintln!("note: x25519 is not post-quantum; xwing is the default for that reason");
+    }
+    println!("\nGive writers this recipient (or: aion key recipient {identity_id} -o FILE):");
+    println!("{}", identity.recipient());
+    Ok(())
+}
+
+fn cmd_key_recipient(
+    keystore: &KeyStore,
+    identity_id: EncryptionIdentityId,
+    output: Option<&PathBuf>,
+) -> Result<()> {
+    let identity = keystore
+        .load_encryption_identity(identity_id)
+        .with_context(|| format!("No encryption identity {identity_id} in the keystore"))?;
+    let line = format!("{}\n", identity.recipient());
+    match output {
+        Some(path) => std::fs::write(path, line)
+            .with_context(|| format!("Failed to write recipient to {}", path.display()))?,
+        None => print!("{line}"),
+    }
+    Ok(())
 }
 
 fn cmd_key_generate(keystore: &KeyStore, key_id: &str, description: Option<&str>) -> Result<()> {
@@ -1179,36 +1759,48 @@ fn cmd_key_import(keystore: &KeyStore, path: &PathBuf, key_id: &str) -> Result<(
     Ok(())
 }
 
-fn cmd_key_delete(keystore: &KeyStore, key_id: &str, force: bool) -> Result<()> {
-    // Parse key ID
-    let author_id = parse_key_id(key_id)?;
-
-    // Check if key exists
-    if !keystore.has_signing_key(author_id) {
-        anyhow::bail!("Key not found: {key_id}\nUse 'aion key list' to see available keys");
+fn cmd_key_delete(keystore: &KeyStore, key_id: &str, force: bool, encryption: bool) -> Result<()> {
+    let what = if encryption {
+        "Encryption identity"
+    } else {
+        "Key"
+    };
+    let exists = if encryption {
+        keystore.has_encryption_identity(key_id.parse()?)
+    } else {
+        keystore.has_signing_key(parse_key_id(key_id)?)
+    };
+    if !exists {
+        anyhow::bail!("{what} not found: {key_id}\nUse 'aion key list' to see available keys");
     }
-
-    // Confirmation prompt unless --force
     if !force {
-        print!("⚠️  Are you sure you want to delete key {key_id}? This cannot be undone. (y/N): ");
+        let consequence = if encryption {
+            " Files sealed to it can no longer be read with it."
+        } else {
+            ""
+        };
+        print!(
+            "⚠️  Are you sure you want to delete {} {key_id}? This cannot be undone.{consequence} (y/N): ",
+            what.to_lowercase()
+        );
         std::io::stdout().flush()?;
-
         let mut response = String::new();
         std::io::stdin().read_line(&mut response)?;
-
         if !response.trim().eq_ignore_ascii_case("y") {
             println!("Cancelled.");
             return Ok(());
         }
     }
-
-    // Delete key
-    keystore
-        .delete_signing_key(author_id)
-        .context("Failed to delete key")?;
-
-    println!("✅ Key {key_id} deleted from keystore");
-
+    if encryption {
+        keystore
+            .delete_encryption_identity(key_id.parse()?)
+            .context("Failed to delete encryption identity")?;
+    } else {
+        keystore
+            .delete_signing_key(parse_key_id(key_id)?)
+            .context("Failed to delete key")?;
+    }
+    println!("✅ {what} {key_id} deleted from keystore");
     Ok(())
 }
 
@@ -2071,7 +2663,7 @@ fn build_archive_report(
             Err(e) => {
                 invalid_count = invalid_count.saturating_add(1);
                 files.push(FileVerdict {
-                    path: display.clone(),
+                    path: display,
                     valid: false,
                     author: None,
                     public_key_prefix: None,

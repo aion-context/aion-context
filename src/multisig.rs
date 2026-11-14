@@ -125,7 +125,7 @@ pub struct MultiSigVerification {
 impl MultiSigVerification {
     /// Check if verification passed
     #[must_use]
-    pub fn is_valid(&self) -> bool {
+    pub const fn is_valid(&self) -> bool {
         self.threshold_met && self.invalid_signers.is_empty()
     }
 }
@@ -151,6 +151,24 @@ pub fn verify_multisig(
     policy: &MultiSigPolicy,
     registry: &crate::key_registry::KeyRegistry,
 ) -> Result<MultiSigVerification> {
+    verify_multisig_with(version, signatures, policy, |version, signature| {
+        verify_attestation(version, signature, registry)
+    })
+}
+
+/// Policy evaluation shared by the v2 entry point and
+/// [`crate::format::FileContext::verify_multisig`]: `verify_one` decides
+/// whether one attestation is valid; this function applies
+/// authorization, de-duplication, and the threshold.
+pub(crate) fn verify_multisig_with<F>(
+    version: &VersionEntry,
+    signatures: &[SignatureEntry],
+    policy: &MultiSigPolicy,
+    verify_one: F,
+) -> Result<MultiSigVerification>
+where
+    F: Fn(&VersionEntry, &SignatureEntry) -> Result<()>,
+{
     let mut valid_signers = Vec::new();
     let mut invalid_signers = Vec::new();
     let mut seen: std::collections::HashSet<AuthorId> = std::collections::HashSet::new();
@@ -163,7 +181,7 @@ pub fn verify_multisig(
         if !seen.insert(author) {
             continue;
         }
-        match verify_attestation(version, sig, registry) {
+        match verify_one(version, sig) {
             Ok(()) => valid_signers.push(author),
             Err(_) => invalid_signers.push(author),
         }
@@ -237,7 +255,7 @@ impl SignatureAggregator {
 
     /// Get the number of signatures collected
     #[must_use]
-    pub fn count(&self) -> usize {
+    pub const fn count(&self) -> usize {
         self.signatures.len()
     }
 
@@ -540,7 +558,7 @@ mod tests {
             let result = verify_multisig(&version, &[valid_att, bad_att], &policy, &reg)
                 .unwrap_or_else(|_| std::process::abort());
             assert!(result.threshold_met);
-            assert!(!result.invalid_signers.is_empty());
+            assert_ne!(result.invalid_signers, Vec::<AuthorId>::new());
             assert!(!result.is_valid());
         }
 

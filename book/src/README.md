@@ -12,8 +12,8 @@ the fact:
 > been tampered with since.*
 
 The file format binds together: a hash-chained version log, a set
-of Ed25519 signatures over each version, an audit trail, optional
-encrypted rules content, and (in the supply-chain story) an AIBOM,
+of Ed25519 signatures over each version, an audit trail, the rules
+payload (tamper-evident; confidential only when sealed to named recipients), and (in the supply-chain story) an AIBOM,
 SLSA provenance, DSSE envelopes, OCI manifests, and transparency-log
 entries with inclusion proofs. A pinned `KeyRegistry` resolves which
 operational key was active for each signer at each version, so
@@ -42,10 +42,10 @@ first-class.
 
 ## Status
 
-aion-context is **0.2.x** as of the last update to this book.
-Pre-1.0 means breaking changes are permitted on minor bumps,
-called out in the changelog and (where structural) in their
-own RFC.
+aion-context is **2.x** as of the last update to this book, and
+follows semver: breaking changes need a major version, are called
+out in the changelog, and (where structural) get their own RFC.
+See [Stability](./architecture/stability.md).
 
 The library is **single-binary, single-crate, no async, no
 unsafe in normal code** (the parser has one audited `unsafe`

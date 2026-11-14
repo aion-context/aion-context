@@ -72,6 +72,7 @@ fn bench_init_file(c: &mut Criterion) {
                     signing_key: &signing_key,
                     message: "Benchmark init",
                     timestamp: None,
+                    protection: aion_context::format::RulesProtection::Public,
                 };
 
                 let result = init_file(
@@ -115,6 +116,7 @@ fn bench_commit_version(c: &mut Criterion) {
                         signing_key: &signing_key,
                         message: "Initial version",
                         timestamp: None,
+                        protection: aion_context::format::RulesProtection::Public,
                     };
                     init_file(&file_path, &initial_rules, &init_options).unwrap();
                     file_path
@@ -126,6 +128,7 @@ fn bench_commit_version(c: &mut Criterion) {
                         signing_key: &signing_key,
                         message: "Benchmark commit",
                         timestamp: None,
+                        protection: aion_context::format::RulesProtection::Public,
                     };
 
                     let result = commit_version(
@@ -171,6 +174,7 @@ fn bench_verify_file(c: &mut Criterion) {
             signing_key: &signing_key,
             message: "Version 1",
             timestamp: None,
+            protection: aion_context::format::RulesProtection::Public,
         };
         init_file(&file_path, &rules, &init_options).unwrap();
 
@@ -181,6 +185,7 @@ fn bench_verify_file(c: &mut Criterion) {
                 signing_key: &signing_key,
                 message: &format!("Version {}", i),
                 timestamp: None,
+                protection: aion_context::format::RulesProtection::Public,
             };
             commit_version(&file_path, &rules, &commit_options, &registry).unwrap();
         }
@@ -223,6 +228,7 @@ fn bench_full_workflow(c: &mut Criterion) {
                 signing_key: &signing_key,
                 message: "Initial",
                 timestamp: None,
+                protection: aion_context::format::RulesProtection::Public,
             };
             init_file(&file_path, &rules, &init_options).unwrap();
 
@@ -232,6 +238,7 @@ fn bench_full_workflow(c: &mut Criterion) {
                 signing_key: &signing_key,
                 message: "Update",
                 timestamp: None,
+                protection: aion_context::format::RulesProtection::Public,
             };
             commit_version(&file_path, &rules, &commit_options, &registry).unwrap();
 
@@ -272,6 +279,7 @@ fn bench_sequential_commits(c: &mut Criterion) {
                             signing_key: &signing_key,
                             message: "Initial",
                             timestamp: None,
+                            protection: aion_context::format::RulesProtection::Public,
                         };
                         init_file(&file_path, &rules, &init_options).unwrap();
                         file_path
@@ -284,6 +292,7 @@ fn bench_sequential_commits(c: &mut Criterion) {
                                 signing_key: &signing_key,
                                 message: &format!("Commit {}", i),
                                 timestamp: None,
+                                protection: aion_context::format::RulesProtection::Public,
                             };
                             commit_version(&file_path, &rules, &commit_options, &registry).unwrap();
                         }
@@ -331,6 +340,7 @@ fn bench_chain_build_scaling(c: &mut Criterion) {
                         signing_key: &signing_key,
                         message: "v1",
                         timestamp: None,
+                        protection: aion_context::format::RulesProtection::Public,
                     };
                     init_file(&file_path, &rules, &init_options).unwrap();
                     file_path
@@ -342,6 +352,7 @@ fn bench_chain_build_scaling(c: &mut Criterion) {
                             signing_key: &signing_key,
                             message: "amend",
                             timestamp: None,
+                            protection: aion_context::format::RulesProtection::Public,
                         };
                         commit_version(&file_path, &rules, &commit_options, &registry).unwrap();
                     }

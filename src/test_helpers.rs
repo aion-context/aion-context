@@ -811,7 +811,7 @@ mod tests {
             );
             let mut reg = TestRegistry::new();
             reg.pin(&m, &op).unwrap();
-            let via_method = reg.as_registry() as *const KeyRegistry;
+            let via_method = std::ptr::from_ref::<KeyRegistry>(reg.as_registry());
             let via_asref: *const KeyRegistry = reg.as_ref();
             assert_eq!(via_method, via_asref);
         }

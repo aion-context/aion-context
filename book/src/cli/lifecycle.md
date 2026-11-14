@@ -11,11 +11,22 @@ Create a new `.aion` file with a v1 genesis version.
 aion init <FILE> \
     --author <AUTHOR_ID> \
     --key <KEY_ID> \
+    (--public | --recipient <RECIPIENT>...)  # required: name the rules protection
     [--rules <RULES_FILE> | --rules -]   # stdin if `-`
     [--message <MESSAGE>]                # defaults to "Genesis version"
     [--force]                            # overwrite if FILE exists
-    [--no-encryption]
 ```
+
+`init` writes a format-v3 file (RFC-0039). The rules protection has no
+default, so exactly one of these is required:
+
+- `--public` stores the rules in the clear, framed and padded, where
+  anyone holding the file can read them. The signature makes them
+  tamper-evident, not secret.
+- `--recipient <RECIPIENT>` (repeatable) encrypts them so only the
+  named recipients can read them; see [Confidential rules](#confidential-rules).
+`--no-encryption` is a deprecated alias for `--public` and will be
+removed in 3.0.
 
 `init` deliberately does **not** take a registry. Genesis trust
 flows from the original signing key alone; the registry is
@@ -32,9 +43,16 @@ aion commit <FILE> \
     --key <KEY_ID> \
     --message <MESSAGE> \
     --registry <REGISTRY_FILE> \
+    (--public | --recipient <RECIPIENT>... | --keep-recipients)
     [--rules <RULES_FILE> | --rules -]
     [--force-unregistered]
 ```
+
+A commit keeps the file's format. A v3 file gains a v3 version with the
+named protection; a v2 file stays v2 and keeps its legacy encoding (it
+cannot be confidential). `--keep-recipients` re-seals to the current
+version's recipients, read from the verified file and printed before
+committing; it fails if the current version is public.
 
 `commit` runs four pre-write gates in order before any byte is
 written:
@@ -50,7 +68,7 @@ written:
 4. **Registry pre-check** — the supplied `(author, signing key)`
    must match the active epoch in the registry at the new
    version number. Catches the most common operator mistake:
-   running `aion commit --author X --key Y` where Y is not
+   running `aion commit --public --author X --key Y` where Y is not
    pinned for X.
 
 If any gate fails, `commit` exits with `Err` and **does not
@@ -115,6 +133,83 @@ Errors:
 JSON format emits a structured `VerificationReport` for
 downstream tooling.
 
+## `aion accept`
+
+Accept a file only if it is verified **and** newer than, or the same as,
+what this receiver accepted before (RFC-0039 replay defense).
+
+```bash
+aion accept <FILE> \
+    --registry <REGISTRY_FILE> \
+    --state <STATE_FILE> \                # must exist, unless --init-state
+    [--init-state]                       # first run: create the state file
+    [--pin <GENESIS_HASH>]               # required genesis, 64 hex chars (check only)
+    [--min-format 4]                     # refuse v2/v3 (unsigned metadata)
+    [--require-confidential head|all]    # refuse public rules
+```
+
+`aion verify` is stateless: it answers whether a file is intact and
+correctly signed, and an older, correctly signed copy passes it.
+`aion accept` remembers, per `file_id`, the genesis and the head it
+accepted, and refuses:
+
+| Situation | Reason |
+|---|---|
+| An older version than the one accepted | `version_replay` |
+| A chain that does not extend the accepted head (a fork) | `version_equivocation` |
+| A different genesis under the same `file_id` | `file_id_conflict` |
+
+Re-accepting the same head succeeds without changing the state. The
+state only advances after full verification and the policy checks pass.
+
+- **Pinning.** On acceptance the command prints the genesis hash. Pass
+  that hash to `--pin` on other receivers, so a different chain can never
+  be learned first. `--pin` is a check: a mismatch is refused and nothing
+  is written.
+- **The state file is never silently re-created.** `--state` must
+  already exist unless you pass `--init-state` (first run only), so a
+  typo or a deleted file cannot turn replay defense off.
+- **One writer at a time.** Writers take an exclusive
+  `<STATE_FILE>.lock`. A concurrent writer fails rather than racing. A
+  lock left behind by a crashed run must be removed by an operator.
+
+Exit codes: 0 means accepted, 1 means not accepted, and 2 means the
+state file is missing, locked, or unreadable, so no verdict was
+reached.
+
+## `aion migrate`
+
+Write a new format-v4 file that continues a verified file (RFC-0040).
+Format v2 and v3 do not sign commit messages or the audit trail; v4
+does.
+
+```bash
+aion migrate <SOURCE> <DEST> \
+    --registry <REGISTRY_FILE> \
+    --author <AUTHOR_ID> --key <KEY_ID> \
+    (--public | --recipient <RECIPIENT>… | --keep-recipients) \
+    [--identity <IDENTITY_ID>]…          # to open a confidential source
+    [--message "Migrated to format v4"]
+```
+
+1. `SOURCE` is verified against the registry; a file that fails is
+   refused.
+2. Its head rules are opened (pass `--identity` for confidential rules).
+3. `DEST` is written as a new v4 file with a new `file_id`. Its genesis
+   carries the rules and a signed link to `SOURCE`'s format, `file_id`,
+   head version and head version hash.
+4. `SOURCE` is not modified. Archive it: the new file imports no
+   history.
+
+The registry must pin `--author` with `--key`, or nothing is written.
+The link is the migrating author's signed claim that the new file
+continues the old one; it does not prove the rules are the same.
+Receivers check it in the library with
+`migration::verify_migration(&new, &old, &MigrationPolicy::SameAuthor)`
+(or `Author(id)` / `AnyOf(…)`). `acceptance::accept_migration` also records
+it, so the first verified destination for a source wins and any other is
+refused as `migration_conflict`.
+
 ## How the lifecycle interacts with the registry
 
 A common operator flow:
@@ -133,13 +228,13 @@ aion registry pin \
 # 3. Create the file. init does not consult the registry,
 #    but the AuthorId in the file should match the pinned
 #    author.
-aion init policy.aion --author 50001 --key 50001 \
+aion init --public policy.aion --author 50001 --key 50001 \
     --rules genesis.yaml
 
 # 4. Subsequent amendments use commit. These DO consult the
 #    registry — the pre-check makes sure the (author, key)
 #    pair matches the active epoch.
-aion commit policy.aion --author 50001 --key 50001 \
+aion commit --public policy.aion --author 50001 --key 50001 \
     --rules amendment.yaml \
     --message "Tighten threshold" \
     --registry registry.json
@@ -147,3 +242,34 @@ aion commit policy.aion --author 50001 --key 50001 \
 # 5. Anyone holding the same registry can verify.
 aion verify policy.aion --registry registry.json
 ```
+
+## Confidential rules
+
+Recipients are encryption identities, separate from signing keys
+(RFC-0039). A reader creates one and hands writers the public half:
+
+```bash
+aion key generate --id 501 --encryption            # X-Wing (post-quantum hybrid), the default
+aion key generate --id 502 --encryption --kem x25519
+aion key recipient 501 -o auditor.recipient        # aion-recipient:xwing:<hex>
+```
+
+A writer seals to them, and anyone can still verify without a key:
+
+```bash
+aion init policy.aion --author 1001 --key 1001 \
+    --recipient auditor.recipient --recipient ops.recipient --rules rules.yaml
+aion verify policy.aion --registry registry.json   # key-free
+aion commit policy.aion ... --keep-recipients      # same readers next time
+```
+
+A recipient reads with their identity:
+
+```bash
+aion show policy.aion --registry registry.json --identity 501 rules
+```
+
+Mixing X-Wing with X25519 recipients prints a note: a version is only as
+post-quantum-safe as its weakest recipient. Commit messages, authors,
+timestamps, the recipient list, and the padded rules length stay
+visible to anyone holding the file.

@@ -78,7 +78,10 @@ use zerocopy::{AsBytes, FromBytes, FromZeroes};
 /// Magic number for AION v2 files: "AION" (0x41494F4E)
 pub const MAGIC: [u8; 4] = [0x41, 0x49, 0x4F, 0x4E];
 
-/// Current file format version
+/// File format version this crate writes by default
+///
+/// Readers accept every [`crate::format::FormatVersion`]; see
+/// [`FileHeader::format`].
 pub const FORMAT_VERSION: u16 = 2;
 
 /// Header size in bytes (fixed)
@@ -245,6 +248,31 @@ impl FileHeader {
         crate::types::VersionNumber(self.current_version)
     }
 
+    /// The file's on-disk format (RFC-0039).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AionError::UnsupportedVersion`] for an unknown version.
+    pub fn format(&self) -> Result<crate::format::FormatVersion> {
+        crate::format::FormatVersion::from_u16(self.version)
+    }
+
+    /// The signing context version messages in this file bind (RFC-0039).
+    ///
+    /// Cannot fail for a header returned by [`AionParser`], which has
+    /// already validated the version; a hand-built header can hold any
+    /// value, hence the `Result`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AionError::UnsupportedVersion`] for an unknown version.
+    pub fn context(&self) -> Result<crate::format::FileContext> {
+        Ok(crate::format::FileContext::new(
+            self.format()?,
+            self.file_id(),
+        ))
+    }
+
     /// Validate header structure
     ///
     /// Checks:
@@ -266,13 +294,7 @@ impl FileHeader {
             });
         }
 
-        // Check version
-        if self.version != FORMAT_VERSION {
-            return Err(AionError::UnsupportedVersion {
-                version: self.version,
-                supported: FORMAT_VERSION.to_string(),
-            });
-        }
+        self.format()?;
 
         // Check reserved bits in flags (bits 1-15 must be 0)
         if (self.flags & !0x0001) != 0 {
@@ -400,16 +422,53 @@ impl<'a> AionParser<'a> {
                 reason: "Failed to parse header".to_string(),
             }
         })?;
-        header.validate().map_err(|e| {
+        header.validate().inspect_err(|_| {
             tracing::warn!(
                 event = "parser_rejected",
                 bytes = data.len(),
                 reason = "header_invalid",
             );
-            e
         })?;
 
-        Ok(Self { data, header })
+        let parser = Self { data, header };
+        parser.validate_entry_counts().inspect_err(|_| {
+            tracing::warn!(
+                event = "parser_rejected",
+                bytes = data.len(),
+                reason = "section_out_of_bounds",
+            );
+        })?;
+        Ok(parser)
+    }
+
+    /// Reject a header whose entry counts do not fit inside the file.
+    ///
+    /// Readers size buffers and loops from these counts, so an
+    /// adversarial count must fail here rather than as an allocation
+    /// of `count × entry_size` bytes.
+    fn validate_entry_counts(&self) -> Result<()> {
+        self.version_chain_bytes()?;
+        self.signatures_bytes()?;
+        if self.header.audit_trail_count == 0 {
+            return Ok(());
+        }
+        let available = u64::try_from(self.audit_trail_bytes()?.len()).unwrap_or(u64::MAX);
+        let needed = self
+            .header
+            .audit_trail_count
+            .checked_mul(crate::serializer::AUDIT_ENTRY_SIZE as u64)
+            .ok_or_else(|| AionError::InvalidFormat {
+                reason: "Audit trail size overflow".to_string(),
+            })?;
+        if needed > available {
+            return Err(AionError::InvalidFormat {
+                reason: format!(
+                    "audit trail out of bounds: {} entries need {needed} bytes, section has {available}",
+                    self.header.audit_trail_count
+                ),
+            });
+        }
+        Ok(())
     }
 
     /// Get reference to the file header.
@@ -452,11 +511,10 @@ impl<'a> AionParser<'a> {
                 reason: "Version chain size overflow".to_string(),
             })?;
 
-        self.get_section(
-            header.version_chain_offset as usize,
-            size as usize,
-            "version chain",
-        )
+        let size = usize::try_from(size).map_err(|_| AionError::InvalidFormat {
+            reason: "Version chain size overflow".to_string(),
+        })?;
+        self.get_section(header.version_chain_offset as usize, size, "version chain")
     }
 
     /// Get signatures section as byte slice
@@ -474,11 +532,10 @@ impl<'a> AionParser<'a> {
                 reason: "Signatures size overflow".to_string(),
             })?;
 
-        self.get_section(
-            header.signatures_offset as usize,
-            size as usize,
-            "signatures",
-        )
+        let size = usize::try_from(size).map_err(|_| AionError::InvalidFormat {
+            reason: "Signatures size overflow".to_string(),
+        })?;
+        self.get_section(header.signatures_offset as usize, size, "signatures")
     }
 
     /// Get audit trail section as byte slice
@@ -673,21 +730,34 @@ impl<'a> AionParser<'a> {
                     reason: "Invalid message length bytes".to_string(),
                 }
             })?),
-            reserved: {
-                // Reserved fields must be zero (mirrors #40 for
-                // ArtifactEntry). Silently zeroing them on read would
-                // let `commit_version` "launder" a tampered file:
-                // verify_file flags the integrity-hash mismatch, but
-                // the next commit rebuilds the file with reserved
-                // zeroed and the laundered file then passes verify.
-                if entry_bytes[100..152].iter().any(|b| *b != 0) {
+            reserved: Self::version_entry_reserved(header, &entry_bytes[100..152])?,
+        })
+    }
+
+    /// Validate a version entry's reserved bytes for the file's format.
+    ///
+    /// v2 requires all 52 bytes to be zero. v3 stores the rules mode in
+    /// the first byte (RFC-0039) and requires the other 51 to be zero.
+    /// Unknown bytes are rejected rather than zeroed: silently zeroing
+    /// them on read would let `commit_version` "launder" a tampered file
+    /// (mirrors #40 for `ArtifactEntry`).
+    fn version_entry_reserved(header: &FileHeader, bytes: &[u8]) -> Result<[u8; 52]> {
+        let reserved: [u8; 52] = bytes.try_into().map_err(|_| AionError::InvalidFormat {
+            reason: "Invalid version entry reserved bytes".to_string(),
+        })?;
+        match header.format()? {
+            crate::format::FormatVersion::V2 => {
+                if reserved.iter().any(|b| *b != 0) {
                     return Err(AionError::InvalidFormat {
                         reason: "VersionEntry reserved bytes must be all zero".to_string(),
                     });
                 }
-                [0; 52]
-            },
-        })
+            }
+            format @ (crate::format::FormatVersion::V3 | crate::format::FormatVersion::V4) => {
+                crate::format::RulesMode::from_reserved(&reserved, format)?;
+            }
+        }
+        Ok(reserved)
     }
 
     /// Get a signature entry by index
@@ -762,7 +832,7 @@ impl<'a> AionParser<'a> {
         }
 
         let bytes = self.audit_trail_bytes()?;
-        let entry_size = 80; // AuditEntry is 80 bytes
+        let entry_size = crate::serializer::AUDIT_ENTRY_SIZE;
         let offset = index * entry_size;
         let entry_bytes = &bytes[offset..offset + entry_size];
 
@@ -1150,9 +1220,9 @@ mod tests {
             let middle = data.len() / 2;
             data[middle] ^= 0xFF;
 
-            let parser = AionParser::new(&data).unwrap();
-            let result = parser.verify_integrity();
-            assert!(result.is_err());
+            let detected =
+                AionParser::new(&data).map_or(true, |parser| parser.verify_integrity().is_err());
+            assert!(detected);
         }
 
         #[test]
@@ -1211,6 +1281,8 @@ mod tests {
 
     mod properties {
         use super::*;
+        use crate::serializer::{AionFile, AionSerializer};
+        use crate::types::FileId;
         use hegel::generators as gs;
 
         #[hegel::test]
@@ -1228,6 +1300,32 @@ mod tests {
                 let _ = parser.file_size();
                 let _ = parser.string_table_bytes();
                 let _ = parser.integrity_hash();
+            }
+        }
+
+        #[hegel::test]
+        fn prop_parser_rejects_entry_counts_beyond_the_file(tc: hegel::TestCase) {
+            let file = AionFile::builder()
+                .file_id(FileId::new(7))
+                .created_at(1_700_000_000_000_000_000)
+                .modified_at(1_700_000_000_000_000_000)
+                .build()
+                .unwrap_or_else(|_| std::process::abort());
+            let mut bytes =
+                AionSerializer::serialize(&file).unwrap_or_else(|_| std::process::abort());
+            let fields = [
+                (128usize, VERSION_ENTRY_SIZE),
+                (144, SIGNATURE_ENTRY_SIZE),
+                (160, crate::serializer::AUDIT_ENTRY_SIZE),
+            ];
+            let pick = tc.draw(gs::integers::<usize>().max_value(fields.len().saturating_sub(1)));
+            let (field, entry_size) = fields[pick];
+            let count = tc.draw(gs::integers::<u64>());
+            bytes[field..field.saturating_add(8)].copy_from_slice(&count.to_le_bytes());
+
+            if AionParser::new(&bytes).is_ok() {
+                let needed = u128::from(count).saturating_mul(entry_size as u128);
+                assert!(needed <= bytes.len() as u128);
             }
         }
 
