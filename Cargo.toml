@@ -18,7 +18,9 @@ categories = ["cryptography", "command-line-utilities", "filesystem", "encoding"
 [dependencies]
 # Cryptography - pinned versions for security
 ed25519-dalek = "3.0"
-chacha20poly1305 = "0.11"
+# zeroize: wipe the cipher's key copy on drop; today it is only enabled
+# transitively through hpke.
+chacha20poly1305 = { version = "0.11", features = ["zeroize"] }
 # RFC-0039 Phase B: HPKE recipient stanzas (X25519 and X-Wing). Pinned
 # exactly: X-Wing and its HPKE binding are IETF drafts, and golden-stanza
 # tests fix the wire bytes. No `getrandom` feature: randomness comes from
@@ -32,8 +34,11 @@ sha2 = "0.11"
 subtle = "2.6"
 
 # Post-quantum signatures (RFC-0027). pqcrypto-mldsa tracks FIPS 204
-# ML-DSA via the C reference implementation.
-pqcrypto-mldsa = "0.1"
+# ML-DSA via the C reference implementation. Default features are off:
+# the `avx2` verifier skips the FIPS 204 norm check (RUSTSEC-2026-0586),
+# and the portable code gives the same verdict on every platform.
+# `hybrid_sig::tests::wycheproof_mldsa65_verify_vectors` pins this.
+pqcrypto-mldsa = { version = "0.1", default-features = false, features = ["std"] }
 pqcrypto-traits = "0.3"
 
 # Error handling
@@ -57,7 +62,9 @@ memmap2 = "0.9"
 # Security - sensitive data handling
 zeroize = { version = "1.7", features = ["derive"] }
 keyring-core = "1.0"  # OS keyring integration for key storage
-argon2 = "0.6"   # Password hashing for key export/import
+# zeroize wipes argon2's H0 and final-block temporaries. It does not wipe
+# the memory matrix, which argon2 0.6 frees without zeroing.
+argon2 = { version = "0.6", features = ["zeroize"] }   # Password hashing for key export/import
 
 # CLI
 clap = { version = "4.5", features = ["derive", "cargo"] }
