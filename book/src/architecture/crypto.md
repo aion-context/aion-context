@@ -17,7 +17,7 @@ explicit about this.
 | Password-based KDF | `argon2` | Keystore password protection |
 | Constant-time compare | `subtle::ConstantTimeEq` | Public-key comparisons (post-PR #43) |
 | Randomness | `rand::rngs::OsRng` | Nonces, key generation |
-| Post-quantum signing | `pqcrypto-mldsa` (ML-DSA-65) | Hybrid signatures (RFC-0027) |
+| Post-quantum signing | `ml-dsa` (ML-DSA-65) | Hybrid signatures (RFC-0027, RFC-0041) |
 
 ## Public rules are not confidential
 

@@ -60,7 +60,7 @@ The pinned primitives are:
 - **HPKE** (RFC 9180 base mode, via `hpke`) with **DHKEM(X25519)** and
   **X-Wing** (ML-KEM-768 + X25519, via `ml-kem` / `x-wing`) — RFC-0039
   confidential-rules recipient stanzas
-- **ML-DSA-65** (via `pqcrypto-mldsa`) — RFC-0027 hybrid PQC signatures
+- **ML-DSA-65** (via `ml-dsa`, RFC-0041; `pqcrypto-mldsa` before 4.0.0) — RFC-0027 hybrid PQC signatures
 
 Replacing any of these is a major version bump and requires an RFC.
 
