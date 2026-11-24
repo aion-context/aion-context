@@ -49,7 +49,7 @@ anyhow = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 # RFC 8785 JSON Canonicalization Scheme (RFC-0031).
-serde_jcs = "0.2"
+serde_jcs = "0.3"
 
 # Encoding
 hex = "0.4"
