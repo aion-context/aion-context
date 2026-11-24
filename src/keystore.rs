@@ -155,7 +155,7 @@ impl KeyStore {
     /// Store a key in the OS keyring
     fn store_key_to_keyring(&self, author_id: AuthorId, key: &SigningKey) -> Result<()> {
         let entry = self.get_entry(author_id)?;
-        let key_hex = hex::encode(key.to_bytes());
+        let key_hex = Zeroizing::new(hex::encode(key.to_bytes()));
 
         entry
             .set_password(&key_hex)
@@ -256,14 +256,18 @@ impl KeyStore {
     fn load_key_from_keyring(&self, author_id: AuthorId) -> Result<SigningKey> {
         let entry = self.get_entry(author_id)?;
 
-        let key_hex = entry.get_password().map_err(|e| AionError::KeyNotFound {
+        let key_hex = Zeroizing::new(entry.get_password().map_err(|e| AionError::KeyNotFound {
             author_id,
             reason: e.to_string(),
-        })?;
+        })?);
 
-        let key_bytes = hex::decode(&key_hex).map_err(|e| AionError::InvalidPrivateKey {
-            reason: format!("invalid hex in keyring: {e}"),
-        })?;
+        // The hex error names the offending character and its position,
+        // which is part of the secret, so it is not echoed.
+        let key_bytes = Zeroizing::new(hex::decode(key_hex.as_str()).map_err(|_| {
+            AionError::InvalidPrivateKey {
+                reason: "invalid hex in keyring".to_string(),
+            }
+        })?);
 
         SigningKey::from_bytes(&key_bytes)
     }
@@ -341,10 +345,12 @@ impl KeyStore {
         } else {
             self.get_entry(author_id)
                 .and_then(|e| {
-                    e.get_password().map_err(|e| AionError::KeyringError {
-                        operation: "check".to_string(),
-                        reason: e.to_string(),
-                    })
+                    e.get_password()
+                        .map(Zeroizing::new)
+                        .map_err(|e| AionError::KeyringError {
+                            operation: "check".to_string(),
+                            reason: e.to_string(),
+                        })
                 })
                 .is_ok()
         }
@@ -506,7 +512,7 @@ impl KeyStore {
             return self.write_secret_file(&path, &sealed);
         }
         let entry = named_entry(&encryption_username(id))?;
-        match entry.get_password() {
+        match entry.get_password().map(Zeroizing::new) {
             Ok(_) => return Err(exists()),
             Err(keyring_core::Error::NoEntry) => {}
             Err(e) => return Err(keyring_failure("check", &e)),
@@ -562,7 +568,8 @@ impl KeyStore {
         if self.use_file_storage {
             return self.encryption_file_path(id).exists();
         }
-        named_entry(&encryption_username(id)).is_ok_and(|entry| entry.get_password().is_ok())
+        named_entry(&encryption_username(id))
+            .is_ok_and(|entry| entry.get_password().map(Zeroizing::new).is_ok())
     }
 
     /// Delete the encryption identity stored under `id`.
