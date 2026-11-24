@@ -276,7 +276,7 @@ impl HybridSigningKey {
     /// decoder can panic on malformed input. Persist
     /// [`Self::export_pq_seed`] instead.
     #[deprecated(
-        since = "3.1.0",
+        since = "4.0.0",
         note = "use export_pq_seed; expanded ML-DSA keys cannot be imported (RFC-0041)"
     )]
     #[must_use]
