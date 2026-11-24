@@ -148,6 +148,8 @@ blocks on a drop.
 | `src/hybrid_sig.rs`             | corrupted ML-DSA signature bytes ⇒ rejects                    |
 | `src/hybrid_sig.rs`             | classical sig without HYBRID_DOMAIN prefix rejects            |
 | `src/hybrid_sig.rs`             | ML-DSA signature length mismatch rejects                      |
+| `src/hybrid_sig.rs`             | RFC-0041 `export_pq_seed` → `from_seeds` rebuilds the key; its signatures verify under the original key |
+| `src/hybrid_sig.rs`             | RFC-0041 migration period: `pqcrypto-mldsa` and `ml-dsa` verify each other's signatures |
 | `src/aibom.rs`                  | RFC-0029 AIBOM JSON round-trip preserves all fields           |
 | `src/aibom.rs`                  | AIBOM canonical bytes are deterministic                       |
 | `src/aibom.rs`                  | model hash field survives hex ↔ binary round-trip             |

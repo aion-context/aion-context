@@ -245,6 +245,54 @@ fn bench_batch_verification(c: &mut Criterion) {
     group.finish();
 }
 
+// ============================================================================
+// ML-DSA-65 Benchmarks (RFC-0041)
+// ============================================================================
+
+/// RFC-0041 verification plan item 7: the `ml-dsa` backend that
+/// `HybridSigningKey` uses, next to the `pqcrypto-mldsa` (`PQClean`
+/// portable) backend it replaced. Drop the `pqclean` rows with that
+/// dev-dependency.
+fn bench_mldsa65(c: &mut Criterion) {
+    use aion_context::hybrid_sig::HybridSigningKey;
+    use pqcrypto_mldsa::mldsa65 as pqclean;
+
+    let mut group = c.benchmark_group("mldsa65");
+    group.bench_function("keygen/ml-dsa", |b| {
+        b.iter(|| HybridSigningKey::generate().unwrap());
+    });
+    group.bench_function("keygen/pqclean", |b| b.iter(pqclean::keypair));
+
+    let key = HybridSigningKey::generate().unwrap();
+    let vk = key.verifying_key();
+    let (pqclean_public, pqclean_secret) = pqclean::keypair();
+    for size in [1024usize, 64 * 1024] {
+        let payload = vec![0xA5u8; size];
+        let sig = key.sign(&payload).unwrap();
+        let pq_sig = pqclean::detached_sign(&payload, &pqclean_secret);
+        group.bench_with_input(BenchmarkId::new("sign/hybrid", size), &payload, |b, p| {
+            b.iter(|| key.sign(black_box(p)).unwrap());
+        });
+        group.bench_with_input(BenchmarkId::new("sign/pqclean", size), &payload, |b, p| {
+            b.iter(|| pqclean::detached_sign(black_box(p), &pqclean_secret));
+        });
+        group.bench_with_input(BenchmarkId::new("verify/hybrid", size), &payload, |b, p| {
+            b.iter(|| vk.verify(black_box(p), &sig).unwrap());
+        });
+        group.bench_with_input(
+            BenchmarkId::new("verify/pqclean", size),
+            &payload,
+            |b, p| {
+                b.iter(|| {
+                    pqclean::verify_detached_signature(&pq_sig, black_box(p), &pqclean_public)
+                        .unwrap();
+                });
+            },
+        );
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     // Ed25519
@@ -263,6 +311,8 @@ criterion_group!(
     // Batch operations
     bench_batch_signing,
     bench_batch_verification,
+    // ML-DSA-65 (RFC-0041)
+    bench_mldsa65,
 );
 
 criterion_main!(benches);

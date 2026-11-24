@@ -98,6 +98,18 @@ below with its scope.
   - **How it can fail:** a SHA-3 weakness could weaken an X-Wing
     stanza's confidentiality or make it fail to open
     (`RulesUnopenable`). It cannot turn a forgery into an accept.
+- **SHAKE inside ML-DSA (RFC-0027, RFC-0041)**:
+  - **Where:** SHAKE-128/256 appear only inside ML-DSA-65 (`ml-dsa`),
+    where FIPS 204 mandates them for key expansion, sampling, and the
+    message representative `mu`. They are used only in the
+    `src/hybrid_sig.rs` hybrid signature.
+  - **What it does:** it is part of the signature algorithm. An ML-DSA
+    verify is an accept/reject decision, but aion-context never stores,
+    signs, or compares a SHAKE output itself.
+  - **How it can fail:** a SHAKE weakness could weaken the ML-DSA half.
+    A hybrid signature also needs the Ed25519 half over the same
+    BLAKE3-free domain-tagged message, so the ML-DSA half alone
+    cannot turn a forgery into an accept.
 - **Fuzz-only keys (`fuzz/`)**: `fuzz/fuzz_targets/fuzz_verify_chain.rs`
   derives a fixed Ed25519 key pair from constant seeds, with the
   distinctive author id `0xF022_F022_F022_F022`. The seed files in
@@ -106,6 +118,10 @@ below with its scope.
   construction. The `fuzz` crate is `publish = false`, and the key
   appears in no library, binary, example, or registry. A file signed by
   it proves nothing and must never be pinned outside the fuzz target.
+  `fuzz/fuzz_targets/fuzz_hybrid_verify.rs` likewise derives a fixed
+  hybrid (Ed25519 + ML-DSA-65) key pair from constant seeds
+  (`[0xF0; 32]`, `[0x0F; 32]`) so that arbitrary bytes reach
+  `HybridVerifyingKey::verify`. The same limits apply.
 
 ## Key material lifecycle
 
