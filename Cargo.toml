@@ -97,7 +97,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 # Property-based testing (see .claude/rules/property-testing.md).
 # Requires `uv` on PATH at test time to launch the hegel-core backend;
 # absent that, hegeltest self-installs a private copy to ~/.cache/hegel.
-hegeltest = "0.52"
+hegeltest = "0.54"
 criterion = { version = "0.5", features = ["html_reports"] }
 tempfile = "3.8"
 
