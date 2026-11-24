@@ -34,8 +34,11 @@ sha2 = "0.11"
 subtle = "2.6"
 
 # Post-quantum signatures (RFC-0027). pqcrypto-mldsa tracks FIPS 204
-# ML-DSA via the C reference implementation.
-pqcrypto-mldsa = "0.1"
+# ML-DSA via the C reference implementation. Default features are off:
+# the `avx2` verifier skips the FIPS 204 norm check (RUSTSEC-2026-0586),
+# and the portable code gives the same verdict on every platform.
+# `hybrid_sig::tests::wycheproof_mldsa65_verify_vectors` pins this.
+pqcrypto-mldsa = { version = "0.1", default-features = false, features = ["std"] }
 pqcrypto-traits = "0.3"
 
 # Error handling
