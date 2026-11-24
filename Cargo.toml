@@ -93,17 +93,6 @@ hostname = "0.4.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
-# Optional: minimal sync HTTP client for the `llm_policy_agent`
-# example (issue #59). Gated by the `llm-agent-example` feature so
-# the default build is unaffected. License: MIT/Apache-2.0.
-ureq = { version = "2.10", default-features = false, features = ["tls", "json"], optional = true }
-
-# Optional: tar + flate2 for the `corpus_to_aion` example (issue #61).
-# Gated by the `corpus-tool` feature so the default build is unaffected.
-# Both MIT/Apache-2.0.
-tar = { version = "0.4", optional = true }
-flate2 = { version = "1.0", optional = true }
-
 [dev-dependencies]
 # Property-based testing (see .claude/rules/property-testing.md).
 # Requires `uv` on PATH at test time to launch the hegel-core backend;
@@ -116,17 +105,24 @@ tempfile = "3.8"
 arbitrary = { version = "1.3", features = ["derive"] }
 hex = "0.4"
 
+# Example-only deps. They are dev-dependencies so the library manifest
+# carries no network or archive client. All MIT/Apache-2.0.
+# Minimal sync HTTP client for the `llm_policy_agent` example (issue #59).
+ureq = { version = "2.10", default-features = false, features = ["tls", "json"] }
+# tar + flate2 for the `corpus_to_aion` example (issue #61).
+tar = "0.4"
+flate2 = "1.0"
+
 [features]
 # Test helpers feature for integration tests
 test-helpers = []
 
-# Pulls in `ureq` for the `llm_policy_agent` example (issue #59).
-# Off by default — no network client in the standard build.
-llm-agent-example = ["dep:ureq"]
-
-# Pulls in `tar` + `flate2` for the `corpus_to_aion` example (issue #61).
-# Off by default — no archive deps in the standard build.
-corpus-tool = ["dep:tar", "dep:flate2"]
+# Opt-in flags for the `llm_policy_agent` (issue #59) and
+# `corpus_to_aion` (issue #61) examples. Their deps are
+# dev-dependencies; the flags are kept so existing `--features`
+# invocations keep working.
+llm-agent-example = []
+corpus-tool = []
 
 [profile.release]
 opt-level = 3
