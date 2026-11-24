@@ -35,7 +35,9 @@ use crate::{AionError, Result};
 ///
 /// # Errors
 ///
-/// Returns `Err` if the value fails to serialize via serde.
+/// Returns `Err` if the value fails to serialize via serde, or if it
+/// holds an integer outside ±(2^53 − 1). RFC 8785 numbers are
+/// IEEE-754 doubles, so larger integers have no exact canonical form.
 pub fn to_jcs_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>> {
     serde_jcs::to_vec(value).map_err(|e| AionError::InvalidFormat {
         reason: format!("JCS serialization failed: {e}"),
@@ -94,7 +96,21 @@ mod tests {
 
     #[test]
     fn canonicalize_rejects_invalid_json() {
-        assert!(canonicalize_json_bytes(b"{not json").is_err());
+        assert!(canonicalize_json_bytes(b"{not json}").is_err());
+    }
+
+    #[test]
+    fn integers_outside_the_safe_range_are_rejected() {
+        let max = serde_jcs::MAX_SAFE_INTEGER;
+        assert_eq!(to_jcs_bytes(&json!([max])).unwrap(), b"[9007199254740991]");
+        assert_eq!(
+            to_jcs_bytes(&json!([-i64::try_from(max).unwrap()])).unwrap(),
+            b"[-9007199254740991]"
+        );
+        assert!(to_jcs_bytes(&json!([max + 1])).is_err());
+        assert!(to_jcs_bytes(&json!([u64::MAX])).is_err());
+        assert!(to_jcs_bytes(&json!([i64::MIN])).is_err());
+        assert!(canonicalize_json_bytes(b"[9007199254740992]").is_err());
     }
 
     #[test]
