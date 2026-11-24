@@ -1,9 +1,9 @@
 # RFC 0041: Migrate the Hybrid Signature's ML-DSA-65 Half to the Pure-Rust `ml-dsa` Crate
 
 - **Author:** copyleftdev
-- **Status:** DRAFT
+- **Status:** ACCEPTED
 - **Created:** 2026-11-23
-- **Updated:** 2026-11-23
+- **Updated:** 2026-11-24
 - **Depends on:** RFC-0027 (post-quantum hybrid), RFC-0037 (crypto/RNG stack upgrade), RFC-0033 (post-audit hardening, C9 zeroization)
 
 ## Abstract
@@ -593,6 +593,16 @@ be checked on its own. Keep the `paste` ignore if any resolution
 still contains it.
 
 ## Unresolved Questions
+
+**Resolved at acceptance (2026-11-24):** the maintainer accepted the
+recommended defaults for three of the questions below.
+- **Export:** take option 3. Callers holding stored expanded keys rotate.
+- **Pin:** pin `ml-dsa` exactly at `=0.1.2`, accepting that no
+  third-party audit was found.
+- **Target:** `ml-dsa` is the target. `libcrux-ml-dsa` stays an
+  alternative to revisit later.
+
+The remaining questions stay open for the implementation PR.
 
 - **Audit and advisory history of `ml-dsa`.** I could not verify that
   `ml-dsa` has had an independent third-party audit, and I did not
