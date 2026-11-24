@@ -681,12 +681,17 @@ mod tests {
         #[hegel::test]
         fn prop_aibom_to_jcs_bytes_matches_helper(tc: hegel::TestCase) {
             let aibom = draw_aibom(&tc);
-            let from_method = aibom
-                .to_jcs_bytes()
-                .unwrap_or_else(|_| std::process::abort());
-            let from_helper =
-                crate::jcs::to_jcs_bytes(&aibom).unwrap_or_else(|_| std::process::abort());
-            assert_eq!(from_method, from_helper);
+            let in_range = aibom.model.size <= serde_jcs::MAX_SAFE_INTEGER
+                && aibom.created_at_version <= serde_jcs::MAX_SAFE_INTEGER;
+            match (aibom.to_jcs_bytes(), crate::jcs::to_jcs_bytes(&aibom)) {
+                (Ok(from_method), Ok(from_helper)) => {
+                    assert!(in_range);
+                    assert_eq!(from_method, from_helper);
+                }
+                (Err(_), Err(_)) => assert!(!in_range),
+                _ => std::process::abort(),
+            }
+            assert!(aibom.canonical_bytes().is_ok());
         }
     }
 }

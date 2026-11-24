@@ -254,17 +254,25 @@ impl HybridVerifyingKey {
         // Classical half.
         self.classical.verify(&message, &sig.classical)?;
         // PQ half.
-        let pq_sig = mldsa65::DetachedSignature::from_bytes(&sig.pq).map_err(|e| {
-            AionError::InvalidFormat {
-                reason: format!("ML-DSA-65 signature bytes invalid: {e}"),
-            }
-        })?;
-        mldsa65::verify_detached_signature(&pq_sig, &message, &self.pq_public).map_err(|e| {
-            AionError::InvalidFormat {
-                reason: format!("ML-DSA-65 verification failed: {e}"),
-            }
-        })
+        verify_mldsa65(&self.pq_public, &message, &sig.pq)
     }
+}
+
+/// Verify the ML-DSA-65 half of a hybrid signature over `message`.
+///
+/// `pqcrypto-mldsa` is built without its `avx2` feature: its AVX2
+/// verifier skips the FIPS 204 infinity-norm check on `z`
+/// (RUSTSEC-2026-0586). The Wycheproof test below pins that.
+fn verify_mldsa65(public: &mldsa65::PublicKey, message: &[u8], sig: &[u8]) -> Result<()> {
+    let pq_sig =
+        mldsa65::DetachedSignature::from_bytes(sig).map_err(|e| AionError::InvalidFormat {
+            reason: format!("ML-DSA-65 signature bytes invalid: {e}"),
+        })?;
+    mldsa65::verify_detached_signature(&pq_sig, message, public).map_err(|e| {
+        AionError::InvalidFormat {
+            reason: format!("ML-DSA-65 verification failed: {e}"),
+        }
+    })
 }
 
 #[cfg(test)]
@@ -275,6 +283,33 @@ impl HybridVerifyingKey {
 )]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wycheproof_mldsa65_verify_vectors() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/mldsa/wycheproof-mldsa65-verify.json"
+        ))
+        .unwrap_or_else(|_| std::process::abort());
+        let tests = fixture["tests"]
+            .as_array()
+            .unwrap_or_else(|| std::process::abort());
+        assert_eq!(tests.len(), 6);
+        for t in tests {
+            let field = |k: &str| {
+                hex::decode(t[k].as_str().unwrap_or_default())
+                    .unwrap_or_else(|_| std::process::abort())
+            };
+            let public = mldsa65::PublicKey::from_bytes(&field("publicKey"))
+                .unwrap_or_else(|_| std::process::abort());
+            let accepted = verify_mldsa65(&public, &field("msg"), &field("sig")).is_ok();
+            assert_eq!(
+                accepted,
+                t["result"] == "valid",
+                "Wycheproof tcId {}",
+                t["tcId"]
+            );
+        }
+    }
 
     #[test]
     fn sizes_match_fips_204() {

@@ -176,13 +176,13 @@ impl SigningKey {
             });
         }
 
-        let mut key_bytes = [0u8; 32];
+        let mut key_bytes = Zeroizing::new([0u8; 32]);
         key_bytes.copy_from_slice(bytes);
 
         // Validate the key by trying to create an Ed25519SigningKey
         let _validate = Ed25519SigningKey::from_bytes(&key_bytes);
 
-        Ok(Self(Zeroizing::new(key_bytes)))
+        Ok(Self(key_bytes))
     }
 
     /// Get the bytes of this signing key
