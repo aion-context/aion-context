@@ -33,13 +33,11 @@ sha2 = "0.11"
 # (crypto-rule: `==` on key bytes is a BLOCK, see .claude/rules/crypto.md).
 subtle = "2.6"
 
-# Post-quantum signatures (RFC-0027). pqcrypto-mldsa tracks FIPS 204
-# ML-DSA via the C reference implementation. Default features are off:
-# the `avx2` verifier skips the FIPS 204 norm check (RUSTSEC-2026-0586),
-# and the portable code gives the same verdict on every platform.
-# `hybrid_sig::tests::wycheproof_mldsa65_verify_vectors` pins this.
-pqcrypto-mldsa = { version = "0.1", default-features = false, features = ["std"] }
-pqcrypto-traits = "0.3"
+# Post-quantum signatures (RFC-0027, RFC-0041). Pure-Rust FIPS 204.
+# Pinned exactly: each bump re-runs the RFC-0041 verification plan.
+# default-features off: no getrandom (OS entropy stays in
+# crypto::fill_os_entropy, RFC-0037) and no pkcs8 (unused).
+ml-dsa = { version = "=0.1.2", default-features = false, features = ["alloc", "rand_core", "zeroize"] }
 
 # Error handling
 thiserror = "2.0"
@@ -94,6 +92,13 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 [dev-dependencies]
+# RFC-0041 migration period only: the cross-backend interop test signs
+# with the old PQClean backend and verifies with ml-dsa, and the
+# reverse. Remove with the RUSTSEC-2026-0166/-0162/-0163/-0586 ignores
+# after one release. Default features off so the AVX2 verifier
+# (RUSTSEC-2026-0586) is not compiled.
+pqcrypto-mldsa = { version = "0.1", default-features = false, features = ["std"] }
+pqcrypto-traits = "0.3"
 # Property-based testing (see .claude/rules/property-testing.md).
 # Requires `uv` on PATH at test time to launch the hegel-core backend;
 # absent that, hegeltest self-installs a private copy to ~/.cache/hegel.

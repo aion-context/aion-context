@@ -42,3 +42,9 @@ name = "fuzz_confidential_envelope"
 path = "fuzz_targets/fuzz_confidential_envelope.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "fuzz_hybrid_verify"
+path = "fuzz_targets/fuzz_hybrid_verify.rs"
+test = false
+doc = false

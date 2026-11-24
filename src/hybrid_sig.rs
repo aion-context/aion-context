@@ -6,12 +6,12 @@
 //! requires **both** components to verify; breaking one algorithm
 //! is not enough to forge.
 //!
-//! ML-DSA-65 (FIPS 204) comes from the [`pqcrypto_mldsa`] crate —
-//! the C reference implementation wrapped via FFI, the most
-//! scrutinized PQ signature library in Rust today. When pure-Rust
-//! alternatives (`ml-dsa` from `RustCrypto`) mature and receive
-//! third-party review, Phase C swaps backends behind the same
-//! `HybridSigningKey` API.
+//! ML-DSA-65 (FIPS 204) comes from the pure-Rust `RustCrypto`
+//! [`ml_dsa`] crate (RFC-0041). It replaced the `pqcrypto-mldsa`
+//! C/FFI backend, whose AVX2 verifier skipped a FIPS 204 norm check
+//! (RUSTSEC-2026-0586). Public keys and signatures keep the standard
+//! FIPS 204 encodings, so signatures made with either backend verify
+//! under the other.
 //!
 //! Phase A (this module) does not change the on-disk file format;
 //! hybrid signatures are new in-memory types. Phase B integrates
@@ -24,7 +24,7 @@
 //! use aion_context::hybrid_sig::HybridSigningKey;
 //!
 //! # fn run() -> aion_context::Result<()> {
-//! let key = HybridSigningKey::generate().unwrap();
+//! let key = HybridSigningKey::generate()?;
 //! let vk = key.verifying_key();
 //! let payload = b"attested bytes";
 //! let sig = key.sign(payload)?;
@@ -34,10 +34,15 @@
 //! # run().unwrap();
 //! ```
 
-use pqcrypto_mldsa::mldsa65;
-use pqcrypto_traits::sign::{DetachedSignature, PublicKey, SecretKey};
+use ml_dsa::{
+    ExpandedSigningKey, MlDsa65, Signature as MlDsaSignature, VerifyingKey as MlDsaVerifyingKey,
+    B32,
+};
+use zeroize::{Zeroize, Zeroizing};
 
-use crate::crypto::{SigningKey as ClassicalSigningKey, VerifyingKey as ClassicalVerifyingKey};
+use crate::crypto::{
+    fill_os_entropy, SigningKey as ClassicalSigningKey, VerifyingKey as ClassicalVerifyingKey,
+};
 use crate::{AionError, Result};
 
 /// Domain separator for hybrid signatures. Distinct from every
@@ -75,21 +80,53 @@ impl PqAlgorithm {
     }
 }
 
+/// An ML-DSA-65 public key together with its 1952-byte encoding,
+/// cached so [`HybridVerifyingKey::pq_public_bytes`] can lend it.
+#[derive(Clone)]
+struct PqPublicKey {
+    key: MlDsaVerifyingKey<MlDsa65>,
+    encoded: Vec<u8>,
+}
+
+impl PqPublicKey {
+    fn from_key(key: MlDsaVerifyingKey<MlDsa65>) -> Self {
+        let encoded = key.encode().to_vec();
+        Self { key, encoded }
+    }
+
+    /// Decode a 1952-byte FIPS 204 public key. Any other length is
+    /// rejected; every 1952-byte string decodes (FIPS 204 defines no
+    /// further validity check on `t1`).
+    #[cfg(test)]
+    fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        use ml_dsa::EncodedVerifyingKey;
+        let encoded = EncodedVerifyingKey::<MlDsa65>::try_from(bytes).map_err(|_| {
+            AionError::InvalidFormat {
+                reason: format!(
+                    "ML-DSA-65 public key must be 1952 bytes, got {}",
+                    bytes.len()
+                ),
+            }
+        })?;
+        Ok(Self::from_key(MlDsaVerifyingKey::decode(&encoded)))
+    }
+}
+
 /// Classical + post-quantum keypair used for producing hybrid
 /// signatures.
 ///
 /// Does not derive `Debug` — the ML-DSA secret is sensitive.
 ///
-/// The ML-DSA-65 secret is held as raw bytes inside a
-/// [`zeroize::Zeroizing`] wrapper (RFC-0033 C9) and re-parsed into
-/// a [`mldsa65::SecretKey`] on every call to [`Self::sign`]. The
-/// `pqcrypto-mldsa` C-FFI `SecretKey` type does not implement
-/// `Zeroize`, so holding it live would leave ~4 KB of key material
-/// unzeroed in heap on drop.
+/// The ML-DSA-65 half is held as its 32-byte FIPS 204 seed and the
+/// expanded signing key derived from it. Both are wiped on drop: the
+/// seed by [`Zeroizing`], the expanded key by `ml-dsa`'s `zeroize`
+/// feature (RFC-0041; previously RFC-0033 C9 had to re-parse the
+/// secret on every signature).
 pub struct HybridSigningKey {
     classical: ClassicalSigningKey,
-    pq_secret_bytes: zeroize::Zeroizing<Vec<u8>>,
-    pq_public: mldsa65::PublicKey,
+    pq_seed: Zeroizing<[u8; 32]>,
+    pq_expanded: ExpandedSigningKey<MlDsa65>,
+    pq_public: PqPublicKey,
 }
 
 /// Corresponding verifying key.
@@ -97,7 +134,7 @@ pub struct HybridSigningKey {
 pub struct HybridVerifyingKey {
     classical: ClassicalVerifyingKey,
     algorithm: PqAlgorithm,
-    pq_public: mldsa65::PublicKey,
+    pq_public: PqPublicKey,
 }
 
 /// A hybrid signature: classical Ed25519 bytes + PQ algorithm
@@ -109,7 +146,7 @@ pub struct HybridSignature {
     pub algorithm: PqAlgorithm,
     /// 64-byte Ed25519 signature.
     pub classical: [u8; 64],
-    /// Variable-length PQ signature bytes (3293 for ML-DSA-65).
+    /// Variable-length PQ signature bytes (3309 for ML-DSA-65).
     pub pq: Vec<u8>,
 }
 
@@ -123,22 +160,23 @@ pub fn canonical_hybrid_message(payload: &[u8]) -> Vec<u8> {
     out
 }
 
+/// Draw a fresh 32-byte ML-DSA seed from the OS RNG (RFC-0037).
+fn fresh_pq_seed() -> Result<Zeroizing<[u8; 32]>> {
+    let mut seed = Zeroizing::new([0u8; 32]);
+    fill_os_entropy(seed.as_mut_slice())?;
+    Ok(seed)
+}
+
 impl HybridSigningKey {
     /// Generate a fresh hybrid keypair (Ed25519 + ML-DSA-65).
     ///
     /// # Errors
     ///
     /// Returns [`AionError::EntropyUnavailable`](crate::AionError::EntropyUnavailable)
-    /// if the OS RNG fails while generating the classical half (RFC-0037).
+    /// if the OS RNG fails (RFC-0037).
     pub fn generate() -> Result<Self> {
         let classical = ClassicalSigningKey::generate()?;
-        let (pq_public, pq_secret) = mldsa65::keypair();
-        let pq_secret_bytes = zeroize::Zeroizing::new(pq_secret.as_bytes().to_vec());
-        Ok(Self {
-            classical,
-            pq_secret_bytes,
-            pq_public,
-        })
+        Self::from_classical(classical)
     }
 
     /// Build a hybrid key whose classical half is `classical` and
@@ -146,13 +184,32 @@ impl HybridSigningKey {
     ///
     /// This lets callers migrate an existing Ed25519 identity into
     /// hybrid mode without losing the classical keypair.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AionError::EntropyUnavailable`](crate::AionError::EntropyUnavailable)
+    /// if the OS RNG fails while drawing the ML-DSA seed (RFC-0041).
+    pub fn from_classical(classical: ClassicalSigningKey) -> Result<Self> {
+        let seed = fresh_pq_seed()?;
+        Ok(Self::from_seeds(classical, &seed))
+    }
+
+    /// Rebuild a hybrid key from a classical key and a 32-byte
+    /// ML-DSA-65 seed, as returned by [`Self::export_pq_seed`].
+    ///
+    /// Key generation from a seed is deterministic (FIPS 204
+    /// `ML-DSA.KeyGen_internal`), so the same seed always yields the
+    /// same ML-DSA-65 key pair.
     #[must_use]
-    pub fn from_classical(classical: ClassicalSigningKey) -> Self {
-        let (pq_public, pq_secret) = mldsa65::keypair();
-        let pq_secret_bytes = zeroize::Zeroizing::new(pq_secret.as_bytes().to_vec());
+    pub fn from_seeds(classical: ClassicalSigningKey, pq_seed: &[u8; 32]) -> Self {
+        let mut xi = B32::from(*pq_seed);
+        let pq_expanded = ExpandedSigningKey::<MlDsa65>::from_seed(&xi);
+        xi.zeroize();
+        let pq_public = PqPublicKey::from_key(pq_expanded.verifying_key());
         Self {
             classical,
-            pq_secret_bytes,
+            pq_seed: Zeroizing::new(*pq_seed),
+            pq_expanded,
             pq_public,
         }
     }
@@ -163,55 +220,72 @@ impl HybridSigningKey {
         HybridVerifyingKey {
             classical: self.classical.verifying_key(),
             algorithm: PqAlgorithm::MlDsa65,
-            pq_public: self.pq_public,
+            pq_public: self.pq_public.clone(),
         }
     }
 
     /// Produce a hybrid signature over `payload`.
     ///
+    /// The ML-DSA half uses hedged (randomized) signing with an empty
+    /// context, drawing its per-signature randomness from the OS RNG.
+    ///
     /// # Errors
     ///
-    /// Returns `Err` if the cached ML-DSA secret bytes fail to
-    /// reconstitute into an `mldsa65::SecretKey`. In normal
-    /// operation the bytes originate from `mldsa65::keypair()` and
-    /// this branch is unreachable; a failure here indicates memory
-    /// corruption or manual tampering with the field contents.
+    /// Returns [`AionError::SigningFailed`](crate::AionError::SigningFailed)
+    /// if ML-DSA signing fails: the OS RNG is unavailable, or rejection
+    /// sampling exhausts its bound (`ml-dsa` reports both as one opaque
+    /// error).
     pub fn sign(&self, payload: &[u8]) -> Result<HybridSignature> {
         let message = canonical_hybrid_message(payload);
         let classical = self.classical.sign(&message);
-        let pq_secret = mldsa65::SecretKey::from_bytes(&self.pq_secret_bytes).map_err(|e| {
-            AionError::InvalidFormat {
-                reason: format!("internal: ML-DSA-65 secret key reconstitution failed: {e}"),
-            }
-        })?;
-        let pq_sig = mldsa65::detached_sign(&message, &pq_secret);
+        let pq_sig = self
+            .pq_expanded
+            .sign_randomized(&message, &[], &mut rand::rngs::SysRng)
+            .map_err(|_| AionError::SigningFailed {
+                reason: "ML-DSA-65 signing failed".to_string(),
+            })?;
         Ok(HybridSignature {
             algorithm: PqAlgorithm::MlDsa65,
             classical,
-            pq: pq_sig.as_bytes().to_vec(),
+            pq: pq_sig.encode().to_vec(),
         })
     }
 
     /// 32-byte Ed25519 classical seed, for callers that need to
     /// shuttle the key between processes. Drops the PQ half —
-    /// use [`Self::export_pq_secret`] for that.
+    /// use [`Self::export_pq_seed`] for that.
     #[must_use]
     pub fn classical_seed(&self) -> &[u8; 32] {
         self.classical.to_bytes()
     }
 
-    /// Export the ML-DSA-65 secret-key bytes in a [`Zeroizing`]
-    /// wrapper. The wrapper zeroes its heap buffer on drop; callers
-    /// who copy the bytes into an unwrapped `Vec<u8>` or `String`
-    /// defeat the zeroization contract and are responsible for any
-    /// residual exposure.
+    /// Export the 32-byte FIPS 204 ML-DSA-65 seed, the only supported
+    /// persistence form for the PQ half (RFC-0041). Restore with
+    /// [`Self::from_seeds`].
     ///
-    /// Exposed so a caller can serialize the key via their own
-    /// key-storage layer. `aion-context` does not persist PQ keys
-    /// in Phase A.
+    /// The [`Zeroizing`] wrapper wipes the copy on drop; callers who
+    /// copy the bytes elsewhere are responsible for that copy.
     #[must_use]
-    pub fn export_pq_secret(&self) -> zeroize::Zeroizing<Vec<u8>> {
-        zeroize::Zeroizing::new(self.pq_secret_bytes.as_slice().to_vec())
+    pub fn export_pq_seed(&self) -> Zeroizing<[u8; 32]> {
+        Zeroizing::new(*self.pq_seed)
+    }
+
+    /// Export the 4032-byte FIPS 204 `skEncode` ML-DSA-65 secret key.
+    ///
+    /// There is no import for this form: `ml-dsa`'s expanded-key
+    /// decoder can panic on malformed input. Persist
+    /// [`Self::export_pq_seed`] instead.
+    #[deprecated(
+        since = "4.0.0",
+        note = "use export_pq_seed; expanded ML-DSA keys cannot be imported (RFC-0041)"
+    )]
+    #[must_use]
+    pub fn export_pq_secret(&self) -> Zeroizing<Vec<u8>> {
+        #[allow(deprecated)]
+        let mut expanded = self.pq_expanded.to_expanded();
+        let out = Zeroizing::new(expanded.to_vec());
+        expanded.zeroize();
+        out
     }
 }
 
@@ -228,10 +302,10 @@ impl HybridVerifyingKey {
         &self.classical
     }
 
-    /// Expose the ML-DSA-65 public key bytes.
+    /// Expose the 1952-byte ML-DSA-65 public key encoding.
     #[must_use]
     pub fn pq_public_bytes(&self) -> &[u8] {
-        self.pq_public.as_bytes()
+        &self.pq_public.encoded
     }
 
     /// Verify a hybrid signature — both halves must verify.
@@ -254,25 +328,27 @@ impl HybridVerifyingKey {
         // Classical half.
         self.classical.verify(&message, &sig.classical)?;
         // PQ half.
-        verify_mldsa65(&self.pq_public, &message, &sig.pq)
+        verify_mldsa65(&self.pq_public.key, &message, &sig.pq)
     }
 }
 
-/// Verify the ML-DSA-65 half of a hybrid signature over `message`.
+/// Verify the ML-DSA-65 half of a hybrid signature over `message`,
+/// FIPS 204 pure mode with an empty context.
 ///
-/// `pqcrypto-mldsa` is built without its `avx2` feature: its AVX2
-/// verifier skips the FIPS 204 infinity-norm check on `z`
-/// (RUSTSEC-2026-0586). The Wycheproof test below pins that.
-fn verify_mldsa65(public: &mldsa65::PublicKey, message: &[u8], sig: &[u8]) -> Result<()> {
-    let pq_sig =
-        mldsa65::DetachedSignature::from_bytes(sig).map_err(|e| AionError::InvalidFormat {
-            reason: format!("ML-DSA-65 signature bytes invalid: {e}"),
-        })?;
-    mldsa65::verify_detached_signature(&pq_sig, message, public).map_err(|e| {
-        AionError::InvalidFormat {
-            reason: format!("ML-DSA-65 verification failed: {e}"),
-        }
-    })
+/// Malformed signature bytes and a failed verification return the
+/// same error, so the result reveals nothing about which check failed.
+/// `hybrid_sig::tests::wycheproof_mldsa65_verify_vectors` runs the full
+/// Wycheproof verify set through this function.
+fn verify_mldsa65(public: &MlDsaVerifyingKey<MlDsa65>, message: &[u8], sig: &[u8]) -> Result<()> {
+    let accepted = MlDsaSignature::<MlDsa65>::try_from(sig)
+        .is_ok_and(|sig| public.verify_with_context(message, &[], &sig));
+    if accepted {
+        Ok(())
+    } else {
+        Err(AionError::InvalidFormat {
+            reason: "ML-DSA-65 signature rejected".to_string(),
+        })
+    }
 }
 
 #[cfg(test)]
@@ -284,39 +360,147 @@ fn verify_mldsa65(public: &mldsa65::PublicKey, message: &[u8], sig: &[u8]) -> Re
 mod tests {
     use super::*;
 
+    fn unhex(v: &serde_json::Value) -> Vec<u8> {
+        hex::decode(v.as_str().unwrap_or_default()).unwrap_or_else(|_| std::process::abort())
+    }
+
+    fn fixture(json: &str) -> serde_json::Value {
+        serde_json::from_str(json).unwrap_or_else(|_| std::process::abort())
+    }
+
+    fn groups(v: &serde_json::Value) -> &Vec<serde_json::Value> {
+        v["testGroups"]
+            .as_array()
+            .unwrap_or_else(|| std::process::abort())
+    }
+
+    fn cases(g: &serde_json::Value) -> &Vec<serde_json::Value> {
+        g["tests"]
+            .as_array()
+            .unwrap_or_else(|| std::process::abort())
+    }
+
+    fn has_flag(t: &serde_json::Value, flag: &str) -> bool {
+        t["flags"]
+            .as_array()
+            .is_some_and(|f| f.iter().any(|x| x == flag))
+    }
+
+    /// RFC-0041 verification plan item 1: every Wycheproof ML-DSA-65
+    /// verify vector. Empty-context vectors go through
+    /// `verify_mldsa65`, the function `HybridVerifyingKey::verify`
+    /// uses; vectors with a context call the backend directly.
     #[test]
     fn wycheproof_mldsa65_verify_vectors() {
-        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        let v = fixture(include_str!(
             "../tests/fixtures/mldsa/wycheproof-mldsa65-verify.json"
-        ))
-        .unwrap_or_else(|_| std::process::abort());
-        let tests = fixture["tests"]
-            .as_array()
-            .unwrap_or_else(|| std::process::abort());
-        assert_eq!(tests.len(), 6);
-        for t in tests {
-            let field = |k: &str| {
-                hex::decode(t[k].as_str().unwrap_or_default())
-                    .unwrap_or_else(|_| std::process::abort())
+        ));
+        let (mut no_ctx, mut with_ctx) = (0, 0);
+        for g in groups(&v) {
+            let public = PqPublicKey::from_bytes(&unhex(&g["publicKey"]));
+            for t in cases(g) {
+                let (msg, sig) = (unhex(&t["msg"]), unhex(&t["sig"]));
+                let accepted = match (&public, t.get("ctx")) {
+                    (Err(_), _) => false,
+                    (Ok(pk), None) => {
+                        no_ctx += 1;
+                        verify_mldsa65(&pk.key, &msg, &sig).is_ok()
+                    }
+                    (Ok(pk), Some(ctx)) => {
+                        with_ctx += 1;
+                        MlDsaSignature::<MlDsa65>::try_from(sig.as_slice())
+                            .is_ok_and(|s| pk.key.verify_with_context(&msg, &unhex(ctx), &s))
+                    }
+                };
+                assert_eq!(accepted, t["result"] == "valid", "tcId {}", t["tcId"]);
+            }
+        }
+        assert_eq!((no_ctx, with_ctx), (199, 7));
+    }
+
+    /// RFC-0041 verification plan item 2: every Wycheproof ML-DSA-65
+    /// sign-with-seed vector. The seed must yield the exact public
+    /// key, deterministic signing must reproduce the exact signature,
+    /// and that signature must verify.
+    #[test]
+    fn wycheproof_mldsa65_sign_seed_vectors() {
+        let v = fixture(include_str!(
+            "../tests/fixtures/mldsa/wycheproof-mldsa65-sign-seed.json"
+        ));
+        let mut counts = [0usize; 5];
+        for g in groups(&v) {
+            let Ok(seed) = <[u8; 32]>::try_from(unhex(&g["privateSeed"]).as_slice()) else {
+                assert!(cases(g).iter().all(|t| t["result"] == "invalid"));
+                counts[4] += cases(g).len();
+                continue;
             };
-            let public = mldsa65::PublicKey::from_bytes(&field("publicKey"))
+            let classical =
+                ClassicalSigningKey::generate().unwrap_or_else(|_| std::process::abort());
+            let key = HybridSigningKey::from_seeds(classical, &seed);
+            assert_eq!(key.pq_public.encoded, unhex(&g["publicKey"]));
+            for t in cases(g) {
+                counts[check_sign_vector(&key, t)] += 1;
+            }
+        }
+        assert_eq!(counts, [80, 17, 4, 1, 3]);
+    }
+
+    /// Returns the bucket the vector was counted in: 0 pure mode,
+    /// 1 internal (precomputed mu, `Sign_internal`), 2 with context,
+    /// 3 hedged with a fixed `rnd` (verified only: `ml-dsa` takes
+    /// signing randomness from an RNG, not as bytes).
+    fn check_sign_vector(key: &HybridSigningKey, t: &serde_json::Value) -> usize {
+        let want = unhex(&t["sig"]);
+        let pk = &key.pq_public.key;
+        if has_flag(t, "Internal") {
+            let mu_bytes = unhex(&t["mu"]);
+            let mu = mu_bytes
+                .as_slice()
+                .try_into()
                 .unwrap_or_else(|_| std::process::abort());
-            let accepted = verify_mldsa65(&public, &field("msg"), &field("sig")).is_ok();
-            assert_eq!(
-                accepted,
-                t["result"] == "valid",
-                "Wycheproof tcId {}",
-                t["tcId"]
-            );
+            let sig = key.pq_expanded.sign_mu_deterministic(&mu);
+            assert_eq!(sig.encode().to_vec(), want, "tcId {}", t["tcId"]);
+            assert!(pk.verify_mu(&mu, &sig));
+            return 1;
+        }
+        let msg = unhex(&t["msg"]);
+        if has_flag(t, "Randomized") {
+            verify_mldsa65(pk, &msg, &want).unwrap_or_else(|_| std::process::abort());
+            return 3;
+        }
+        let ctx = t.get("ctx").map(unhex).unwrap_or_default();
+        let signed = key.pq_expanded.sign_deterministic(&msg, &ctx);
+        if t["result"] == "invalid" {
+            assert!(signed.is_err(), "tcId {}", t["tcId"]);
+            return 2;
+        }
+        let sig = signed.unwrap_or_else(|_| std::process::abort());
+        assert_eq!(sig.encode().to_vec(), want, "tcId {}", t["tcId"]);
+        assert!(pk.verify_with_context(&msg, &ctx, &sig));
+        if ctx.is_empty() {
+            verify_mldsa65(pk, &msg, &want).unwrap_or_else(|_| std::process::abort());
+            0
+        } else {
+            2
         }
     }
 
     #[test]
     fn sizes_match_fips_204() {
-        // FIPS 204 ML-DSA-65 fixed sizes.
-        assert_eq!(mldsa65::public_key_bytes(), 1952);
-        assert_eq!(mldsa65::secret_key_bytes(), 4032);
-        assert_eq!(mldsa65::signature_bytes(), 3309);
+        let key = HybridSigningKey::generate().unwrap_or_else(|_| std::process::abort());
+        assert_eq!(key.verifying_key().pq_public_bytes().len(), 1952);
+        let sig = key.sign(b"x").unwrap_or_else(|_| std::process::abort());
+        assert_eq!(sig.pq.len(), 3309);
+        assert_eq!(key.export_pq_seed().len(), 32);
+        #[allow(deprecated)]
+        let expanded = key.export_pq_secret();
+        assert_eq!(expanded.len(), 4032);
+    }
+
+    #[test]
+    fn public_key_of_the_wrong_length_is_rejected() {
+        assert!(PqPublicKey::from_bytes(&[0u8; 1951]).is_err());
+        assert!(PqPublicKey::from_bytes(&[0u8; 1953]).is_err());
     }
 
     #[test]
@@ -325,6 +509,18 @@ mod tests {
         let vk = key.verifying_key();
         let sig = key.sign(b"hello hybrid").unwrap();
         vk.verify(b"hello hybrid", &sig).unwrap();
+    }
+
+    #[test]
+    fn signing_is_hedged() {
+        let key = HybridSigningKey::generate().unwrap_or_else(|_| std::process::abort());
+        let a = key
+            .sign(b"same payload")
+            .unwrap_or_else(|_| std::process::abort());
+        let b = key
+            .sign(b"same payload")
+            .unwrap_or_else(|_| std::process::abort());
+        assert_ne!(a.pq, b.pq);
     }
 
     #[test]
@@ -363,8 +559,65 @@ mod tests {
     fn from_classical_preserves_ed25519_identity() {
         let classical = ClassicalSigningKey::generate().unwrap_or_else(|_| std::process::abort());
         let original_pk = classical.verifying_key().to_bytes();
-        let key = HybridSigningKey::from_classical(classical);
+        let key =
+            HybridSigningKey::from_classical(classical).unwrap_or_else(|_| std::process::abort());
         assert_eq!(key.verifying_key().classical.to_bytes(), original_pk);
+    }
+
+    /// RFC-0041 verification plan item 4, removed with the
+    /// `pqcrypto-mldsa` dev-dependency after one release.
+    mod interop {
+        use super::*;
+        use pqcrypto_mldsa::mldsa65 as pqclean;
+        use pqcrypto_traits::sign::{DetachedSignature, PublicKey, SecretKey};
+
+        /// A key exported through the deprecated expanded form signs
+        /// under `pqcrypto-mldsa`, and `ml-dsa` verifies the result.
+        pub(super) fn pqclean_signs_ml_dsa_verifies(payload: &[u8]) {
+            let key = HybridSigningKey::generate().unwrap_or_else(|_| std::process::abort());
+            #[allow(deprecated)]
+            let expanded = key.export_pq_secret();
+            let sk =
+                pqclean::SecretKey::from_bytes(&expanded).unwrap_or_else(|_| std::process::abort());
+            let message = canonical_hybrid_message(payload);
+            let sig = HybridSignature {
+                algorithm: PqAlgorithm::MlDsa65,
+                classical: key.classical.sign(&message),
+                pq: pqclean::detached_sign(&message, &sk).as_bytes().to_vec(),
+            };
+            key.verifying_key()
+                .verify(payload, &sig)
+                .unwrap_or_else(|_| std::process::abort());
+        }
+
+        /// `pqcrypto-mldsa` verifies `ml-dsa` signatures, and a
+        /// `pqcrypto-mldsa` key pair's public key decodes in `ml-dsa` and
+        /// verifies that backend's signatures.
+        pub(super) fn ml_dsa_signs_pqclean_verifies(payload: &[u8]) {
+            let key = HybridSigningKey::generate().unwrap_or_else(|_| std::process::abort());
+            let sig = key.sign(payload).unwrap_or_else(|_| std::process::abort());
+            let message = canonical_hybrid_message(payload);
+            let pk = pqclean::PublicKey::from_bytes(key.verifying_key().pq_public_bytes())
+                .unwrap_or_else(|_| std::process::abort());
+            let pq_sig = pqclean::DetachedSignature::from_bytes(&sig.pq)
+                .unwrap_or_else(|_| std::process::abort());
+            assert!(pqclean::verify_detached_signature(&pq_sig, &message, &pk).is_ok());
+
+            let (their_public, their_secret) = pqclean::keypair();
+            let theirs = pqclean::detached_sign(&message, &their_secret);
+            let ours = PqPublicKey::from_bytes(their_public.as_bytes())
+                .unwrap_or_else(|_| std::process::abort());
+            verify_mldsa65(&ours.key, &message, theirs.as_bytes())
+                .unwrap_or_else(|_| std::process::abort());
+        }
+
+        #[test]
+        fn backends_interoperate_on_fixed_payloads() {
+            for payload in [&b""[..], b"x", &[0xA5; 4096]] {
+                pqclean_signs_ml_dsa_verifies(payload);
+                ml_dsa_signs_pqclean_verifies(payload);
+            }
+        }
     }
 
     mod properties {
@@ -419,11 +672,11 @@ mod tests {
             let sig = key.sign(&payload).unwrap();
             // Build a verifying key whose PQ half is from a fresh
             // keypair — classical half still matches `key`.
-            let (impostor_pq_pub, _) = mldsa65::keypair();
+            let impostor = HybridSigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let wrong_vk = HybridVerifyingKey {
                 classical: key.classical.verifying_key(),
                 algorithm: PqAlgorithm::MlDsa65,
-                pq_public: impostor_pq_pub,
+                pq_public: impostor.pq_public,
             };
             assert!(wrong_vk.verify(&payload, &sig).is_err());
         }
@@ -471,47 +724,64 @@ mod tests {
             // pass alone — the only failing component is classical,
             // which signed the wrong message.
             let domain_msg = canonical_hybrid_message(&payload);
-            let pq_secret = mldsa65::SecretKey::from_bytes(&key.pq_secret_bytes).unwrap();
-            let pq_sig = mldsa65::detached_sign(&domain_msg, &pq_secret);
+            let pq_sig = key
+                .pq_expanded
+                .sign_randomized(&domain_msg, &[], &mut rand::rngs::SysRng)
+                .unwrap_or_else(|_| std::process::abort());
+            verify_mldsa65(&key.pq_public.key, &domain_msg, &pq_sig.encode())
+                .unwrap_or_else(|_| std::process::abort());
             let sig = HybridSignature {
                 algorithm: PqAlgorithm::MlDsa65,
                 classical: classical_only,
-                pq: pq_sig.as_bytes().to_vec(),
+                pq: pq_sig.encode().to_vec(),
             };
             assert!(vk.verify(&payload, &sig).is_err());
         }
 
         #[hegel::test]
         fn prop_hybrid_algorithm_mismatch_rejects(tc: hegel::TestCase) {
-            // Today there's only MlDsa65, so we synthesize a
-            // mismatch by flipping the discriminant.
+            // PqAlgorithm has one variant, so a discriminant mismatch
+            // cannot be built through the API. Assert the matching
+            // case verifies, then that a structurally invalid PQ half
+            // under the same algorithm still rejects.
             let payload = tc.draw(gs::binary().max_size(256));
             let key = HybridSigningKey::generate().unwrap_or_else(|_| std::process::abort());
             let vk = key.verifying_key();
             let mut sig = key.sign(&payload).unwrap();
-            // Invent a discriminant the enum doesn't recognize by
-            // constructing a fake signature with a different type
-            // discriminant. Since PqAlgorithm only has MlDsa65, we
-            // exercise the check indirectly by mutating the verifying
-            // key's algorithm instead.
-            let mut wrong_vk = vk.clone();
-            // Safety: PqAlgorithm is repr(u16); we write a value not
-            // in the enum to model a future algorithm mismatch.
-            // Construct a misaligned verifying key by transmuting is
-            // unsafe-forbidden here; instead we check that the
-            // in-API symmetric case works. Use the true positive as
-            // the asserted baseline.
-            let _ = &mut wrong_vk;
             vk.verify(&payload, &sig)
                 .unwrap_or_else(|_| std::process::abort());
-            // Now corrupt the signature algorithm field to a value
-            // that cannot equal vk.algorithm. Because the enum only
-            // has one variant today, we do this by constructing an
-            // empty/placeholder signature whose PQ bytes are
-            // trivially bad — matching the algorithm but failing the
-            // crypto checks.
             sig.pq.clear();
             assert!(vk.verify(&payload, &sig).is_err());
+        }
+
+        /// RFC-0041: `export_pq_seed` → `from_seeds` rebuilds the same
+        /// key pair, and the rebuilt key's signatures verify under the
+        /// original verifying key.
+        #[hegel::test]
+        fn prop_hybrid_seed_export_round_trips(tc: hegel::TestCase) {
+            let payload = tc.draw(gs::binary().max_size(512));
+            let key = HybridSigningKey::generate().unwrap_or_else(|_| std::process::abort());
+            let classical = ClassicalSigningKey::from_bytes(key.classical_seed())
+                .unwrap_or_else(|_| std::process::abort());
+            let rebuilt = HybridSigningKey::from_seeds(classical, &key.export_pq_seed());
+            assert_eq!(
+                rebuilt.verifying_key().pq_public_bytes(),
+                key.verifying_key().pq_public_bytes()
+            );
+            let sig = rebuilt
+                .sign(&payload)
+                .unwrap_or_else(|_| std::process::abort());
+            key.verifying_key()
+                .verify(&payload, &sig)
+                .unwrap_or_else(|_| std::process::abort());
+        }
+
+        /// RFC-0041 verification plan item 4 over generated payloads.
+        #[hegel::test]
+        fn prop_hybrid_backends_interoperate(tc: hegel::TestCase) {
+            let payload = tc.draw(gs::binary().max_size(1024));
+            super::interop::pqclean_signs_ml_dsa_verifies(&payload);
+            super::interop::ml_dsa_signs_pqclean_verifies(&payload);
         }
     }
 }

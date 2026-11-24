@@ -232,8 +232,8 @@ Verification plan).
 `sign` must not call `sign_mu_deterministic`, which panics when
 rejection sampling is exhausted (documented in 0.1.2). It uses only
 the `Result`-returning APIs, whose rejection-sampling exhaustion fix
-is in 0.1.2 (#1481). That error maps to `InvalidFormat`, as the
-current reconstitution failure does.
+is in 0.1.2 (#1481). That error maps to `SigningFailed`, not the
+`InvalidFormat` the old reconstitution failure used.
 
 ### Secret-key export: options
 
@@ -278,7 +278,7 @@ impl HybridSigningKey {
     #[must_use]
     pub fn from_seeds(classical: ClassicalSigningKey, pq_seed: &[u8; 32]) -> Self;
 
-    #[deprecated(since = "3.1.0", note = "use export_pq_seed; expanded keys are deprecated in FIPS 204 practice and ml-dsa")]
+    #[deprecated(since = "4.0.0", note = "use export_pq_seed; expanded keys are deprecated in FIPS 204 practice and ml-dsa")]
     #[must_use]
     pub fn export_pq_secret(&self) -> zeroize::Zeroizing<Vec<u8>>; // still 4032 B
 }
