@@ -96,7 +96,7 @@ mod tests {
 
     #[test]
     fn canonicalize_rejects_invalid_json() {
-        assert!(canonicalize_json_bytes(b"{not json").is_err());
+        assert!(canonicalize_json_bytes(b"{not json}").is_err());
     }
 
     #[test]
