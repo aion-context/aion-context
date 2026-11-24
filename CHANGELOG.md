@@ -8,6 +8,86 @@ and the project follows [Semantic Versioning].
 [Keep a Changelog 1.1.0]: https://keepachangelog.com/en/1.1.0/
 [Semantic Versioning]: https://semver.org/spec/v2.0.0.html
 
+## [4.0.0] — 2026-11-24
+
+Major release. The ML-DSA-65 half of hybrid signatures (RFC-0027) now
+comes from RustCrypto's pure-Rust `ml-dsa` crate (RFC-0041). It
+replaces `pqcrypto-mldsa`, which is unmaintained and whose AVX2
+verifier accepted non-conforming signatures (RUSTSEC-2026-0586). The
+on-disk format does not change: 4.0.0 writes format v4 and reads
+formats v2, v3 and v4, like 3.0.0.
+
+**Upgrading from 3.x:**
+
+- `HybridSigningKey::from_classical` now returns `Result<Self>`, because
+  it draws the ML-DSA seed from the OS RNG. Add `?`.
+- Persist ML-DSA keys with `HybridSigningKey::export_pq_seed` and
+  restore them with `HybridSigningKey::from_seeds`.
+  `export_pq_secret` still returns the 4032-byte expanded key but is
+  deprecated, and there is no way to import that form. If you stored
+  only expanded keys, generate new hybrid keys and rotate.
+- Hybrid signatures made by 3.x verify under 4.0.0 and the reverse:
+  public keys and signatures are standard FIPS 204 encodings.
+- The minimum supported Rust version is now 1.89.
+
+### Breaking
+
+- `HybridSigningKey::from_classical` returns `Result<Self>` (#250).
+- MSRV raised from 1.87 to 1.89 (#230).
+- `jcs::to_jcs_bytes` and the `to_jcs_bytes` methods on `AiBom`,
+  `InTotoStatement` and `OciArtifactManifest` return `Err` for integers
+  outside ±(2^53 − 1). RFC 8785 numbers are IEEE-754 doubles, so those
+  integers had no exact canonical form. Canonical bytes for every other
+  value are unchanged (#246).
+
+### Security
+
+- **RUSTSEC-2026-0586.** In 3.0.0 on x86_64 with AVX2, hybrid signature
+  verification used PQClean's AVX2 ML-DSA verifier. It accepted 41 of
+  Wycheproof's invalid ML-DSA-65 signatures and rejected one valid one.
+  Forging an accepted signature still required the signer's private
+  key, but verdicts could differ from conforming verifiers. #245
+  disabled the AVX2 code, and #250 replaces the backend. Both full
+  Wycheproof ML-DSA-65 sets now run in CI.
+- **RUSTSEC-2024-0449.** `export::import_yaml` parsed caller-supplied
+  YAML with the deprecated `serde_yaml`/`unsafe-libyaml`. It now uses
+  `serde-saphyr`, which is safe Rust (#230, fixes #191).
+- **Keystore key material is zeroized.** Argon2-derived keys,
+  decrypted import bytes and the `SigningKey::from_bytes` buffer are
+  now wiped on drop; `argon2` and `chacha20poly1305` build with their
+  `zeroize` features (#235).
+- Dependency advisories: `rustix` RUSTSEC-2026-0486 (#223) and `url`
+  RUSTSEC-2026-0592 (#245; only reachable from an example).
+
+### Added
+
+- `HybridSigningKey::export_pq_seed` and `HybridSigningKey::from_seeds`
+  (#250).
+- The full Wycheproof ML-DSA-65 verify and sign-with-seed sets as
+  tests, the `fuzz_hybrid_verify` fuzz target, and ML-DSA benches
+  (#250).
+- Golden tests for every CLI `--format yaml` output, and a property
+  test that `export_yaml` → `import_yaml` round-trips (#230).
+- Known-answer tests pinning the keystore's Argon2 key derivations
+  (#231).
+
+### Changed
+
+- Hybrid signing is about 2× slower than with the PQClean portable
+  build: 1.02 ms against 0.46 ms for a 1 KB payload on our benchmark
+  machine, including the Ed25519 half. Verification is about the same.
+- `HybridSigningKey::export_pq_secret` is deprecated (#250).
+- Hybrid ML-DSA errors no longer echo the backend's error text;
+  malformed and rejected signatures return the same error (#250).
+- CLI `--format yaml` output uses double-quoted strings, and version
+  strings such as `"0.3.1"` are quoted (#230).
+- `ureq`, `tar` and `flate2` are dev-dependencies. The
+  `llm-agent-example` and `corpus-tool` features remain as empty flags
+  (#236).
+- Dependencies: `argon2` 0.6 (#231), `hpke` 0.15.1 (#233), `serde_jcs`
+  0.3 (#246), `dirs` 7 (#228), `keyring-core` 1.1 (#247), plus patch
+  and minor updates.
+
 ## [3.0.0] — 2026-10-23
 
 Major release. New files are format v4 (RFC-0040): each version's

@@ -203,9 +203,9 @@ Production-shaped examples that show aion-context wired into a real domain, end 
 
 ## Status
 
-**3.0.0** — public API, on-disk binary format, CLI exit-code
+**4.0.0** — public API, on-disk binary format, CLI exit-code
 contract, structured tracing event vocabulary, and bounded
-`reason` codes are under semver. 3.0.0 writes format v4 and still
+`reason` codes are under semver. 4.0.0 writes format v4 and still
 reads formats v2 and v3; 2.x readers reject v4 files, so upgrade
 readers first. [CHANGELOG.md] has the migration notes. The full written stability
 promise lives at [`book/src/architecture/stability.md`].

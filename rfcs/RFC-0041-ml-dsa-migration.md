@@ -4,6 +4,7 @@
 - **Status:** ACCEPTED
 - **Created:** 2026-11-23
 - **Updated:** 2026-11-24
+- **Implemented in:** #250, released in 4.0.0. Cleanup PR pending (remove the `pqcrypto-*` dev-dependencies and advisory ignores).
 - **Depends on:** RFC-0027 (post-quantum hybrid), RFC-0037 (crypto/RNG stack upgrade), RFC-0033 (post-audit hardening, C9 zeroization)
 
 ## Abstract
