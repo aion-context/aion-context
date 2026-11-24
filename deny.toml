@@ -101,4 +101,11 @@ ignore = [
     { id = "RUSTSEC-2026-0166", reason = "pqcrypto-mldsa unmaintained (PQClean archival); no CVE, no safe upgrade; ML-DSA confined to RFC-0027 hybrid path; migrate to pure-Rust ml-dsa crate via RFC" },
     { id = "RUSTSEC-2026-0162", reason = "pqcrypto-traits unmaintained (PQClean archival); shared traits for pqcrypto-mldsa; tracked with RUSTSEC-2026-0166; remove on ml-dsa migration" },
     { id = "RUSTSEC-2026-0163", reason = "pqcrypto-internals unmaintained (PQClean archival); internal FFI for pqcrypto-mldsa; tracked with RUSTSEC-2026-0166; remove on ml-dsa migration" },
+    # pqcrypto-mldsa's AVX2 verifier accepts signatures that fail the
+    # FIPS 204 infinity-norm check. Cargo.toml builds it with only the
+    # `std` feature, so the AVX2 code is not compiled, and a Wycheproof
+    # regression test in src/hybrid_sig.rs fails if it comes back. The
+    # advisory matches on version, not features, so it still needs an
+    # ignore. Remove on the `ml-dsa` migration.
+    { id = "RUSTSEC-2026-0586", reason = "pqcrypto-mldsa avx2 verifier; avx2 feature disabled in Cargo.toml, pinned by Wycheproof test in src/hybrid_sig.rs; remove on ml-dsa migration" },
 ]

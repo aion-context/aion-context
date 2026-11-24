@@ -22,4 +22,8 @@ ignore = [
     "RUSTSEC-2026-0166",
     "RUSTSEC-2026-0162",
     "RUSTSEC-2026-0163",
+    # pqcrypto-mldsa AVX2 verifier skips the FIPS 204 norm check. The
+    # `avx2` feature is disabled in Cargo.toml and a Wycheproof test in
+    # src/hybrid_sig.rs pins it. Remove on the ml-dsa migration.
+    "RUSTSEC-2026-0586",
 ]
