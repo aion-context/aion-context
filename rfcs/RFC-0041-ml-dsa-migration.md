@@ -232,8 +232,8 @@ Verification plan).
 `sign` must not call `sign_mu_deterministic`, which panics when
 rejection sampling is exhausted (documented in 0.1.2). It uses only
 the `Result`-returning APIs, whose rejection-sampling exhaustion fix
-is in 0.1.2 (#1481). That error maps to `InvalidFormat`, as the
-current reconstitution failure does.
+is in 0.1.2 (#1481). That error maps to `SigningFailed`, not the
+`InvalidFormat` the old reconstitution failure used.
 
 ### Secret-key export: options
 

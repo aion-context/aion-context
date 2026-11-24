@@ -107,8 +107,8 @@ below with its scope.
     verify is an accept/reject decision, but aion-context never stores,
     signs, or compares a SHAKE output itself.
   - **How it can fail:** a SHAKE weakness could weaken the ML-DSA half.
-    A hybrid signature also needs the Ed25519 half over the same
-    BLAKE3-free domain-tagged message, so the ML-DSA half alone
+    A hybrid signature also needs a valid Ed25519 signature over the
+    same message (`HYBRID_DOMAIN || payload`), so the ML-DSA half alone
     cannot turn a forgery into an accept.
 - **Fuzz-only keys (`fuzz/`)**: `fuzz/fuzz_targets/fuzz_verify_chain.rs`
   derives a fixed Ed25519 key pair from constant seeds, with the

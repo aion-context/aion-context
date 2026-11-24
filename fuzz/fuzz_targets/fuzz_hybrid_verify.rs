@@ -4,8 +4,9 @@
 //! Feeds arbitrary payload, Ed25519 and ML-DSA-65 signature bytes to
 //! `HybridVerifyingKey::verify` under a fixed key pair. The claim is
 //! that verification is total: it never panics, whatever the
-//! signature bytes, and only a signature made by the key's holder can
-//! be accepted.
+//! signature bytes. If the fuzzer ever produces an accepted input, the
+//! target also checks that a fresh signature over that payload
+//! verifies. It is not a forgery oracle.
 //!
 //! The key is derived from constant seeds, so it is public by
 //! construction and proves nothing outside this target (see the
